@@ -1,6 +1,12 @@
 /** @type {import('tailwindcss').Config} */
+import forms from '@tailwindcss/forms';
+import containerQueries from '@tailwindcss/container-queries';
+
 export default {
-    content: ['./src/**/*.{html,js,svelte,ts}'],
+    content: [
+        "./index.html",
+        "./src/**/*.{js,ts,jsx,tsx}",
+    ],
     darkMode: 'class',
     theme: {
         extend: {
@@ -13,12 +19,11 @@ export default {
             fontFamily: {
                 "display": ["Public Sans", "sans-serif"],
                 "student": ["Lexend", "sans-serif"],
-                "body": ["Public Sans", "sans-serif"],
             },
         },
     },
     plugins: [
-        import('@tailwindcss/forms'),
-        import('@tailwindcss/container-queries'),
+        forms,
+        containerQueries,
     ],
 }

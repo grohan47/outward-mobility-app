@@ -1,0 +1,449 @@
+<div
+    class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-6"
+>
+    <div
+        class="max-w-[1440px] mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-6"
+    >
+        <div>
+            <div class="flex items-center gap-2 text-slate-500 text-sm mb-1">
+                <span class="font-mono">APP-82931</span>
+                <span>•</span>
+                <span>Submitted Oct 24, 2023</span>
+            </div>
+            <h1
+                class="text-3xl font-black text-slate-900 dark:text-white tracking-tight"
+            >
+                Aditya Sharma <span class="text-slate-400 font-light"
+                    >/ B.Tech Computer Science</span
+                >
+            </h1>
+        </div>
+        <div class="flex flex-col gap-2 w-full md:w-96">
+            <div class="flex justify-between items-end">
+                <span
+                    class="text-primary font-bold text-sm uppercase flex items-center gap-1"
+                >
+                    <span class="material-symbols-outlined text-sm"
+                        >pending_actions</span
+                    > Currently with You
+                </span>
+                <span
+                    class="text-rose-500 font-bold text-sm flex items-center gap-1"
+                >
+                    <span class="material-symbols-outlined text-sm"
+                        >schedule</span
+                    > SLA: 2 Days Left
+                </span>
+            </div>
+            <div
+                class="relative h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden"
+            >
+                <div
+                    class="absolute left-0 top-0 h-full bg-primary rounded-full"
+                    style="width: 60%"
+                ></div>
+            </div>
+            <div
+                class="flex justify-between text-[10px] text-slate-400 font-bold uppercase"
+            >
+                <span>Submission</span>
+                <span>OGE Screening</span>
+                <span class="text-primary">Program Review</span>
+                <span>Partner Univ</span>
+                <span>Decision</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="flex-1 flex flex-col lg:flex-row max-w-[1440px] mx-auto w-full">
+    <div class="flex-1 p-6 space-y-8 overflow-y-auto max-h-[calc(100vh-220px)]">
+        <!-- Academic Performance -->
+        <section
+            class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden"
+        >
+            <div
+                class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-800/50"
+            >
+                <h3
+                    class="font-bold text-slate-900 dark:text-white flex items-center gap-2"
+                >
+                    <span class="material-symbols-outlined text-primary"
+                        >school</span
+                    > Academic Performance
+                </h3>
+                <button
+                    class="text-primary text-sm font-semibold flex items-center gap-1 hover:underline"
+                >
+                    <span class="material-symbols-outlined text-sm"
+                        >download</span
+                    > View Full Transcript
+                </button>
+            </div>
+            <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div
+                    class="flex flex-col p-4 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-100 dark:border-slate-700"
+                >
+                    <span
+                        class="text-slate-500 text-xs font-bold uppercase mb-1"
+                        >Cumulative GPA</span
+                    >
+                    <span class="text-3xl font-black text-primary"
+                        >3.88 / 4.0</span
+                    >
+                </div>
+                <div
+                    class="flex flex-col p-4 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-100 dark:border-slate-700"
+                >
+                    <span
+                        class="text-slate-500 text-xs font-bold uppercase mb-1"
+                        >Major GPA</span
+                    >
+                    <span
+                        class="text-3xl font-black text-slate-900 dark:text-white"
+                        >3.92</span
+                    >
+                </div>
+                <div
+                    class="flex flex-col p-4 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-100 dark:border-slate-700"
+                >
+                    <span
+                        class="text-slate-500 text-xs font-bold uppercase mb-1"
+                        >Standing</span
+                    >
+                    <span
+                        class="text-xl font-bold text-slate-900 dark:text-white mt-1"
+                        >Top 5% of Cohort</span
+                    >
+                </div>
+            </div>
+        </section>
+
+        <!-- Course Mapping -->
+        <section
+            class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden"
+        >
+            <div
+                class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50"
+            >
+                <h3
+                    class="font-bold text-slate-900 dark:text-white flex items-center gap-2"
+                >
+                    <span class="material-symbols-outlined text-primary"
+                        >sync_alt</span
+                    > Course Mapping & Compatibility
+                </h3>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead
+                        class="bg-slate-50 dark:bg-slate-800 text-slate-500 text-[10px] font-bold uppercase"
+                    >
+                        <tr>
+                            <th class="px-6 py-3">Partner Institution Course</th
+                            >
+                            <th class="px-6 py-3">Plaksha Equivalent Course</th>
+                            <th class="px-6 py-3">Status</th>
+                            <th class="px-6 py-3">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody
+                        class="divide-y divide-slate-100 dark:divide-slate-800"
+                    >
+                        <tr>
+                            <td class="px-6 py-4">
+                                <p
+                                    class="font-bold text-slate-900 dark:text-white"
+                                >
+                                    CS421: Advanced Algorithms
+                                </p>
+                                <p class="text-xs text-slate-400">
+                                    4 Credits | UC Berkeley
+                                </p>
+                            </td>
+                            <td class="px-6 py-4">
+                                <p
+                                    class="font-medium text-slate-700 dark:text-slate-300"
+                                >
+                                    DSA 301: Design & Analysis of Algorithms
+                                </p>
+                            </td>
+                            <td class="px-6 py-4">
+                                <span
+                                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                    >Pre-Approved</span
+                                >
+                            </td>
+                            <td class="px-6 py-4">
+                                <button
+                                    class="text-slate-400 hover:text-primary"
+                                    ><span class="material-symbols-outlined"
+                                        >edit_note</span
+                                    ></button
+                                >
+                            </td>
+                        </tr>
+                        <tr>
+                            <td class="px-6 py-4">
+                                <p
+                                    class="font-bold text-slate-900 dark:text-white"
+                                >
+                                    ECON102: Behavioral Economics
+                                </p>
+                                <p class="text-xs text-slate-400">
+                                    3 Credits | UC Berkeley
+                                </p>
+                            </td>
+                            <td class="px-6 py-4">
+                                <p
+                                    class="font-medium text-slate-700 dark:text-slate-300"
+                                >
+                                    HSS 204: Intro to Behavioral Science
+                                </p>
+                            </td>
+                            <td class="px-6 py-4">
+                                <span
+                                    class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+                                    >Review Required</span
+                                >
+                            </td>
+                            <td class="px-6 py-4">
+                                <button
+                                    class="text-slate-400 hover:text-primary"
+                                    ><span class="material-symbols-outlined"
+                                        >edit_note</span
+                                    ></button
+                                >
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- Right Sidebar -->
+    <aside
+        class="w-full lg:w-[450px] border-l border-slate-200 dark:border-slate-800 bg-slate-50/30 dark:bg-slate-950/20 flex flex-col"
+    >
+        <div
+            class="p-4 flex-1 flex flex-col gap-6 overflow-y-auto max-h-[calc(100vh-280px)]"
+        >
+            <!-- AI Summary -->
+            <div
+                class="bg-gradient-to-br from-primary/10 to-blue-500/10 border border-primary/20 rounded-xl p-5 relative overflow-hidden shrink-0"
+            >
+                <div class="absolute top-[-20px] right-[-20px] opacity-10">
+                    <span
+                        class="material-symbols-outlined text-8xl text-primary"
+                        >auto_awesome</span
+                    >
+                </div>
+                <h4
+                    class="text-primary font-bold text-sm mb-2 flex items-center gap-2"
+                >
+                    <span class="material-symbols-outlined text-sm"
+                        >auto_awesome</span
+                    > AI Application Summary
+                </h4>
+                <p
+                    class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed"
+                >
+                    Strong candidate with high major GPA. Course mapping for <span
+                        class="text-slate-900 dark:text-white font-semibold"
+                        >ECON102</span
+                    > is new; suggest checking syllabus overlap. Previous exchange
+                    students at Berkeley reported high rigor in CS421.
+                </p>
+            </div>
+
+            <!-- Chat -->
+            <div class="flex flex-col gap-4">
+                <div
+                    class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3"
+                >
+                    <div class="flex flex-col">
+                        <h4
+                            class="text-slate-900 dark:text-white font-bold text-sm"
+                        >
+                            Internal Correspondence
+                        </h4>
+                        <div class="flex items-center gap-2 mt-1">
+                            <select
+                                class="text-xs bg-transparent border-none p-0 focus:ring-0 text-slate-500 font-medium cursor-pointer"
+                            >
+                                <option
+                                    >Thread: Application Screening (3 messages)</option
+                                >
+                                <option
+                                    >Thread: Course Equivalency (0 messages)</option
+                                >
+                                <option>+ Start New Thread</option>
+                            </select>
+                        </div>
+                    </div>
+                    <span
+                        class="bg-primary/10 text-primary text-[10px] px-2 py-0.5 rounded-full font-bold"
+                        >Relayed via Email</span
+                    >
+                </div>
+
+                <div class="space-y-6">
+                    <div
+                        class="border-b border-slate-100 dark:border-slate-800 pb-4"
+                    >
+                        <div class="flex justify-between items-start mb-2">
+                            <div class="flex items-center gap-2">
+                                <div
+                                    class="size-7 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center font-bold text-[10px]"
+                                >
+                                    RK
+                                </div>
+                                <div>
+                                    <p
+                                        class="text-xs font-bold text-slate-900 dark:text-white"
+                                    >
+                                        Rajesh Kumar <span
+                                            class="text-slate-400 font-normal ml-1"
+                                            >&lt;rajesh.k@university.edu&gt;</span
+                                        >
+                                    </p>
+                                    <p class="text-[10px] text-slate-400">
+                                        To: Dr. Sarah Jenkins
+                                        &lt;sarah.j@university.edu&gt;
+                                    </p>
+                                </div>
+                            </div>
+                            <span
+                                class="text-[10px] text-slate-400 whitespace-nowrap"
+                                >10:45 AM</span
+                            >
+                        </div>
+                        <div class="pl-9">
+                            <p
+                                class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed"
+                            >
+                                Aditya has already secured a partial scholarship
+                                from the partner. Screening clear.
+                            </p>
+                        </div>
+                    </div>
+                    <div
+                        class="border-b border-slate-100 dark:border-slate-800 pb-4"
+                    >
+                        <div class="flex justify-between items-start mb-2">
+                            <div class="flex items-center gap-2">
+                                <div
+                                    class="size-7 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold text-[10px]"
+                                >
+                                    SJ
+                                </div>
+                                <div>
+                                    <p class="text-xs font-bold text-primary">
+                                        You <span
+                                            class="text-slate-400 font-normal ml-1"
+                                            >&lt;sarah.j@university.edu&gt;</span
+                                        >
+                                    </p>
+                                    <p class="text-[10px] text-slate-400">
+                                        To: Rajesh Kumar
+                                    </p>
+                                </div>
+                            </div>
+                            <span
+                                class="text-[10px] text-slate-400 whitespace-nowrap"
+                                >11:15 AM</span
+                            >
+                        </div>
+                        <div class="pl-9">
+                            <p
+                                class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed"
+                            >
+                                Reviewing the ECON102 syllabus now. Matches HSS
+                                204 content. Will approve once confirmed.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reply Box -->
+                <div
+                    class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden mt-2 shadow-sm"
+                >
+                    <div
+                        class="p-3 border-b border-slate-100 dark:border-slate-800 flex flex-col gap-2"
+                    >
+                        <div class="flex items-center text-xs gap-2">
+                            <span class="text-slate-400 w-8">To:</span>
+                            <input
+                                class="flex-1 bg-transparent border-none p-0 focus:ring-0 text-slate-700 dark:text-slate-300 font-medium"
+                                type="text"
+                                value="Rajesh Kumar (OGE)"
+                                readonly
+                            />
+                        </div>
+                    </div>
+                    <textarea
+                        class="w-full bg-transparent border-none p-4 text-sm focus:ring-0 min-h-[100px] text-slate-600 dark:text-slate-400"
+                        placeholder="Write a reply..."
+                    ></textarea>
+                    <div
+                        class="p-3 bg-slate-50 dark:bg-slate-800/50 flex justify-between items-center"
+                    >
+                        <div class="flex gap-2 text-slate-400">
+                            <button class="hover:text-primary"
+                                ><span class="material-symbols-outlined text-sm"
+                                    >attach_file</span
+                                ></button
+                            >
+                            <button class="hover:text-primary"
+                                ><span class="material-symbols-outlined text-sm"
+                                    >format_bold</span
+                                ></button
+                            >
+                        </div>
+                        <button
+                            class="bg-primary text-white text-xs font-bold px-4 py-1.5 rounded-lg flex items-center gap-1"
+                        >
+                            <span class="material-symbols-outlined text-xs"
+                                >send</span
+                            > Send Reply
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div
+            class="p-6 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 shadow-lg mt-auto"
+        >
+            <div class="flex flex-col gap-4">
+                <div class="flex gap-3">
+                    <button
+                        class="flex-1 bg-primary hover:bg-primary/90 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                    >
+                        <span class="material-symbols-outlined"
+                            >check_circle</span
+                        > Approve
+                    </button>
+                    <button
+                        class="flex-1 border border-rose-500 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                    >
+                        <span class="material-symbols-outlined">flag</span> Flag
+                        to OGE
+                    </button>
+                </div>
+                <div
+                    class="flex items-start gap-2 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg text-xs text-slate-500"
+                >
+                    <span class="material-symbols-outlined text-sm">info</span>
+                    <p>
+                        Approval will move this application to the <strong
+                            >Partner University Review</strong
+                        > stage. Use 'Flag' for compliance concerns.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </aside>
+</div>
