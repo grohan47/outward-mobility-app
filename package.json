@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server:dev": "node server/httpServer.js",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:init": "node server/scripts/initDb.js",
+    "smoke:server": "node server/scripts/smokeServer.js"
   },
   "dependencies": {
+    "better-sqlite3": "^11.7.2",
     "clsx": "^2.1.0",
+    "express": "^4.21.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.22.0",

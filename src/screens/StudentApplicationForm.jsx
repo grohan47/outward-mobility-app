@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { apiPost } from '../api/client';
 
 const sectionOrder = ['personal', 'academic', 'exchange', 'documents'];
 
@@ -43,6 +44,7 @@ const initialCourseRows = [
 export default function StudentApplicationForm() {
     const { id } = useParams();
     const [searchParams] = useSearchParams();
+    const navigate = useNavigate();
 
     const isNew = id === 'new';
     const isDraft = id === 'draft';
@@ -61,6 +63,8 @@ export default function StudentApplicationForm() {
 
     const [activeSection, setActiveSection] = useState('personal');
     const [showChat, setShowChat] = useState(!isNew && !isDraft);
+    const [submitting, setSubmitting] = useState(false);
+    const [submitMessage, setSubmitMessage] = useState('');
     const [chatMessages, setChatMessages] = useState(initialMessages);
     const [newMessage, setNewMessage] = useState('');
     const [courseRows, setCourseRows] = useState(initialCourseRows);
@@ -124,6 +128,25 @@ export default function StudentApplicationForm() {
             },
         ]);
         setNewMessage('');
+    }
+
+    async function handleSubmitApplication() {
+        setSubmitting(true);
+        setSubmitMessage('');
+        try {
+            await apiPost('/api/applications', {
+                studentProfileId: 1,
+                opportunityId: 1,
+            });
+            setSubmitMessage('Application submitted successfully. Redirecting...');
+            setTimeout(() => {
+                navigate('/student/applications');
+            }, 400);
+        } catch (error) {
+            setSubmitMessage(error.message || 'Failed to submit application.');
+        } finally {
+            setSubmitting(false);
+        }
     }
 
     return (
@@ -469,12 +492,20 @@ export default function StudentApplicationForm() {
                             {isNew ? 'Save Draft' : 'Update Application'}
                         </button>
                         {isNew && (
-                            <button className="px-6 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:bg-green-600 transition-colors shadow-lg shadow-primary/20">
-                                Submit
+                            <button
+                                type="button"
+                                onClick={handleSubmitApplication}
+                                disabled={submitting}
+                                className="px-6 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:bg-green-600 transition-colors shadow-lg shadow-primary/20 disabled:opacity-50"
+                            >
+                                {submitting ? 'Submitting...' : 'Submit'}
                             </button>
                         )}
                     </div>
                 </div>
+                {submitMessage && (
+                    <p className="max-w-3xl mx-auto mt-2 text-xs text-slate-500">{submitMessage}</p>
+                )}
             </div>
         </div>
     );

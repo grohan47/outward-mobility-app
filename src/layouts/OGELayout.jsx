@@ -3,7 +3,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 
 const headerNavItems = [
     { to: '/oge', label: 'Dashboard', isActive: (pathname) => pathname === '/oge' },
-    { to: '/oge/application/APP-1', label: 'Applications', isActive: (pathname) => pathname.includes('/oge/application/') },
+    { to: '/oge/application/1', label: 'Applications', isActive: (pathname) => pathname.includes('/oge/application/') },
     { to: '#', label: 'Analytics', isActive: () => false },
     { to: '#', label: 'Settings', isActive: () => false },
 ];

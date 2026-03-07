@@ -13,6 +13,11 @@ pnpm-debug.log*
 .env
 .env.*
 
+# Local SQLite files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
 # OS/editor files
 .DS_Store
 Thumbs.db

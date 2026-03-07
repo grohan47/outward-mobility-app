@@ -1,6 +1,54 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { apiGet } from '../api/client';
 
 export default function OGEMasterDashboard() {
+    const [rows, setRows] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        let mounted = true;
+        async function load() {
+            setLoading(true);
+            setError('');
+            try {
+                const data = await apiGet('/api/applications');
+                if (!mounted) {
+                    return;
+                }
+
+                const mapped = (data.items ?? []).map((item) => ({
+                    id: item.id,
+                    student: item.student_user?.full_name ?? 'Unknown Student',
+                    initials: (item.student_user?.full_name ?? 'US').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase(),
+                    university: item.opportunity?.destination ?? 'Unknown',
+                    stage: item.current_stage,
+                    stageColor: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
+                    progress: Math.max(1, ['STUDENT_SUBMISSION', 'UG_ACADEMICS', 'STUDENT_LIFE', 'PROGRAM_CHAIR', 'OGE', 'DEAN', 'CLOSED'].indexOf(item.current_stage)),
+                    timeColor: 'bg-orange-400',
+                    timeLabel: item.final_status ?? 'In Progress',
+                    timeClass: item.final_status ? 'text-green-600' : 'text-orange-500',
+                    flags: [],
+                    width: item.final_status ? '100%' : '60%',
+                }));
+                setRows(mapped);
+            } catch (err) {
+                if (mounted) {
+                    setError(err.message || 'Failed to load applications');
+                }
+            } finally {
+                if (mounted) {
+                    setLoading(false);
+                }
+            }
+        }
+        load();
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
     return (
         <>
             <div className="flex flex-wrap items-center gap-2 mb-4 text-sm text-slate-500 dark:text-slate-400">
@@ -34,6 +82,8 @@ export default function OGEMasterDashboard() {
                 </button>
             </div>
             <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                {loading && <div className="px-6 py-4 text-sm text-slate-500">Loading applications...</div>}
+                {error && <div className="px-6 py-4 text-sm text-red-500">{error}</div>}
                 <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                         <thead className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-800">
@@ -47,10 +97,7 @@ export default function OGEMasterDashboard() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {[
-                                { student: 'Arjun Sharma', initials: 'AS', id: 'PL-2024-001', university: 'UC Berkeley', stage: 'Student Life Review', stageColor: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300', progress: 2, timeColor: 'bg-red-500', timeLabel: '1 Day Left', timeClass: 'text-red-600', flags: ['description', 'priority_high'], width: '85%' },
-                                { student: 'Meera Kapoor', initials: 'MK', id: 'PL-2024-042', university: 'UPenn', stage: 'Academic Verification', stageColor: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300', progress: 1, timeColor: 'bg-orange-400', timeLabel: '3 Days Left', timeClass: 'text-orange-500', flags: ['remove_circle_outline'], width: '60%' },
-                            ].map((row) => (
+                            {rows.map((row) => (
                                 <tr key={row.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <div className="flex items-center gap-3">
@@ -88,7 +135,7 @@ export default function OGEMasterDashboard() {
                                         </div>
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
-                                        <button className="text-slate-400 hover:text-primary transition-colors"><span className="material-symbols-outlined">more_vert</span></button>
+                                        <Link className="text-slate-400 hover:text-primary transition-colors" to={`/oge/application/${row.id}`}><span className="material-symbols-outlined">open_in_new</span></Link>
                                     </td>
                                 </tr>
                             ))}

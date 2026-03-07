@@ -1,0 +1,15 @@
+export const TABLES = Object.freeze({
+    USERS: "users",
+    ROLES: "roles",
+    USER_ROLES: "user_roles",
+    STUDENT_PROFILES: "student_profiles",
+    OPPORTUNITIES: "opportunities",
+    WORKFLOW_STAGES: "workflow_stages",
+    APPLICATIONS: "applications",
+    APPLICATION_STUDENT_SNAPSHOT: "application_student_snapshot",
+    APPLICATION_DOCUMENTS: "application_documents",
+    APPLICATION_REVIEWS: "application_reviews",
+    APPLICATION_DECISIONS: "application_decisions",
+    APPLICATION_REMARKS: "application_remarks",
+    TIMELINE_EVENTS: "timeline_events",
+});

@@ -1,11 +1,86 @@
-import React from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { apiGet, apiPost } from '../api/client';
 
 export default function StudentApplicationsList() {
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [applications, setApplications] = useState([]);
+    const [timelines, setTimelines] = useState({});
+    const [actionMessage, setActionMessage] = useState('');
+
+    const loadData = useCallback(async () => {
+        setLoading(true);
+        setError('');
+        try {
+            const list = await apiGet('/api/applications?studentProfileId=1');
+            const items = list.items ?? [];
+            const detailPromises = items.map((item) => apiGet(`/api/applications/${item.id}`));
+            const details = await Promise.all(detailPromises);
+            setApplications(items);
+            const timelineMap = {};
+            for (const detail of details) {
+                timelineMap[detail.application.id] = detail.timeline ?? [];
+            }
+            setTimelines(timelineMap);
+        } catch (err) {
+            setError(err.message || 'Failed to load applications.');
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadData();
+    }, [loadData]);
+
+    const activeApplications = useMemo(
+        () => applications.filter((application) => !application.final_status),
+        [applications]
+    );
+
+    async function handleWithdraw(applicationId) {
+        setActionMessage('');
+        try {
+            await apiPost(`/api/applications/${applicationId}/withdraw`, { actorUserId: 1 });
+            setActionMessage(`Application APP-${applicationId} withdrawn.`);
+            await loadData();
+        } catch (err) {
+            setActionMessage(err.message || 'Failed to withdraw application.');
+        }
+    }
+
+    if (loading) {
+        return <div className="max-w-4xl mx-auto py-8 text-slate-500">Loading applications...</div>;
+    }
+
+    if (error) {
+        return <div className="max-w-4xl mx-auto py-8 text-red-500">{error}</div>;
+    }
+
+    if (applications.length === 0) {
+        return <div className="max-w-4xl mx-auto py-8 text-slate-500">No application found for this student.</div>;
+    }
+
     return (
         <div className="max-w-4xl mx-auto py-8">
-            <h3 className="text-xl font-bold mb-6 text-slate-900 dark:text-white">Active Applications</h3>
+            <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white">Active Applications</h3>
+                <button
+                    type="button"
+                    onClick={loadData}
+                    className="text-xs font-semibold px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
+                >
+                    Refresh
+                </button>
+            </div>
 
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm mb-6">
+            {actionMessage && <p className="text-xs text-slate-500 mb-4">{actionMessage}</p>}
+
+            {activeApplications.map((application) => {
+                const history = timelines[application.id] ?? [];
+                return (
+            <div key={application.id} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm mb-6">
                 <div className="p-6">
                     <div className="flex justify-between items-start mb-6">
                         <div className="flex gap-4">
@@ -17,11 +92,11 @@ export default function StudentApplicationsList() {
                                 />
                             </div>
                             <div>
-                                <h4 className="text-xl font-bold text-slate-900 dark:text-white">National University of Singapore</h4>
-                                <p className="text-slate-500 text-sm">Global Exchange Program 2024</p>
+                                <h4 className="text-xl font-bold text-slate-900 dark:text-white">{application.opportunity?.destination ?? 'Unknown Destination'}</h4>
+                                <p className="text-slate-500 text-sm">{application.opportunity?.title ?? 'Exchange Opportunity'}</p>
                                 <div className="flex items-center gap-2 mt-2">
-                                    <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">Under Review</span>
-                                    <span className="text-xs text-slate-400">ID: APP-2024-001</span>
+                                    <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded font-bold">{application.final_status ?? 'Under Review'}</span>
+                                    <span className="text-xs text-slate-400">ID: APP-{application.id}</span>
                                 </div>
                             </div>
                         </div>
@@ -31,28 +106,24 @@ export default function StudentApplicationsList() {
                     </div>
 
                     <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-4 border border-slate-100 dark:border-slate-800 mb-6">
-                        <h5 className="text-sm font-bold text-slate-900 dark:text-white mb-2">Current Status: Program Chair Review</h5>
+                        <h5 className="text-sm font-bold text-slate-900 dark:text-white mb-2">Current Status: {application.current_stage}</h5>
                         <p className="text-xs text-slate-500 leading-relaxed">
-                            Your application has passed OGE initial screening and is now being reviewed by the Program Chair for course compatibility. Expected completion: 2 days.
+                            This application is currently tracked in the integrated SQLite workflow pipeline.
                         </p>
                     </div>
 
                     <div className="border-t border-slate-100 dark:border-slate-800 pt-6">
                         <h5 className="text-sm font-bold text-slate-900 dark:text-white mb-4">Application History</h5>
                         <div className="space-y-4">
-                            {[
-                                { label: 'Submitted Application', date: 'Oct 20, 2023', current: false },
-                                { label: 'OGE Screening Passed', date: 'Oct 22, 2023', current: false },
-                                { label: 'Program Chair Review', date: 'In Progress', current: true },
-                            ].map((item) => (
-                                <div key={item.label} className="flex gap-3">
+                            {history.map((event, index) => (
+                                <div key={`${event.event_type}-${event.id ?? index}`} className="flex gap-3">
                                     <div className="flex flex-col items-center">
-                                        <div className={`size-2 rounded-full ${item.current ? 'border-2 border-primary bg-white dark:bg-slate-900' : 'bg-primary'}`}></div>
-                                        {!item.current && <div className="w-0.5 bg-slate-200 dark:bg-slate-800 flex-1 my-1"></div>}
+                                        <div className={`size-2 rounded-full ${index === history.length - 1 ? 'border-2 border-primary bg-white dark:bg-slate-900' : 'bg-primary'}`}></div>
+                                        {index !== history.length - 1 && <div className="w-0.5 bg-slate-200 dark:bg-slate-800 flex-1 my-1"></div>}
                                     </div>
                                     <div>
-                                        <p className={`text-xs font-bold ${item.current ? 'text-primary' : 'text-slate-900 dark:text-white'}`}>{item.label}</p>
-                                        <p className="text-[10px] text-slate-400">{item.date}</p>
+                                        <p className={`text-xs font-bold ${index === history.length - 1 ? 'text-primary' : 'text-slate-900 dark:text-white'}`}>{event.event_type}</p>
+                                        <p className="text-[10px] text-slate-400">{new Date(event.created_at).toLocaleString()}</p>
                                     </div>
                                 </div>
                             ))}
@@ -61,10 +132,22 @@ export default function StudentApplicationsList() {
                 </div>
 
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
-                    <button className="text-sm text-slate-600 font-medium hover:text-slate-900">Withdraw Application</button>
-                    <button className="bg-white border border-slate-300 text-slate-700 text-sm font-bold px-4 py-2 rounded-lg hover:bg-slate-50 shadow-sm">View Full Dossier</button>
+                    <button
+                        type="button"
+                        onClick={() => handleWithdraw(application.id)}
+                        className="text-sm text-slate-600 font-medium hover:text-slate-900"
+                    >
+                        Withdraw Application
+                    </button>
+                    <Link to={`/student/application/${application.id}`} className="bg-white border border-slate-300 text-slate-700 text-sm font-bold px-4 py-2 rounded-lg hover:bg-slate-50 shadow-sm inline-block">View Full Dossier</Link>
                 </div>
             </div>
+                );
+            })}
+
+            {activeApplications.length === 0 && (
+                <p className="text-sm text-slate-500">No active applications. Closed/withdrawn applications are excluded from this view.</p>
+            )}
         </div>
     );
 }

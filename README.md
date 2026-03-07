@@ -12,6 +12,7 @@ It includes role-based screens for:
 ## What Is In This Repo
 
 - React app source code in `src/`
+- Backend workflow/database scaffold in `server/`
 - Routing setup in `src/App.jsx`
 - Shared layouts in `src/layouts/`
 - Reusable components in `src/components/`
@@ -31,9 +32,17 @@ npm install
 npm run dev
 ```
 
+If you are using API-integrated screens, run backend API in another terminal:
+
+```bash
+npm run server:dev
+```
+
 3. Open in browser:
 
 `http://localhost:5173/`
+
+Note: Vite proxies `/api/*` requests to `http://localhost:8787` in development.
 
 ## Build For Production
 
@@ -42,6 +51,42 @@ npm run build
 ```
 
 The production output is generated in `dist/` (not committed to git).
+
+## Backend Scaffold (V1)
+
+The project now includes a minimal backend-oriented structure for PRISM workflow and database implementation planning.
+
+- `server/config/`:
+	- `workflow.js` stage order and decision constants
+	- `roles.js` role constants and reject rules
+	- `visibility.js` visibility scopes
+- `server/db/`:
+	- `tableCatalog.js` canonical table names
+	- `schemaPlan.js` table-to-fields planning map
+- `server/repositories/`:
+	- SQLite-backed repository classes
+- `server/services/`:
+	- `workflowService.js` stage transition logic
+	- `accessService.js` visibility and role checks
+	- `applicationService.js`, `reviewService.js` orchestration
+- `server/index.js`:
+	- composition root to wire repos and services
+
+Initialize local DB schema (with demo seed):
+
+```bash
+npm run db:init
+```
+
+Run a quick backend smoke test:
+
+```bash
+npm run smoke:server
+```
+
+Expected output:
+
+`server-smoke-ok`
 
 ## Main Routes
 
@@ -58,5 +103,9 @@ The production output is generated in `dist/` (not committed to git).
 
 ## Notes
 
-- This repo is frontend-focused (UI and routing).
-- API/database integration can be added in a backend service when required.
+- This repo contains both frontend (React/Vite) and backend (Express + SQLite) components.
+- Core submit/review/withdraw API flows are implemented; additional endpoints can be incrementally added.
+
+## Review Prep
+
+- `docs/CODE_REVIEW_READINESS.md` contains the viva-ready summary for product pitch, user journeys, databases, APIs, and implementation status.

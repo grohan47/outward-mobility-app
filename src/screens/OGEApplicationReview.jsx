@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { apiGet, apiPost } from '../api/client';
 
 const navSections = [
     { id: 'personal', label: 'Personal Information' },
@@ -8,11 +10,68 @@ const navSections = [
 ];
 
 export default function OGEApplicationReview() {
+    const { id } = useParams();
     const [activeSection, setActiveSection] = useState('personal');
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [appData, setAppData] = useState(null);
+    const [actionMessage, setActionMessage] = useState('');
+
+    useEffect(() => {
+        let mounted = true;
+        async function load() {
+            setLoading(true);
+            setError('');
+            try {
+                const data = await apiGet(`/api/applications/${id}`);
+                if (mounted) {
+                    setAppData(data);
+                }
+            } catch (err) {
+                if (mounted) {
+                    setError(err.message || 'Failed to load application');
+                }
+            } finally {
+                if (mounted) {
+                    setLoading(false);
+                }
+            }
+        }
+        load();
+        return () => {
+            mounted = false;
+        };
+    }, [id]);
+
+    async function submitDecision(decision) {
+        try {
+            const response = await apiPost('/api/reviews/submit', {
+                applicationId: Number(id),
+                reviewerUserId: 99,
+                reviewerRole: 'OGE_ADMIN',
+                decision,
+                remarks: `OGE ${decision.toLowerCase()} action from review screen.`,
+                visibilityScope: 'INTERNAL',
+            });
+            setActionMessage(`Decision recorded: ${decision}`);
+            const refreshed = await apiGet(`/api/applications/${response.application.id}`);
+            setAppData(refreshed);
+        } catch (err) {
+            setActionMessage(err.message || 'Failed to submit decision');
+        }
+    }
 
     function scrollToSection(sectionId) {
         setActiveSection(sectionId);
         document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    if (loading) {
+        return <div className="p-6 text-slate-500">Loading application review...</div>;
+    }
+
+    if (error) {
+        return <div className="p-6 text-red-500">{error}</div>;
     }
 
     return (
@@ -83,11 +142,11 @@ export default function OGEApplicationReview() {
                 <div className="max-w-3xl mx-auto py-8 px-6 space-y-10">
                     <header className="flex items-center justify-between pb-2">
                         <div>
-                            <h1 className="text-2xl font-black text-slate-900 dark:text-white">Arjun Sharma</h1>
-                            <p className="text-slate-500 dark:text-slate-400 mt-1">Application for Fall 2024 • Computer Science</p>
+                            <h1 className="text-2xl font-black text-slate-900 dark:text-white">{appData?.student_user?.full_name ?? 'Unknown Student'}</h1>
+                            <p className="text-slate-500 dark:text-slate-400 mt-1">Application #{appData?.application?.id} • {appData?.student_profile?.program ?? 'Program N/A'}</p>
                         </div>
                         <div className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-xs font-bold uppercase tracking-wide border border-blue-200 dark:border-blue-800">
-                            Submitted
+                            {appData?.application?.current_stage ?? 'Submitted'}
                         </div>
                     </header>
 
@@ -229,22 +288,23 @@ export default function OGEApplicationReview() {
 
             <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 p-4 z-40 lg:pl-64">
                 <div className="max-w-3xl mx-auto flex items-center justify-between">
-                    <p className="text-xs text-slate-500">Review status: <span className="font-bold text-blue-600">Pending Review</span></p>
+                    <p className="text-xs text-slate-500">Review status: <span className="font-bold text-blue-600">{appData?.application?.final_status ?? 'Pending Review'}</span></p>
                     <div className="flex gap-3">
                         <button className="px-5 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-sm hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-2">
                             <span className="material-symbols-outlined text-[18px]">chat</span>
                             Request Clarification
                         </button>
-                        <button className="px-5 py-2.5 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 font-bold text-sm hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors flex items-center gap-2">
+                        <button type="button" onClick={() => submitDecision('REJECT')} className="px-5 py-2.5 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 font-bold text-sm hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors flex items-center gap-2">
                             <span className="material-symbols-outlined text-[18px]">block</span>
                             Reject
                         </button>
-                        <button className="px-5 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:bg-green-600 transition-colors shadow-lg shadow-primary/20 flex items-center gap-2">
+                        <button type="button" onClick={() => submitDecision('APPROVE')} className="px-5 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:bg-green-600 transition-colors shadow-lg shadow-primary/20 flex items-center gap-2">
                             <span className="material-symbols-outlined text-[18px]">check_circle</span>
                             Approve for Next Stage
                         </button>
                     </div>
                 </div>
+                {actionMessage && <p className="max-w-3xl mx-auto mt-2 text-xs text-slate-500">{actionMessage}</p>}
             </div>
         </div>
     );
