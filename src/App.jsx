@@ -5,6 +5,12 @@ import OGEMasterDashboard from './screens/OGEMasterDashboard';
 import ProgramChairReview from './screens/ProgramChairReview';
 import StudentLifeReview from './screens/StudentLifeReview';
 import DeanFinalApproval from './screens/DeanFinalApproval';
+import StudentLayout from './layouts/StudentLayout';
+import OGELayout from './layouts/OGELayout';
+import StudentApplicationForm from './screens/StudentApplicationForm';
+import StudentApplicationsList from './screens/StudentApplicationsList';
+import StudentMessages from './screens/StudentMessages';
+import OGEApplicationReview from './screens/OGEApplicationReview';
 
 function Home() {
     return (
@@ -46,8 +52,16 @@ export default function App() {
         <Router>
             <Routes>
                 <Route path="/" element={<Home />} />
-                <Route path="/student" element={<StudentDashboard />} />
-                <Route path="/oge" element={<OGEMasterDashboard />} />
+                <Route path="/student" element={<StudentLayout />}>
+                    <Route index element={<StudentDashboard />} />
+                    <Route path="applications" element={<StudentApplicationsList />} />
+                    <Route path="application/:id" element={<StudentApplicationForm />} />
+                    <Route path="messages" element={<StudentMessages />} />
+                </Route>
+                <Route path="/oge" element={<OGELayout />}>
+                    <Route index element={<OGEMasterDashboard />} />
+                    <Route path="application/:id" element={<OGEApplicationReview />} />
+                </Route>
                 <Route path="/program-chair/:id" element={<ProgramChairReview />} />
                 <Route path="/student-life/:id" element={<StudentLifeReview />} />
                 <Route path="/dean/:id" element={<DeanFinalApproval />} />
