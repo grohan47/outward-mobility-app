@@ -48,7 +48,7 @@ export default function OGEApplicationReview() {
             const response = await apiPost('/api/reviews/submit', {
                 applicationId: Number(id),
                 reviewerUserId: 99,
-                reviewerRole: 'OGE_ADMIN',
+                reviewerRole: 'OGE',
                 decision,
                 remarks: `OGE ${decision.toLowerCase()} action from review screen.`,
                 visibilityScope: 'INTERNAL',
@@ -146,7 +146,7 @@ export default function OGEApplicationReview() {
                             <p className="text-slate-500 dark:text-slate-400 mt-1">Application #{appData?.application?.id} • {appData?.student_profile?.program ?? 'Program N/A'}</p>
                         </div>
                         <div className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 text-xs font-bold uppercase tracking-wide border border-blue-200 dark:border-blue-800">
-                            {appData?.application?.current_stage ?? 'Submitted'}
+                            {appData?.workflow?.stageLabel ?? appData?.application?.current_stage ?? 'Submitted'}
                         </div>
                     </header>
 
@@ -288,11 +288,15 @@ export default function OGEApplicationReview() {
 
             <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 p-4 z-40 lg:pl-64">
                 <div className="max-w-3xl mx-auto flex items-center justify-between">
-                    <p className="text-xs text-slate-500">Review status: <span className="font-bold text-blue-600">{appData?.application?.final_status ?? 'Pending Review'}</span></p>
+                    <p className="text-xs text-slate-500">Review status: <span className="font-bold text-blue-600">{appData?.application?.final_status ?? `Pending with ${appData?.workflow?.currentStakeholder ?? 'Reviewer'}`}</span></p>
                     <div className="flex gap-3">
                         <button className="px-5 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-sm hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-2">
                             <span className="material-symbols-outlined text-[18px]">chat</span>
                             Request Clarification
+                        </button>
+                        <button type="button" onClick={() => submitDecision('FLAG')} className="px-5 py-2.5 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-900/10 text-amber-700 dark:text-amber-400 font-bold text-sm hover:bg-amber-100 dark:hover:bg-amber-900/20 transition-colors flex items-center gap-2">
+                            <span className="material-symbols-outlined text-[18px]">flag</span>
+                            Flag to Student
                         </button>
                         <button type="button" onClick={() => submitDecision('REJECT')} className="px-5 py-2.5 rounded-lg border border-red-200 bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 font-bold text-sm hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors flex items-center gap-2">
                             <span className="material-symbols-outlined text-[18px]">block</span>

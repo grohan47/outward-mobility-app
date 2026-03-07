@@ -76,10 +76,10 @@ export default function StudentDashboard() {
                                         <div className="grid grid-cols-5 gap-0 relative z-10">
                                             {[
                                                 { label: 'Submission', status: 'done' },
-                                                { label: 'UG Office', status: 'done' },
-                                                { label: 'Chair', status: 'current' },
+                                                { label: 'Student Life', status: 'done' },
+                                                { label: 'Program Chair', status: 'current' },
                                                 { label: 'OGE', status: 'todo' },
-                                                { label: 'Dean', status: 'todo' },
+                                                { label: 'Dean Academics', status: 'todo' },
                                             ].map((step) => (
                                                 <div key={step.label} className="flex flex-col items-center text-center">
                                                     <div className={`size-5 rounded-full flex items-center justify-center text-white ring-4 ring-white dark:ring-slate-900 ${step.status === 'done' ? 'bg-primary' : step.status === 'current' ? 'bg-white dark:bg-slate-900 border border-primary text-primary' : 'bg-white dark:bg-slate-900 border border-slate-200 text-slate-300'}`}>

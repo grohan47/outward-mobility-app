@@ -1,7 +1,8 @@
 export async function apiGet(path) {
     const response = await fetch(path);
     if (!response.ok) {
-        throw new Error(`GET ${path} failed: ${response.status}`);
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `GET ${path} failed: ${response.status}`);
     }
     return response.json();
 }

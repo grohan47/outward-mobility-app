@@ -2,6 +2,16 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiGet } from '../api/client';
 
+const FRONTEND_WORKFLOW_ORDER = ['STUDENT_SUBMISSION', 'STUDENT_LIFE', 'PROGRAM_CHAIR', 'OGE', 'DEAN'];
+
+function getProgressForStage(stageCode, finalStatus) {
+    if (finalStatus) {
+        return FRONTEND_WORKFLOW_ORDER.length;
+    }
+    const index = FRONTEND_WORKFLOW_ORDER.indexOf(stageCode);
+    return index >= 0 ? index + 1 : 1;
+}
+
 export default function OGEMasterDashboard() {
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -23,9 +33,10 @@ export default function OGEMasterDashboard() {
                     student: item.student_user?.full_name ?? 'Unknown Student',
                     initials: (item.student_user?.full_name ?? 'US').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase(),
                     university: item.opportunity?.destination ?? 'Unknown',
-                    stage: item.current_stage,
+                    stage: item.workflow?.stageLabel ?? item.current_stage,
+                    stakeholder: item.workflow?.currentStakeholder ?? 'Unknown',
                     stageColor: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
-                    progress: Math.max(1, ['STUDENT_SUBMISSION', 'UG_ACADEMICS', 'STUDENT_LIFE', 'PROGRAM_CHAIR', 'OGE', 'DEAN', 'CLOSED'].indexOf(item.current_stage)),
+                    progress: getProgressForStage(item.current_stage, item.final_status),
                     timeColor: 'bg-orange-400',
                     timeLabel: item.final_status ?? 'In Progress',
                     timeClass: item.final_status ? 'text-green-600' : 'text-orange-500',
@@ -112,6 +123,7 @@ export default function OGEMasterDashboard() {
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <div className="flex flex-col gap-2">
                                             <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${row.stageColor}`}>{row.stage}</span>
+                                            <span className="text-[10px] text-slate-500">Owner: {row.stakeholder}</span>
                                             <div className="flex gap-1 w-24">
                                                 {Array.from({ length: 5 }).map((_, index) => (
                                                     <div key={`${row.id}-${index}`} className={`h-1 flex-1 rounded-full ${index < row.progress ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}></div>

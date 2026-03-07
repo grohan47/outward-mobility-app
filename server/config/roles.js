@@ -1,6 +1,5 @@
 export const ROLES = Object.freeze({
     STUDENT: "STUDENT",
-    UG_ACADEMICS: "UG_ACADEMICS",
     STUDENT_LIFE: "STUDENT_LIFE",
     PROGRAM_CHAIR: "PROGRAM_CHAIR",
     OGE_ADMIN: "OGE_ADMIN",
@@ -8,7 +7,6 @@ export const ROLES = Object.freeze({
 });
 
 export const REVIEWER_ROLES = Object.freeze([
-    ROLES.UG_ACADEMICS,
     ROLES.STUDENT_LIFE,
     ROLES.PROGRAM_CHAIR,
     ROLES.OGE_ADMIN,

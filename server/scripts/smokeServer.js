@@ -10,7 +10,7 @@ const created = app.services.applicationService.createApplication({
 const updated = app.services.reviewService.submitReview({
     applicationId: created.id,
     reviewerUserId: 99,
-    reviewerRole: "UG_ACADEMICS",
+    reviewerRole: "STUDENT_LIFE",
     decision: "APPROVE",
     remarks: "Verified and approved.",
 });

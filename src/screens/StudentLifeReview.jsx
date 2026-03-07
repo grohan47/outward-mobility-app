@@ -2,10 +2,10 @@ import React from 'react';
 
 export default function StudentLifeReview() {
     return (
-        <div className="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen font-display">
-            <div className="flex h-screen overflow-hidden">
+        <div className="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen font-display overflow-x-hidden">
+            <div className="flex min-h-screen flex-col">
                 {/* Header */}
-                <header className="flex items-center justify-between border-b border-solid border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-10 py-3 sticky top-0 z-50 w-full absolute top-0 left-0 right-0 h-[65px]">
+                <header className="flex items-center justify-between border-b border-solid border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 md:px-6 lg:px-10 py-3 sticky top-0 z-50 h-[65px]">
                     <div className="flex items-center gap-8">
                         <div className="flex items-center gap-4 text-primary">
                             <div className="size-8 flex items-center justify-center bg-primary/10 rounded-lg">
@@ -13,7 +13,7 @@ export default function StudentLifeReview() {
                             </div>
                             <h2 className="text-slate-900 dark:text-white text-lg font-bold leading-tight tracking-tight">PRISM</h2>
                         </div>
-                        <label className="flex flex-col min-w-40 h-10 max-w-64">
+                        <label className="hidden md:flex flex-col min-w-40 h-10 max-w-64">
                             <div className="flex w-full flex-1 items-stretch rounded-lg h-full overflow-hidden">
                                 <div className="text-slate-500 flex bg-slate-100 dark:bg-slate-800 items-center justify-center pl-4">
                                     <span className="material-symbols-outlined text-[20px]">search</span>
@@ -22,8 +22,8 @@ export default function StudentLifeReview() {
                             </div>
                         </label>
                     </div>
-                    <div className="flex flex-1 justify-end gap-8">
-                        <nav className="flex items-center gap-9">
+                    <div className="flex flex-1 justify-end gap-4 lg:gap-8">
+                        <nav className="hidden lg:flex items-center gap-9">
                             <a href="#" className="text-slate-600 dark:text-slate-300 text-sm font-medium hover:text-primary transition-colors">Dashboard</a>
                             <a href="#" className="text-primary text-sm font-medium border-b-2 border-primary py-1">Applications</a>
                             <a href="#" className="text-slate-600 dark:text-slate-300 text-sm font-medium hover:text-primary transition-colors">Reports</a>
@@ -35,8 +35,8 @@ export default function StudentLifeReview() {
                     </div>
                 </header>
 
-                <div className="flex flex-1 pt-[65px] h-full w-full">
-                    <aside className="w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 flex flex-col gap-6 shrink-0 h-full">
+                <div className="flex flex-1 min-h-0 w-full">
+                    <aside className="hidden lg:flex w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 flex-col gap-6 shrink-0 h-full">
                         <div>
                             <h1 className="text-slate-900 dark:text-white text-base font-bold">Application Review</h1>
                             <p className="text-primary text-xs font-semibold uppercase tracking-wider mt-1">ID: #APP-2024-9872</p>
@@ -64,14 +64,14 @@ export default function StudentLifeReview() {
                         </div>
                     </aside>
 
-                    <section className="flex-1 overflow-y-auto p-8 bg-background-light dark:bg-background-dark">
-                        <div className="max-w-4xl mx-auto space-y-8">
-                            <div className="flex items-start justify-between">
-                                <div className="flex gap-6 items-center">
+                    <section className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 bg-background-light dark:bg-background-dark">
+                        <div className="max-w-5xl mx-auto space-y-8">
+                            <div className="flex flex-col xl:flex-row xl:items-start justify-between gap-4">
+                                <div className="flex gap-4 sm:gap-6 items-center min-w-0">
                                     <div className="size-24 rounded-full border-4 border-white dark:border-slate-800 shadow-sm overflow-hidden bg-slate-200 shrink-0">
                                         <img src="https://lh3.googleusercontent.com/aida-public/AB6AXuCRlKshnDammZV2A7Gn0QH7FXTjNqz2dK_qXr5NGg1bAU91V9otOFL_40-xvb7RNDW_0QAoAvIGZi4k-LcuM3fa-ZmN0H2xVKqylpeA7NOv9BzpCqXfl0JktKVFpFGg4uRy6Ut3bWus1p0fYWcuv1NIYGc0t-eAZGqaM6tZK-aTkAVN3fZau74gW-WPIEGWPX-XFq7POQroeOBzDWgEoSULPTaJRq_dQknVkzD-pWNcA2JpKQshITD6z2sCV_jwhPaTyjxZBX009g" alt="Portrait" className="w-full h-full object-cover" />
                                     </div>
-                                    <div>
+                                    <div className="min-w-0">
                                         <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">Alex Johnson</h2>
                                         <p className="text-slate-500 dark:text-slate-400 font-medium">Applied for: Semester Exchange 2024</p>
                                         <div className="flex gap-2 mt-2">
@@ -80,7 +80,7 @@ export default function StudentLifeReview() {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex gap-3">
+                                <div className="flex gap-3 self-start xl:self-auto">
                                     <button className="px-5 py-2.5 rounded-lg border border-red-200 dark:border-red-900/30 bg-red-50 dark:bg-red-900/10 text-red-600 dark:text-red-400 font-bold text-sm flex items-center gap-2 hover:bg-red-100 dark:hover:bg-red-900/20 transition-all">
                                         <span className="material-symbols-outlined text-[20px]">flag</span>
                                         Flag
@@ -125,7 +125,7 @@ export default function StudentLifeReview() {
                         </div>
                     </section>
 
-                    <aside className="w-[380px] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col shrink-0 h-full">
+                    <aside className="hidden 2xl:flex w-[360px] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex-col shrink-0 h-full">
                         <div className="p-4 border-b border-slate-200 dark:border-slate-800">
                             <div className="flex justify-between items-center mb-4">
                                 <h3 className="font-bold text-slate-900 dark:text-white flex items-center gap-2 text-sm uppercase tracking-wider">

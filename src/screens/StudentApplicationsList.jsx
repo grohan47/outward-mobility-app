@@ -2,6 +2,19 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { apiGet, apiPost } from '../api/client';
 
+const STAGE_LABELS = Object.freeze({
+    STUDENT_SUBMISSION: 'Student Submission',
+    STUDENT_LIFE: 'Student Life Review',
+    PROGRAM_CHAIR: 'Program Chair Review',
+    OGE: 'OGE Office Review',
+    DEAN: 'Dean of Academics Review',
+    CLOSED: 'Closed',
+});
+
+function getStageLabel(application) {
+    return application.workflow?.stageLabel ?? STAGE_LABELS[application.current_stage] ?? application.current_stage;
+}
+
 export default function StudentApplicationsList() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -39,14 +52,14 @@ export default function StudentApplicationsList() {
         [applications]
     );
 
-    async function handleWithdraw(applicationId) {
+    async function handleResubmit(applicationId) {
         setActionMessage('');
         try {
-            await apiPost(`/api/applications/${applicationId}/withdraw`, { actorUserId: 1 });
-            setActionMessage(`Application APP-${applicationId} withdrawn.`);
+            await apiPost(`/api/applications/${applicationId}/resubmit`, { actorUserId: 1 });
+            setActionMessage(`Application APP-${applicationId} resubmitted to Student Life review.`);
             await loadData();
         } catch (err) {
-            setActionMessage(err.message || 'Failed to withdraw application.');
+            setActionMessage(err.message || 'Failed to resubmit application.');
         }
     }
 
@@ -106,7 +119,7 @@ export default function StudentApplicationsList() {
                     </div>
 
                     <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-4 border border-slate-100 dark:border-slate-800 mb-6">
-                        <h5 className="text-sm font-bold text-slate-900 dark:text-white mb-2">Current Status: {application.current_stage}</h5>
+                        <h5 className="text-sm font-bold text-slate-900 dark:text-white mb-2">Current Status: {getStageLabel(application)}</h5>
                         <p className="text-xs text-slate-500 leading-relaxed">
                             This application is currently tracked in the integrated SQLite workflow pipeline.
                         </p>
@@ -132,13 +145,15 @@ export default function StudentApplicationsList() {
                 </div>
 
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-3">
-                    <button
-                        type="button"
-                        onClick={() => handleWithdraw(application.id)}
-                        className="text-sm text-slate-600 font-medium hover:text-slate-900"
-                    >
-                        Withdraw Application
-                    </button>
+                    {application.current_stage === 'STUDENT_SUBMISSION' && !application.final_status && (
+                        <button
+                            type="button"
+                            onClick={() => handleResubmit(application.id)}
+                            className="text-sm text-blue-700 font-medium hover:text-blue-900"
+                        >
+                            Resubmit to Student Life
+                        </button>
+                    )}
                     <Link to={`/student/application/${application.id}`} className="bg-white border border-slate-300 text-slate-700 text-sm font-bold px-4 py-2 rounded-lg hover:bg-slate-50 shadow-sm inline-block">View Full Dossier</Link>
                 </div>
             </div>
@@ -146,7 +161,7 @@ export default function StudentApplicationsList() {
             })}
 
             {activeApplications.length === 0 && (
-                <p className="text-sm text-slate-500">No active applications. Closed/withdrawn applications are excluded from this view.</p>
+                <p className="text-sm text-slate-500">No active applications. Closed applications are excluded from this view.</p>
             )}
         </div>
     );

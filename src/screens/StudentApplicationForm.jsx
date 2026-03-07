@@ -134,9 +134,13 @@ export default function StudentApplicationForm() {
         setSubmitting(true);
         setSubmitMessage('');
         try {
+            if (!formData.university?.trim()) {
+                throw new Error('Please select a target university.');
+            }
+
             await apiPost('/api/applications', {
                 studentProfileId: 1,
-                opportunityId: 1,
+                universityName: formData.university,
             });
             setSubmitMessage('Application submitted successfully. Redirecting...');
             setTimeout(() => {

@@ -134,23 +134,43 @@ CREATE TABLE IF NOT EXISTS timeline_events (
 
 const WORKFLOW_STAGE_ROWS = [
     ["STUDENT_SUBMISSION", "Student Submission", 1],
-    ["UG_ACADEMICS", "UG Academics Review", 2],
-    ["STUDENT_LIFE", "Student Life Review", 3],
-    ["PROGRAM_CHAIR", "Program Chair Review", 4],
-    ["OGE", "OGE Routing", 5],
-    ["DEAN", "Dean Academics Final Approval", 6],
+    ["STUDENT_LIFE", "Student Life Review", 2],
+    ["PROGRAM_CHAIR", "Program Chair Review", 3],
+    ["OGE", "OGE Office Review", 4],
+    ["DEAN", "Dean Academics Final Approval", 5],
 ];
 
 export function initSchema(db) {
     db.exec(CREATE_TABLES_SQL);
 
+    const allowedStageCodes = WORKFLOW_STAGE_ROWS.map(([code]) => code);
+    const allowedRoleCodes = ["STUDENT", "STUDENT_LIFE", "PROGRAM_CHAIR", "OGE_ADMIN", "DEAN_ACADEMICS"];
+
     const insertStage = db.prepare(
         `INSERT OR IGNORE INTO workflow_stages (code, display_name, sequence_order, is_active)
          VALUES (?, ?, ?, 1)`
     );
+    const updateStage = db.prepare(
+        `UPDATE workflow_stages SET display_name = ?, sequence_order = ?, is_active = 1 WHERE code = ?`
+    );
     for (const [code, displayName, sequenceOrder] of WORKFLOW_STAGE_ROWS) {
         insertStage.run(code, displayName, sequenceOrder);
+        updateStage.run(displayName, sequenceOrder, code);
     }
+
+    const stagePlaceholders = allowedStageCodes.map(() => "?").join(", ");
+    db.prepare(`DELETE FROM workflow_stages WHERE code NOT IN (${stagePlaceholders})`).run(...allowedStageCodes);
+    db.prepare(
+        `UPDATE applications SET current_stage = 'STUDENT_LIFE', updated_at = ?
+         WHERE final_status IS NULL AND current_stage NOT IN (${stagePlaceholders})`
+    ).run(new Date().toISOString(), ...allowedStageCodes);
+
+    const rolePlaceholders = allowedRoleCodes.map(() => "?").join(", ");
+    db.prepare(
+        `DELETE FROM user_roles WHERE role_id IN (SELECT id FROM roles WHERE code NOT IN (${rolePlaceholders}))`
+    ).run(...allowedRoleCodes);
+    db.prepare(`DELETE FROM roles WHERE code NOT IN (${rolePlaceholders})`).run(...allowedRoleCodes);
+
 }
 
 export function seedDemoData(db) {
@@ -161,7 +181,7 @@ export function seedDemoData(db) {
     ).run(now);
     db.prepare(
         `INSERT OR IGNORE INTO users (id, email, full_name, is_active, created_at)
-         VALUES (99, 'reviewer@plaksha.edu.in', 'UG Reviewer', 1, ?)`
+            VALUES (99, 'reviewer@plaksha.edu.in', 'Workflow Reviewer', 1, ?)`
     ).run(now);
     db.prepare(
         `INSERT OR IGNORE INTO student_profiles (id, user_id, student_id, program, official_cgpa, created_at)

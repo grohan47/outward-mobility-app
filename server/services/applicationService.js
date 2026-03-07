@@ -13,7 +13,7 @@ export class ApplicationService {
         const application = this.applicationsRepository.create({
             student_profile_id: studentProfileId,
             opportunity_id: opportunityId,
-            current_stage: STAGES.UG_ACADEMICS,
+            current_stage: STAGES.STUDENT_LIFE,
             final_status: null,
             created_at: now,
             updated_at: now,
@@ -42,29 +42,30 @@ export class ApplicationService {
         return application;
     }
 
-    withdrawApplication({ applicationId, actorUserId = null }) {
+    resubmitApplication({ applicationId, actorUserId = null }) {
         const existing = this.applicationsRepository.findById(applicationId);
         if (!existing) {
             throw new Error("Application not found.");
         }
         if (existing.final_status) {
-            throw new Error("Only active applications can be withdrawn.");
+            throw new Error("Closed applications cannot be resubmitted.");
+        }
+        if (existing.current_stage !== STAGES.STUDENT_SUBMISSION) {
+            throw new Error("Only applications flagged back to Student can be resubmitted.");
         }
 
         const now = new Date().toISOString();
         const updated = this.applicationsRepository.update(applicationId, {
-            current_stage: STAGES.CLOSED,
-            final_status: "WITHDRAWN",
+            current_stage: STAGES.STUDENT_LIFE,
             updated_at: now,
         });
 
         this.timelineRepository.create({
             application_id: applicationId,
-            event_type: "APPLICATION_WITHDRAWN",
+            event_type: "APPLICATION_RESUBMITTED",
             event_payload: {
-                from_stage: existing.current_stage,
-                to_stage: STAGES.CLOSED,
-                final_status: "WITHDRAWN",
+                from_stage: STAGES.STUDENT_SUBMISSION,
+                to_stage: STAGES.STUDENT_LIFE,
             },
             actor_user_id: actorUserId,
             created_at: now,
