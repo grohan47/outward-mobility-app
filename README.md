@@ -1,5 +1,10 @@
 # PRISM OGE Approvals App (React/Vite)
 
+## IMPORTANT: CURRENT BACKEND/DATABASE IS TEMPORARY (PROTOTYPE FORMAT)
+
+This repository currently uses a temporary backend/database structure for prototype flow validation and demo support.
+The final envisioned production architecture (schema/API/authorization hardening) is planned as a future update.
+
 This repository contains the **React + Vite** version of PRISM for outward mobility approvals.
 
 It includes role-based screens for:
