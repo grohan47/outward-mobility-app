@@ -42,14 +42,18 @@ const initialCourseRows = [
 ];
 
 export default function StudentApplicationForm() {
+    // Which application is opened: route param ':id' drives this screen mode.
     const { id } = useParams();
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
 
+    // Form mode is route-driven. '/student/application/new' shows Submit flow.
     const isNew = id === 'new';
     const isDraft = id === 'draft';
 
     const targetUniversity = useMemo(() => {
+        // How university is prefilled for new applications.
+        // Answer: from query string `?university=...` when opening '/student/application/new'.
         if (isNew) {
             return searchParams.get('university') || '';
         }
@@ -131,17 +135,19 @@ export default function StudentApplicationForm() {
     }
 
     async function handleSubmitApplication() {
+        // Student submission starts in this handler.
         setSubmitting(true);
         setSubmitMessage('');
         try {
             if (!formData.university?.trim()) {
                 throw new Error('Please select a target university.');
             }
-
+            // API POST: create a new application for the current student profile.
             await apiPost('/api/applications', {
                 studentProfileId: 1,
                 universityName: formData.university,
             });
+            // After successful submit, student is redirected to application list.
             setSubmitMessage('Application submitted successfully. Redirecting...');
             setTimeout(() => {
                 navigate('/student/applications');

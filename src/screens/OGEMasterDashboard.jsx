@@ -5,6 +5,7 @@ import { apiGet } from '../api/client';
 const FRONTEND_WORKFLOW_ORDER = ['STUDENT_SUBMISSION', 'STUDENT_LIFE', 'PROGRAM_CHAIR', 'OGE', 'DEAN'];
 
 function getProgressForStage(stageCode, finalStatus) {
+    // Workflow progress bar value is computed in this helper.
     if (finalStatus) {
         return FRONTEND_WORKFLOW_ORDER.length;
     }
@@ -23,11 +24,13 @@ export default function OGEMasterDashboard() {
             setLoading(true);
             setError('');
             try {
+                // API GET: fetch all applications for OGE master dashboard listing.
                 const data = await apiGet('/api/applications');
                 if (!mounted) {
                     return;
                 }
 
+                // Backend payload is transformed for table UI in this map block.
                 const mapped = (data.items ?? []).map((item) => ({
                     id: item.id,
                     student: item.student_user?.full_name ?? 'Unknown Student',

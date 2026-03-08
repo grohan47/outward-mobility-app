@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { apiGet } from '../api/client';
 
 function mapRows(items) {
+    // Inbox row metadata (queue badges, app code) is derived here.
     return (items ?? []).map((item, index) => {
         const studentName = item.student_user?.full_name ?? 'Unknown Student';
         const initials = studentName
@@ -46,6 +47,7 @@ function mapRows(items) {
 }
 
 export default function ProgramChairTaskInbox() {
+    // This screen is the Program Chair landing queue at '/program-chair'.
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -57,6 +59,7 @@ export default function ProgramChairTaskInbox() {
             setLoading(true);
             setError('');
             try {
+                // API GET: fetch all applications shown in Program Chair inbox.
                 const data = await apiGet('/api/applications');
                 if (mounted) {
                     setItems(data.items ?? []);
@@ -79,6 +82,8 @@ export default function ProgramChairTaskInbox() {
     }, []);
 
     const rows = useMemo(() => mapRows(items), [items]);
+
+    // Clicking "Review" opens Program Chair detail screen at /program-chair/:id.
 
     return (
         <>

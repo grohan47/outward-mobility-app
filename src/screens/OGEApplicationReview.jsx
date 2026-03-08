@@ -10,6 +10,7 @@ const navSections = [
 ];
 
 export default function OGEApplicationReview() {
+    // Review page knows which application to open via route param ':id'.
     const { id } = useParams();
     const [activeSection, setActiveSection] = useState('personal');
     const [loading, setLoading] = useState(true);
@@ -23,8 +24,10 @@ export default function OGEApplicationReview() {
             setLoading(true);
             setError('');
             try {
+                // API GET: load full application detail for the selected application id.
                 const data = await apiGet(`/api/applications/${id}`);
                 if (mounted) {
+                    // appData includes application, student, opportunity, reviews, decisions, timeline, workflow.
                     setAppData(data);
                 }
             } catch (err) {
@@ -45,6 +48,8 @@ export default function OGEApplicationReview() {
 
     async function submitDecision(decision) {
         try {
+            // This function is where OGE approve/reject updates workflow stage.
+            // API POST: submit OGE decision/review action for this application.
             const response = await apiPost('/api/reviews/submit', {
                 applicationId: Number(id),
                 reviewerUserId: 99,
@@ -54,6 +59,8 @@ export default function OGEApplicationReview() {
                 visibilityScope: 'INTERNAL',
             });
             setActionMessage(`Decision recorded: ${decision}`);
+            // API GET: reload latest application state after decision submission.
+            // Refetch after POST to render updated stage/status from server state.
             const refreshed = await apiGet(`/api/applications/${response.application.id}`);
             setAppData(refreshed);
         } catch (err) {

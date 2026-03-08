@@ -29,7 +29,7 @@ Current process is fragmented (forms, email threads, manual handoffs), making it
   1. Open new application form.
   2. Submit application.
   3. Track active applications and timeline.
-  4. Withdraw if needed.
+  4. Resubmit when flagged back for corrections.
 - Earlier process: spreadsheet/email/manual office tracking.
 - Future scope: richer document upload checks and AI guidance before submission.
 
@@ -101,7 +101,7 @@ Implemented in `server/httpServer.js`:
 - `GET /api/applications?studentProfileId=1`
 - `GET /api/applications/:id`
 - `POST /api/applications`
-- `POST /api/applications/:id/withdraw`
+- `POST /api/applications/:id/resubmit`
 
 ### Reviews/Decisions
 - `POST /api/reviews/submit`
@@ -122,6 +122,13 @@ Implemented in `server/httpServer.js`:
 - `server/services/reviewService.js`
 - `server/services/workflowService.js`
 - `server/services/accessService.js`
+
+### Recent code tidiness updates
+- `applicationService` now uses `EVENT_TYPES` constants for timeline event names.
+- Added helper methods in `applicationService`:
+  - `getNowIso()` for timestamp creation.
+  - `getStudentProfile(studentProfileId)` for profile lookup.
+- Refactor was non-functional (readability/maintainability only) and keeps workflow behavior unchanged.
 
 ### Data access layer
 - `server/repositories/*`
@@ -144,7 +151,7 @@ Implemented in `server/httpServer.js`:
 ## Mid-Sem Readiness Notes
 
 ### Non-AI endpoints status
-- Core non-AI endpoints started and functional for submit/list/review/withdraw.
+- Core non-AI endpoints started and functional for submit/list/review/resubmit.
 - Remaining non-AI endpoints to complete: richer documents CRUD, stage assignment APIs, role-filtered review inbox endpoints.
 
 ### AI endpoint requirement (planned)

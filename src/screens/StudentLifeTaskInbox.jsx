@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { apiGet } from '../api/client';
 
 function toStudentLifeRows(items) {
+    // SLA chips (On Track / Overdue / Days Left) are computed here.
     return (items ?? []).map((item, index) => {
         const studentName = item.student_user?.full_name ?? 'Unknown Student';
         const initials = studentName
@@ -47,6 +48,7 @@ function toStudentLifeRows(items) {
 }
 
 export default function StudentLifeTaskInbox() {
+    // This screen is the Student Life landing queue at '/student-life'.
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -58,6 +60,7 @@ export default function StudentLifeTaskInbox() {
             setLoading(true);
             setError('');
             try {
+                // API GET: fetch all applications shown in Student Life task inbox.
                 const data = await apiGet('/api/applications');
                 if (mounted) {
                     setItems(data.items ?? []);
@@ -80,6 +83,8 @@ export default function StudentLifeTaskInbox() {
     }, []);
 
     const rows = useMemo(() => toStudentLifeRows(items), [items]);
+
+    // Clicking "Review" opens Student Life detail screen at /student-life/:id.
 
     return (
         <>

@@ -14,7 +14,7 @@ const sidebarNavItems = [
     { to: '#', icon: 'warning', label: 'System Alerts', badge: '4', isActive: () => false },
     { to: '#', icon: 'account_balance', label: 'University Partners', isActive: () => false },
     { to: '#', icon: 'timer_10_alt_1', label: 'SLA Configuration', isActive: () => false },
-    { to: '#', icon: 'add_circle', label: 'Create New Opportunity', isActive: () => false },
+    { to: '/oge/opportunities/new', icon: 'add_circle', label: 'Create New Opportunity', isActive: (pathname) => pathname === '/oge/opportunities/new' },
 ];
 
 export default function OGELayout() {
