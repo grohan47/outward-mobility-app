@@ -136,6 +136,7 @@ export default function StudentApplicationForm() {
 
     async function handleSubmitApplication() {
         // Student submission starts in this handler.
+        // TEMP API MAP (button: Submit): POST /api/applications
         setSubmitting(true);
         setSubmitMessage('');
         try {
@@ -169,6 +170,7 @@ export default function StudentApplicationForm() {
                         const active = activeSection === section;
 
                         return (
+                            // TEMP API MAP (button: left nav section): no API call, local scroll only.
                             <button
                                 key={section}
                                 type="button"
@@ -498,12 +500,14 @@ export default function StudentApplicationForm() {
                                 {showChat ? 'Hide Chat' : 'Show Chat'}
                             </button>
                         )}
+                        {/* TEMP API MAP (button: Save Draft/Update): pending API, suggested PATCH /api/applications/:id */}
                         <button className="px-6 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold text-sm hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
                             {isNew ? 'Save Draft' : 'Update Application'}
                         </button>
                         {isNew && (
                             <button
                                 type="button"
+                                // TEMP API MAP (button: Submit): POST /api/applications
                                 onClick={handleSubmitApplication}
                                 disabled={submitting}
                                 className="px-6 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:bg-green-600 transition-colors shadow-lg shadow-primary/20 disabled:opacity-50"

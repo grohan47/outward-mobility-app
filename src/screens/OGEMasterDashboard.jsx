@@ -76,6 +76,7 @@ export default function OGEMasterDashboard() {
                     <p className="text-slate-500 dark:text-slate-400 text-base font-normal">Track and manage student mobility across all university partners.</p>
                 </div>
                 <div className="flex gap-3">
+                    {/* TEMP API MAP (button: Export Data): pending API, suggested GET /api/dashboard/oge/export */}
                     <button className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg font-semibold text-sm hover:opacity-90 transition-opacity">
                         <span className="material-symbols-outlined text-xl">download</span>
                         Export Data
@@ -84,12 +85,14 @@ export default function OGEMasterDashboard() {
             </div>
             <div className="flex flex-wrap gap-3 mb-6 bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
                 {['University: All', 'Status: Active', 'Priority: High', 'SLA: Near Breach'].map((label) => (
+                    // TEMP API MAP (button: filter chip): currently UI-only, future query params on GET /api/applications.
                     <button key={label} className="flex items-center gap-2 rounded-lg bg-slate-100 dark:bg-slate-800 px-4 py-2 text-slate-700 dark:text-slate-200 text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
                         <span>{label}</span>
                         <span className="material-symbols-outlined text-lg">expand_more</span>
                     </button>
                 ))}
                 <div className="flex-1"></div>
+                {/* TEMP API MAP (button: Clear Filters): currently UI-only, refresh with base GET /api/applications. */}
                 <button className="flex items-center gap-2 px-4 py-2 text-slate-500 text-sm font-medium hover:text-primary transition-colors">
                     <span className="material-symbols-outlined text-lg">filter_alt_off</span>
                     Clear Filters
@@ -150,6 +153,7 @@ export default function OGEMasterDashboard() {
                                         </div>
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
+                                        {/* TEMP API MAP (button: open review): destination screen performs GET /api/applications/:id and POST /api/reviews/submit. */}
                                         <Link className="text-slate-400 hover:text-primary transition-colors" to={`/oge/application/${row.id}`}><span className="material-symbols-outlined">open_in_new</span></Link>
                                     </td>
                                 </tr>

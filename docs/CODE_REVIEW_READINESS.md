@@ -106,6 +106,54 @@ Implemented in `server/httpServer.js`:
 ### Reviews/Decisions
 - `POST /api/reviews/submit`
 
+<!--
+TEMP API BACKLOG (for review discussion only)
+
+Workflow action endpoints (explicit stage movement)
+- POST /api/applications/:id/actions/approve
+- POST /api/applications/:id/actions/flag
+- POST /api/applications/:id/actions/reject
+- POST /api/applications/:id/actions/resubmit
+
+Expected action side effects
+- insert application_reviews row
+- insert application_decisions row
+- update applications.current_stage and applications.final_status
+- insert timeline_events row
+
+Role-filtered stakeholder inbox endpoints
+- GET /api/inbox/student?userId=:id
+- GET /api/inbox/student-life?userId=:id
+- GET /api/inbox/program-chair?userId=:id
+- GET /api/inbox/oge?userId=:id
+- GET /api/inbox/dean?userId=:id
+
+Workflow visibility/status endpoints
+- GET /api/applications/:id/workflow
+- GET /api/applications/:id/timeline
+- GET /api/applications/:id/reviews
+- GET /api/applications/:id/decisions
+- GET /api/applications/:id/stakeholders
+
+Dashboard summary endpoints
+- GET /api/dashboard/student?userId=:id
+- GET /api/dashboard/student-life
+- GET /api/dashboard/program-chair
+- GET /api/dashboard/oge
+- GET /api/dashboard/dean
+
+Document management endpoints
+- GET /api/applications/:id/documents
+- POST /api/applications/:id/documents
+- PATCH /api/applications/:id/documents/:documentId
+- DELETE /api/applications/:id/documents/:documentId
+
+Notification endpoints
+- GET /api/notifications?userId=:id
+- POST /api/notifications/:id/read
+- POST /api/notifications/read-all
+-->
+
 ## 5) Code Understanding / Where Things Live
 
 ### Workflow and role constants

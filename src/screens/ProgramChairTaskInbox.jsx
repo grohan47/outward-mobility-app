@@ -103,6 +103,7 @@ export default function ProgramChairTaskInbox() {
                         </label>
                     </div>
                     <div className="flex items-center gap-3">
+                        {/* TEMP API MAP (button: notifications): pending API, suggested GET /api/notifications?userId=:id */}
                         <button className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-primary/10 hover:text-primary">
                             <span className="material-symbols-outlined">notifications</span>
                         </button>
@@ -155,6 +156,7 @@ export default function ProgramChairTaskInbox() {
                                                         </span>
                                                     </td>
                                                     <td className="px-6 py-4 text-right">
+                                                        {/* TEMP API MAP (button: Review): destination screen should GET /api/applications/:id and POST review decision actions. */}
                                                         <Link to={`/program-chair/${row.id}`} className="rounded-lg bg-primary/10 px-4 py-1.5 text-xs font-bold text-primary hover:bg-primary hover:text-white transition-all inline-block">
                                                             Review
                                                         </Link>

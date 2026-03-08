@@ -58,6 +58,7 @@ export default function StudentApplicationsList() {
     async function handleResubmit(applicationId) {
         setActionMessage('');
         try {
+            // TEMP API MAP (button: Resubmit to Student Life): POST /api/applications/:id/resubmit
             // API POST: resubmit a student application back into review workflow.
             // Student pushes an app back into workflow here.
             await apiPost(`/api/applications/${applicationId}/resubmit`, { actorUserId: 1 });
@@ -84,6 +85,7 @@ export default function StudentApplicationsList() {
         <div className="max-w-4xl mx-auto py-8">
             <div className="flex items-center justify-between mb-6">
                 <h3 className="text-xl font-bold text-slate-900 dark:text-white">Active Applications</h3>
+                {/* TEMP API MAP (button: Refresh): GET /api/applications?studentProfileId=1 + GET /api/applications/:id */}
                 <button
                     type="button"
                     onClick={loadData}
@@ -153,12 +155,14 @@ export default function StudentApplicationsList() {
                     {application.current_stage === 'STUDENT_SUBMISSION' && !application.final_status && (
                         <button
                             type="button"
+                            // TEMP API MAP (button: Resubmit to Student Life): POST /api/applications/:id/resubmit
                             onClick={() => handleResubmit(application.id)}
                             className="text-sm text-blue-700 font-medium hover:text-blue-900"
                         >
                             Resubmit to Student Life
                         </button>
                     )}
+                    {/* TEMP API MAP (button: View Full Dossier): GET /api/applications/:id is fetched on destination screen. */}
                     <Link to={`/student/application/${application.id}`} className="bg-white border border-slate-300 text-slate-700 text-sm font-bold px-4 py-2 rounded-lg hover:bg-slate-50 shadow-sm inline-block">View Full Dossier</Link>
                 </div>
             </div>
