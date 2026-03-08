@@ -97,7 +97,9 @@ Expected output:
 - `/student/messages` Student messages
 - `/oge` OGE master dashboard
 - `/oge/application/:id` OGE application review
+- `/program-chair` Program Chair task inbox
 - `/program-chair/:id` Program Chair review
+- `/student-life` Student Life task inbox
 - `/student-life/:id` Student Life review
 - `/dean/:id` Dean final approval
 
@@ -105,6 +107,8 @@ Expected output:
 
 - This repo contains both frontend (React/Vite) and backend (Express + SQLite) components.
 - Core submit/review/withdraw API flows are implemented; additional endpoints can be incrementally added.
+- Current backend/database structure is a temporary working implementation for prototype flow validation and demo support.
+- The final envisioned production architecture (schema/API/authorization hardening) is planned as a future update.
 
 ## Review Prep
 
