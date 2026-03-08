@@ -14,6 +14,7 @@ const sidebarNavItems = [
     { to: '#', icon: 'warning', label: 'System Alerts', badge: '4', isActive: () => false },
     { to: '#', icon: 'account_balance', label: 'University Partners', isActive: () => false },
     { to: '#', icon: 'timer_10_alt_1', label: 'SLA Configuration', isActive: () => false },
+    { to: '#', icon: 'add_circle', label: 'Create New Opportunity', isActive: () => false },
 ];
 
 export default function OGELayout() {
@@ -33,10 +34,14 @@ export default function OGELayout() {
                                 <div className="text-slate-500 dark:text-slate-400 flex border-none bg-slate-100 dark:bg-slate-800 items-center justify-center pl-4 rounded-l-lg">
                                     <span className="material-symbols-outlined text-xl">search</span>
                                 </div>
-                                <input className="form-input flex w-full min-w-0 flex-1 border-none bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-0 h-full placeholder:text-slate-500 rounded-r-lg px-3 text-sm font-normal" placeholder="Search applications..." />
+                                <input
+                                    className="form-input flex w-full min-w-0 flex-1 border-none bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-0 h-full placeholder:text-slate-500 rounded-r-lg px-3 text-sm font-normal"
+                                    placeholder="Search applications..."
+                                />
                             </div>
                         </label>
                     </div>
+
                     <div className="flex flex-1 justify-end gap-8 items-center">
                         <nav className="hidden md:flex items-center gap-8">
                             {headerNavItems.map((item) => {
@@ -60,6 +65,7 @@ export default function OGELayout() {
                                 );
                             })}
                         </nav>
+
                         <div className="flex items-center gap-4">
                             <span className="material-symbols-outlined text-slate-600 dark:text-slate-400 cursor-pointer">notifications</span>
                             <div className="bg-center bg-no-repeat aspect-square bg-cover rounded-full size-10 border border-slate-200 dark:border-slate-700 bg-slate-200 dark:bg-slate-700"></div>
@@ -74,6 +80,7 @@ export default function OGELayout() {
                                 <h1 className="text-slate-900 dark:text-white text-base font-bold">OGE Office</h1>
                                 <p className="text-slate-500 text-xs font-medium uppercase tracking-wider">Admin Dashboard</p>
                             </div>
+
                             <nav className="flex flex-col gap-1">
                                 {sidebarNavItems.map((item) => {
                                     const active = item.isActive(pathname);
@@ -104,6 +111,26 @@ export default function OGELayout() {
                                     );
                                 })}
                             </nav>
+
+                            <div className="mt-10 px-1">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Recent Alerts</p>
+                                <div className="flex flex-col gap-4">
+                                    <div className="flex gap-3">
+                                        <div className="w-2 h-2 rounded-full bg-red-500 mt-1.5 shrink-0" />
+                                        <div>
+                                            <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-tight">SLA Breach: UPenn</p>
+                                            <p className="text-[10px] text-slate-500 mt-0.5">2 hours ago</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-3">
+                                        <div className="w-2 h-2 rounded-full bg-orange-400 mt-1.5 shrink-0" />
+                                        <div>
+                                            <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-tight">Near Breach: Berkeley</p>
+                                            <p className="text-[10px] text-slate-500 mt-0.5">5 hours ago</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </aside>
 

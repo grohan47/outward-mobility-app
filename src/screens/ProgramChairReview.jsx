@@ -1,9 +1,11 @@
 import React from 'react';
+import { useParams } from 'react-router-dom';
 
 export default function ProgramChairReview() {
+    const { id } = useParams();
+
     return (
-        <div className="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen font-display">
-            <div className="flex flex-col min-h-screen">
+        <>
                 <header className="flex items-center justify-between whitespace-nowrap border-b border-solid border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-3 sticky top-0 z-50">
                     <div className="flex items-center gap-8">
                         <div className="flex items-center gap-3 text-primary">
@@ -48,7 +50,7 @@ export default function ProgramChairReview() {
                         <div className="max-w-[1440px] mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
                             <div>
                                 <div className="flex items-center gap-2 text-slate-500 text-sm mb-1">
-                                    <span className="font-mono">APP-82931</span>
+                                    <span className="font-mono">APP-{id ?? 'UNKNOWN'}</span>
                                     <span>•</span>
                                     <span>Submitted Oct 24, 2023</span>
                                 </div>
@@ -266,7 +268,6 @@ export default function ProgramChairReview() {
                         </aside>
                     </div>
                 </main>
-            </div>
-        </div>
+        </>
     );
 }

@@ -3,10 +3,14 @@ import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import StudentDashboard from './screens/StudentDashboard';
 import OGEMasterDashboard from './screens/OGEMasterDashboard';
 import ProgramChairReview from './screens/ProgramChairReview';
+import ProgramChairTaskInbox from './screens/ProgramChairTaskInbox';
 import StudentLifeReview from './screens/StudentLifeReview';
+import StudentLifeTaskInbox from './screens/StudentLifeTaskInbox';
 import DeanFinalApproval from './screens/DeanFinalApproval';
 import StudentLayout from './layouts/StudentLayout';
 import OGELayout from './layouts/OGELayout';
+import ProgramChairLayout from './layouts/ProgramChairLayout';
+import StudentLifeLayout from './layouts/StudentLifeLayout';
 import StudentApplicationForm from './screens/StudentApplicationForm';
 import StudentApplicationsList from './screens/StudentApplicationsList';
 import StudentMessages from './screens/StudentMessages';
@@ -29,13 +33,13 @@ function Home() {
                         <h3 className="font-bold text-slate-900 dark:text-white group-hover:text-primary">OGE Office</h3>
                         <p className="text-xs text-slate-500">Master view of all applications</p>
                     </Link>
-                    <Link to="/program-chair/APP-1" className="group p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-primary transition-colors shadow-sm">
+                    <Link to="/program-chair" className="group p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-primary transition-colors shadow-sm">
                         <h3 className="font-bold text-slate-900 dark:text-white group-hover:text-primary">Program Chair</h3>
-                        <p className="text-xs text-slate-500">Review course mappings (Demo ID: APP-1)</p>
+                        <p className="text-xs text-slate-500">Open Program Chair task inbox</p>
                     </Link>
-                    <Link to="/student-life/APP-1" className="group p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-primary transition-colors shadow-sm">
+                    <Link to="/student-life" className="group p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-primary transition-colors shadow-sm">
                         <h3 className="font-bold text-slate-900 dark:text-white group-hover:text-primary">Student Life</h3>
-                        <p className="text-xs text-slate-500">Conduct and integrity checks (Demo ID: APP-1)</p>
+                        <p className="text-xs text-slate-500">Open Student Life task inbox</p>
                     </Link>
                     <Link to="/dean/APP-1" className="group p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-primary transition-colors shadow-sm">
                         <h3 className="font-bold text-slate-900 dark:text-white group-hover:text-primary">Dean of Academics</h3>
@@ -62,8 +66,14 @@ export default function App() {
                     <Route index element={<OGEMasterDashboard />} />
                     <Route path="application/:id" element={<OGEApplicationReview />} />
                 </Route>
-                <Route path="/program-chair/:id" element={<ProgramChairReview />} />
-                <Route path="/student-life/:id" element={<StudentLifeReview />} />
+                <Route path="/program-chair" element={<ProgramChairLayout />}>
+                    <Route index element={<ProgramChairTaskInbox />} />
+                    <Route path=":id" element={<ProgramChairReview />} />
+                </Route>
+                <Route path="/student-life" element={<StudentLifeLayout />}>
+                    <Route index element={<StudentLifeTaskInbox />} />
+                    <Route path=":id" element={<StudentLifeReview />} />
+                </Route>
                 <Route path="/dean/:id" element={<DeanFinalApproval />} />
             </Routes>
         </Router>

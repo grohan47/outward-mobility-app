@@ -1,9 +1,11 @@
 import React from 'react';
+import { useParams } from 'react-router-dom';
 
 export default function StudentLifeReview() {
+    const { id } = useParams();
+
     return (
-        <div className="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen font-display overflow-x-hidden">
-            <div className="flex min-h-screen flex-col">
+        <>
                 {/* Header */}
                 <header className="flex items-center justify-between border-b border-solid border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 md:px-6 lg:px-10 py-3 sticky top-0 z-50 h-[65px]">
                     <div className="flex items-center gap-8">
@@ -39,7 +41,7 @@ export default function StudentLifeReview() {
                     <aside className="hidden lg:flex w-64 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 flex-col gap-6 shrink-0 h-full">
                         <div>
                             <h1 className="text-slate-900 dark:text-white text-base font-bold">Application Review</h1>
-                            <p className="text-primary text-xs font-semibold uppercase tracking-wider mt-1">ID: #APP-2024-9872</p>
+                            <p className="text-primary text-xs font-semibold uppercase tracking-wider mt-1">ID: #{id ?? 'Unknown'}</p>
                         </div>
                         <nav className="flex flex-col gap-1">
                             <a href="#" className="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg group">
@@ -195,7 +197,6 @@ export default function StudentLifeReview() {
                         </div>
                     </aside>
                 </div>
-            </div>
-        </div>
+        </>
     );
 }
