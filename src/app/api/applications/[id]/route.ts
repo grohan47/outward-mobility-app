@@ -64,6 +64,15 @@ export async function GET(
     CLOSED: "Closed",
   };
 
+  const reviewerAssignments = db
+    .prepare(`
+      SELECT ra.*, wst.step_order 
+      FROM reviewer_assignments ra
+      JOIN workflow_step_templates wst ON wst.id = ra.workflow_step_template_id
+      WHERE wst.workflow_template_id = ?
+    `)
+    .all((opportunity as any).workflow_template_id);
+
   return NextResponse.json({
     application,
     opportunity,
@@ -76,6 +85,7 @@ export async function GET(
     comments,
     deficiencies,
     step_instances: stepInstances,
+    reviewerAssignments,
     workflow: {
       stageCode: application.current_stage,
       stageLabel: stageLabels[application.current_stage] ?? application.current_stage,

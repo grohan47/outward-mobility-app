@@ -146,7 +146,33 @@ export default function LoginPage() {
             Quick Demo Login
           </p>
           <div className="grid grid-cols-1 gap-2">
-            {DEMO_ACCOUNTS.map((account) => (
+            {/* Student Area */}
+            <div>
+              <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">Applicants (Students)</h3>
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => handleDemoLogin("rohan@plaksha.edu.in")}
+                  className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-primary hover:bg-primary/5 transition-colors flex justify-between items-center group"
+                >
+                  <div>
+                    <div className="font-medium text-slate-800">Rohan</div>
+                    <div className="text-xs text-slate-500">rohan@plaksha.edu.in</div>
+                  </div>
+                  <span className="material-symbols-outlined text-transparent group-hover:text-primary transition-colors">arrow_forward</span>
+                </button>
+                <button
+                  onClick={() => handleDemoLogin("siddharth@plaksha.edu.in")}
+                  className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-primary hover:bg-primary/5 transition-colors flex justify-between items-center group"
+                >
+                  <div>
+                    <div className="font-medium text-slate-800">Siddharth</div>
+                    <div className="text-xs text-slate-500">siddharth@plaksha.edu.in</div>
+                  </div>
+                  <span className="material-symbols-outlined text-transparent group-hover:text-primary transition-colors">arrow_forward</span>
+                </button>
+              </div>
+            </div>
+            {DEMO_ACCOUNTS.filter(account => account.role !== "Student").map((account) => (
               <button
                 key={account.email}
                 onClick={() => handleDemoLogin(account.email)}

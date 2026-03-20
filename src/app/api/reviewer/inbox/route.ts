@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   // Find applications matching the reviewer's assigned step based on email
   // (Simplified for MVP: join assignments, templates, and applications based on active step)
   const rows = db.prepare(`
-    SELECT a.*, o.title as opportunity_title, sp.student_id, u.full_name as student_name
+    SELECT DISTINCT a.*, o.title as opportunity_title, sp.student_id, u.full_name as student_name
     FROM applications a
     JOIN opportunities o ON a.opportunity_id = o.id
     JOIN student_profiles sp ON a.student_profile_id = sp.id

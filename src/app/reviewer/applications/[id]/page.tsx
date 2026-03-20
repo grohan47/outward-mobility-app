@@ -25,6 +25,8 @@ export default function ReviewerApplicationDetail() {
   const [actionLoading, setActionLoading] = useState(false);
   const [remarks, setRemarks] = useState("");
 
+  const [dynamicInputs, setDynamicInputs] = useState<Record<string, string>>({});
+
   useEffect(() => {
     fetch(`/api/applications/${params.id}`)
       .then((r) => r.json())
@@ -34,7 +36,7 @@ export default function ReviewerApplicationDetail() {
       });
   }, [params.id]);
 
-  if (loading) {
+  if (loading || !data) {
     return (
       <div className="py-20 flex flex-col items-center text-slate-400">
         <span className="material-symbols-outlined animate-spin text-4xl mb-4">progress_activity</span>
@@ -42,18 +44,35 @@ export default function ReviewerApplicationDetail() {
     );
   }
 
+  // Calculate permissions & fields
+  let submittedData: Record<string, any> = {};
+  if (data.application.submitted_data) {
+    try { submittedData = JSON.parse(data.application.submitted_data); } catch(e) {}
+  }
+  const assignment = data.reviewerAssignments?.find((ra: any) => ra.reviewer_email === user?.email);
+  let visibleFields: string[] = ["all"];
+  let requiredInputsArr: any[] = [];
+  if (assignment) {
+     try { visibleFields = JSON.parse(assignment.visible_sections); } catch(e) {}
+     try { requiredInputsArr = JSON.parse(assignment.required_inputs); } catch(e) {}
+  }
+
   async function handleAction(endpoint: "approve" | "request-changes" | "reject", reason?: string) {
     if (!user) return;
     setActionLoading(true);
     
     try {
+      const finalRemarks = Object.keys(dynamicInputs).length > 0 
+          ? `${remarks}\n\nReviewer Inputs: ${JSON.stringify(dynamicInputs, null, 2)}` 
+          : remarks;
+          
       const res = await fetch(`/api/applications/${data.application.id}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           reviewerEmail: user.email,
-          remarks: reason || remarks,
-          reason: reason || remarks, // for reject
+          remarks: reason || finalRemarks,
+          reason: reason || finalRemarks, // for reject
         }),
       });
       
@@ -117,24 +136,35 @@ export default function ReviewerApplicationDetail() {
 
         {/* Right Column - Data & Actions */}
         <div className="lg:col-span-3 space-y-6">
-          {/* Mock Sections based on permissions */}
+          {/* Dynamic Data from Form Submission */}
           <Card>
-            <CardHeader title="Academic Information" />
-            <div className="p-4 bg-slate-50 rounded-xl space-y-2 text-sm text-slate-700">
-               <p><strong>Standing:</strong> Requirements Met</p>
-               <p><strong>Credits:</strong> 90 completed</p>
+            <CardHeader title="Application Data" />
+            <div className="p-4 bg-slate-50 border-t border-slate-100 space-y-4 text-sm text-slate-700">
+              {Object.keys(submittedData).filter(key => visibleFields.includes("all") || visibleFields.includes(key)).length === 0 ? (
+                <p className="text-slate-400 italic">No application data visible to your role.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                   {Object.keys(submittedData).filter(key => visibleFields.includes("all") || visibleFields.includes(key)).map(key => (
+                     <div key={key}>
+                        <p className="font-bold text-[10px] text-slate-400 uppercase tracking-wider mb-1">{key.replace(/_/g, ' ')}</p>
+                        <p className="font-medium text-slate-800">{submittedData[key]}</p>
+                     </div>
+                   ))}
+                </div>
+              )}
             </div>
           </Card>
           
           <Card>
             <CardHeader title="Review History" />
-            <div className="space-y-4">
+            <div className="space-y-4 p-4 border-t border-slate-100">
+               {data.reviews?.length === 0 && <p className="text-slate-400 italic text-sm">No reviews yet.</p>}
                {data.reviews?.map((r: any) => (
                  <div key={r.id} className="flex gap-4">
                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${r.verification_outcome === "FLAG" ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700"}`}>
                      <span className="material-symbols-outlined text-[16px]">{r.verification_outcome === "FLAG" ? "warning" : "check"}</span>
                    </div>
-                   <div className="flex-1 pb-4 border-b border-slate-100">
+                   <div className="flex-1 pb-4 border-b border-slate-100 last:border-0 last:pb-0">
                      <p className="text-sm font-bold text-slate-900">{r.review_role} Reviewer</p>
                      <p className="text-sm text-slate-600 mt-1">{r.remarks}</p>
                      <p className="text-[10px] text-slate-400 font-bold tracking-wider mt-2 uppercase">{new Date(r.created_at).toLocaleString()}</p>
@@ -148,21 +178,38 @@ export default function ReviewerApplicationDetail() {
 
       {/* Floating Action Bar */}
       <div className="fixed bottom-0 left-64 right-0 p-4 border-t border-slate-200 bg-white/80 backdrop-blur-md z-40 transform transition-transform">
-        <div className="max-w-6xl mx-auto flex items-end gap-4">
-          <div className="flex-1">
-             <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Reviewer Remarks (Required for Flag/Reject)</label>
-             <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Enter comments summarizing your decision..." className="w-full h-11 border border-slate-200 rounded-xl px-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all bg-white shadow-sm" />
-          </div>
+        <div className="max-w-6xl mx-auto flex flex-col gap-4">
           
-          <Button variant="danger" size="md" loading={actionLoading} onClick={() => handleAction("reject")} disabled={!remarks || !["OGE", "DEAN"].includes(data.application.current_stage)}>
-            Reject
-          </Button>
-          <Button variant="secondary" size="md" icon="flag" loading={actionLoading} onClick={() => handleAction("request-changes")} disabled={!remarks}>
-            Request Changes
-          </Button>
-          <Button variant="primary" size="md" icon="check_circle" loading={actionLoading} onClick={() => handleAction("approve")}>
-            Approve & Forward
-          </Button>
+          {/* Dynamic Reviewer Inputs */}
+          {requiredInputsArr.length > 0 && (
+            <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 flex flex-wrap gap-4">
+              {requiredInputsArr.map((input: any) => (
+                <div key={input.id} className="flex-1 min-w-[200px]">
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">{input.label}</label>
+                  <input type="text" onChange={(e) => {
+                     setDynamicInputs(prev => ({ ...prev, [input.label]: e.target.value }));
+                  }} placeholder="Required response..." className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all bg-white" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-end gap-4">
+            <div className="flex-1">
+               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Reviewer Remarks (Required for Flag/Reject)</label>
+               <input type="text" value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="Enter comments summarizing your decision..." className="w-full h-11 border border-slate-200 rounded-xl px-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all bg-white shadow-sm" />
+            </div>
+            
+            <Button variant="danger" size="md" loading={actionLoading} onClick={() => handleAction("reject")} disabled={!remarks || !["OGE", "DEAN"].includes(data.application.current_stage)}>
+              Reject
+            </Button>
+            <Button variant="secondary" size="md" icon="flag" loading={actionLoading} onClick={() => handleAction("request-changes")} disabled={!remarks}>
+              Request Changes
+            </Button>
+            <Button variant="primary" size="md" icon="check_circle" loading={actionLoading} onClick={() => handleAction("approve")}>
+              Approve & Forward
+            </Button>
+          </div>
         </div>
       </div>
     </div>

@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS reviewer_assignments (
   access_level TEXT NOT NULL DEFAULT 'standard',
   allowed_actions TEXT NOT NULL DEFAULT '["approve","comment"]',
   visible_sections TEXT NOT NULL DEFAULT '["all"]',
+  required_inputs TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'active',
   FOREIGN KEY (workflow_step_template_id) REFERENCES workflow_step_templates(id)
 );
@@ -269,9 +270,8 @@ export function seedDemoData() {
 
   // ── Users ──
   const users = [
-    [1, "student1@plaksha.edu.in", "Aditya Sharma", now],
-    [2, "student2@plaksha.edu.in", "Priya Kapoor", now],
-    [3, "student3@plaksha.edu.in", "Aarav Mehta", now],
+    [1, "rohan@plaksha.edu.in", "Rohan", now],
+    [2, "siddharth@plaksha.edu.in", "Siddharth", now],
     [10, "ug-academics@plaksha.edu.in", "Dr. Vikram Sahay", now],
     [11, "student-life@plaksha.edu.in", "Ananya Iyer", now],
     [12, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", now],
@@ -289,9 +289,8 @@ export function seedDemoData() {
 
   // ── User role assignments ──
   const roleMap: Record<string, string> = {
-    "student1@plaksha.edu.in": "STUDENT",
-    "student2@plaksha.edu.in": "STUDENT",
-    "student3@plaksha.edu.in": "STUDENT",
+    "rohan@plaksha.edu.in": "STUDENT",
+    "siddharth@plaksha.edu.in": "STUDENT",
     "ug-academics@plaksha.edu.in": "STUDENT_LIFE",
     "student-life@plaksha.edu.in": "STUDENT_LIFE",
     "program-chair@plaksha.edu.in": "PROGRAM_CHAIR",
@@ -311,9 +310,8 @@ export function seedDemoData() {
 
   // ── Student profiles ──
   const profiles = [
-    [1, 1, "PL-2022-001", "Computer Science & AI", 8.9, now],
-    [2, 2, "PL-2022-042", "Electronics Engineering", 9.1, now],
-    [3, 3, "PL-2023-015", "Computer Science", 7.8, now],
+    [1, 1, "PL-2022-ROH", "Computer Science", 8.5, now],
+    [2, 2, "PL-2022-SID", "Electronics Engineering", 9.2, now],
   ] as const;
 
   const insertProfile = db.prepare(
@@ -348,16 +346,16 @@ export function seedDemoData() {
 
   // ── Reviewer assignments ──
   const assignments = [
-    [1, "ug-academics@plaksha.edu.in", "Dr. Vikram Sahay", "standard", '["approve","request_changes","comment"]', '["personal","academic","attachments"]'],
-    [2, "student-life@plaksha.edu.in", "Ananya Iyer", "standard", '["approve","request_changes","comment"]', '["personal","discipline","attachments"]'],
-    [3, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", "standard", '["approve","request_changes","send_back","comment"]', '["personal","academic","program_fit","attachments"]'],
-    [4, "oge@plaksha.edu.in", "Rajesh Kumar", "elevated", '["approve","reject","request_changes","send_back","comment"]', '["all"]'],
-    [5, "dean@plaksha.edu.in", "Dr. Sarah Jenkins", "final", '["approve","reject","comment"]', '["all"]'],
+    [1, "ug-academics@plaksha.edu.in", "Dr. Vikram Sahay", "standard", '["approve","request_changes","comment"]', '["personal","academic","attachments"]', '[]'],
+    [2, "student-life@plaksha.edu.in", "Ananya Iyer", "standard", '["approve","request_changes","comment"]', '["personal","discipline","attachments"]', '[]'],
+    [3, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", "standard", '["approve","request_changes","send_back","comment"]', '["personal","academic","program_fit","attachments"]', '[]'],
+    [4, "oge@plaksha.edu.in", "Rajesh Kumar", "elevated", '["approve","reject","request_changes","send_back","comment"]', '["all"]', '[]'],
+    [5, "dean@plaksha.edu.in", "Dr. Sarah Jenkins", "final", '["approve","reject","comment"]', '["all"]', '[]'],
   ] as const;
 
   const insertAssignment = db.prepare(
-    `INSERT OR IGNORE INTO reviewer_assignments (workflow_step_template_id, reviewer_email, reviewer_display_name, access_level, allowed_actions, visible_sections)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO reviewer_assignments (workflow_step_template_id, reviewer_email, reviewer_display_name, access_level, allowed_actions, visible_sections, required_inputs)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
   for (const a of assignments) {
     insertAssignment.run(...a);
@@ -365,10 +363,8 @@ export function seedDemoData() {
 
   // ── Opportunities ──
   const opps = [
-    [1, "ETH_FALL_2026", "ETH Zurich Exchange", "Semester exchange program at ETH Zurich, Switzerland. Focus on Computer Science and Engineering.", "Fall 2026", "ETH Zurich, Switzerland", "2026-06-15", 5, "published"],
-    [2, "UCB_SPRING_2026", "UC Berkeley Exchange", "Research-focused exchange at UC Berkeley, California. Suitable for CS and AI students.", "Spring 2026", "UC Berkeley, USA", "2026-01-15", 3, "published"],
-    [3, "TUD_FALL_2026", "TU Delft Exchange", "Semester abroad at TU Delft, Netherlands. Strong robotics and sustainable tech programs.", "Fall 2026", "TU Delft, Netherlands", "2026-06-30", 4, "published"],
-    [4, "NUS_SPRING_2026", "NUS Singapore Exchange", "Exchange program at National University of Singapore. Good for cross-disciplinary work.", "Spring 2026", "NUS, Singapore", "2026-02-01", 6, "published"],
+    [1, "TUD_FALL_2026", "TU Delft Exchange", "Semester abroad at TU Delft, Netherlands. Strong robotics and sustainable tech programs.", "Fall 2026", "TU Delft, Netherlands", "2026-06-30", 4, "published"],
+    [2, "NUS_SPRING_2026", "NUS Singapore Exchange", "Exchange program at National University of Singapore. Good for cross-disciplinary work.", "Spring 2026", "NUS, Singapore", "2026-02-01", 6, "published"],
   ] as const;
 
   const insertOpp = db.prepare(
@@ -388,35 +384,15 @@ export function seedDemoData() {
         fields: [
           { id: "full_name", label: "Full Name", type: "text", required: true },
           { id: "email", label: "Email", type: "email", required: true },
-          { id: "phone", label: "Phone Number", type: "tel", required: true },
-          { id: "passport_number", label: "Passport Number", type: "text", required: true },
         ],
       },
       {
         id: "academic",
         title: "Academic Details",
         fields: [
-          { id: "program", label: "Current Program", type: "text", required: true },
-          { id: "cgpa", label: "Current CGPA", type: "number", required: true },
-          { id: "semester", label: "Current Semester", type: "number", required: true },
-          { id: "credits_completed", label: "Credits Completed", type: "number", required: true },
-        ],
-      },
-      {
-        id: "program_fit",
-        title: "Program Fit & Motivation",
-        fields: [
-          { id: "motivation", label: "Motivation Statement", type: "textarea", required: true },
-          { id: "research_alignment", label: "Research Alignment", type: "textarea", required: false },
-        ],
-      },
-      {
-        id: "attachments",
-        title: "Documents",
-        fields: [
-          { id: "transcript", label: "Official Transcript", type: "file", required: true },
-          { id: "recommendation", label: "Letter of Recommendation", type: "file", required: true },
-          { id: "passport_copy", label: "Passport Copy", type: "file", required: true },
+          { id: "transcript", label: "Transcript Upload", type: "file", required: true },
+          { id: "sop", label: "Statement of Purpose", type: "textarea", required: true },
+          { id: "course_applied_for", label: "Course Applied For", type: "text", required: true },
         ],
       },
     ],
@@ -424,49 +400,52 @@ export function seedDemoData() {
 
   db.prepare(
     `INSERT OR IGNORE INTO form_templates (id, name, description, schema_json, created_at, updated_at)
-     VALUES (1, 'OGE Standard Application Form', 'Standard mobility application form with personal, academic, motivation, and document sections', ?, ?, ?)`
+     VALUES (1, 'OGE Standard Application Form', 'Standard mobility application form', ?, ?, ?)`
   ).run(formSchema, now, now);
 
-  // Link form template to opportunities
   db.prepare(`UPDATE opportunities SET form_template_id = 1 WHERE form_template_id IS NULL`).run();
 
   // ── Demo applications ──
+  // 1: Rohan -> TU Delft (opp 1). 2: Siddharth -> NUS (opp 2). Both at STUDENT_LIFE stage.
+  const rohanData = JSON.stringify({ full_name: "Rohan", email: "rohan@plaksha.edu.in", transcript: "rohan_transcript.pdf", sop: "I want to go to Delft.", course_applied_for: "Robotics" });
+  const siddData = JSON.stringify({ full_name: "Siddharth", email: "siddharth@plaksha.edu.in", transcript: "sidd_transcript.pdf", sop: "NUS has great AI.", course_applied_for: "AI & ML", phone: "12345678" });
+  
   const apps = [
-    [1, 1, 1, "PROGRAM_CHAIR", null, now, now, now],
-    [2, 2, 2, "STUDENT_LIFE", null, now, now, now],
-    [3, 3, 3, "STUDENT_SUBMISSION", null, now, now, now],
+    [1, 1, 1, "STUDENT_LIFE", null, rohanData, now, now, now],
+    [2, 2, 2, "STUDENT_LIFE", null, siddData, now, now, now],
   ] as const;
 
   const insertApp = db.prepare(
-    `INSERT OR IGNORE INTO applications (id, student_profile_id, opportunity_id, current_stage, final_status, submitted_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO applications (id, student_profile_id, opportunity_id, current_stage, final_status, submitted_data, submitted_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const a of apps) {
     insertApp.run(...a);
   }
 
-  // ── Demo reviews for app 1 (Aditya → already past Student Life) ──
+  // ── Demo reviews (UG Academics already approved) ──
   db.prepare(
     `INSERT OR IGNORE INTO application_reviews (id, application_id, review_role, verification_outcome, remarks, visibility_scope, created_by, created_at)
-     VALUES (1, 1, 'STUDENT_LIFE', 'APPROVE', 'Academic requirements met. 8.9 CGPA confirmed above threshold.', 'INTERNAL', 10, ?)`
+     VALUES (1, 1, 'UG_ACADEMICS', 'APPROVE', 'Academic requirements met for Rohan.', 'INTERNAL', 10, ?)`
   ).run(now);
-
   db.prepare(
     `INSERT OR IGNORE INTO application_reviews (id, application_id, review_role, verification_outcome, remarks, visibility_scope, created_by, created_at)
-     VALUES (2, 1, 'STUDENT_LIFE', 'APPROVE', 'No disciplinary actions on record. Good standing confirmed.', 'INTERNAL', 11, ?)`
+     VALUES (2, 2, 'UG_ACADEMICS', 'APPROVE', 'Academic requirements met for Siddharth.', 'INTERNAL', 10, ?)`
   ).run(now);
 
   db.prepare(
     `INSERT OR IGNORE INTO application_decisions (id, application_id, stage_code, decision, reason, decided_by, decided_at)
-     VALUES (1, 1, 'STUDENT_LIFE', 'APPROVE', 'Student Life review passed - clean record.', 11, ?)`
+     VALUES (1, 1, 'STUDENT_SUBMISSION', 'APPROVE', 'UG Academics review passed.', 10, ?)`
+  ).run(now);
+  db.prepare(
+    `INSERT OR IGNORE INTO application_decisions (id, application_id, stage_code, decision, reason, decided_by, decided_at)
+     VALUES (2, 2, 'STUDENT_SUBMISSION', 'APPROVE', 'UG Academics review passed.', 10, ?)`
   ).run(now);
 
   // ── Timeline events ──
   const events = [
     [1, 1, "APPLICATION_CREATED", JSON.stringify({ current_stage: "STUDENT_LIFE" }), 1, now],
-    [2, 1, "DECISION_RECORDED", JSON.stringify({ decision: "APPROVE", from_stage: "STUDENT_LIFE", to_stage: "PROGRAM_CHAIR" }), 11, now],
-    [3, 2, "APPLICATION_CREATED", JSON.stringify({ current_stage: "STUDENT_LIFE" }), 2, now],
-    [4, 3, "APPLICATION_CREATED", JSON.stringify({ current_stage: "STUDENT_SUBMISSION" }), 3, now],
+    [2, 2, "APPLICATION_CREATED", JSON.stringify({ current_stage: "STUDENT_LIFE" }), 2, now],
   ] as const;
 
   const insertEvent = db.prepare(
@@ -480,21 +459,11 @@ export function seedDemoData() {
   // ── Snapshots ──
   db.prepare(
     `INSERT OR IGNORE INTO application_student_snapshot (id, application_id, official_cgpa_at_submission, program_at_submission, disciplinary_status_at_submission, snapshot_captured_at)
-     VALUES (1, 1, 8.9, 'Computer Science & AI', 'Clear', ?)`
+     VALUES (1, 1, 8.5, 'Computer Science', 'Clear', ?)`
   ).run(now);
   db.prepare(
     `INSERT OR IGNORE INTO application_student_snapshot (id, application_id, official_cgpa_at_submission, program_at_submission, disciplinary_status_at_submission, snapshot_captured_at)
-     VALUES (2, 2, 9.1, 'Electronics Engineering', 'Clear', ?)`
-  ).run(now);
-
-  // ── Demo comments ──
-  db.prepare(
-    `INSERT OR IGNORE INTO comments (id, application_id, author_email, text, visibility, created_at)
-     VALUES (1, 1, 'ug-academics@plaksha.edu.in', 'Academic status confirmed. Student has no outstanding fees and is currently enrolled in all prerequisite courses.', 'internal', ?)`
-  ).run(now);
-  db.prepare(
-    `INSERT OR IGNORE INTO comments (id, application_id, author_email, text, visibility, created_at)
-     VALUES (2, 1, 'student-life@plaksha.edu.in', 'Verified CGPA (8.9) against original transcript. Eligibility for the research fellowship confirmed.', 'internal', ?)`
+     VALUES (2, 2, 9.2, 'Electronics Engineering', 'Clear', ?)`
   ).run(now);
 }
 
