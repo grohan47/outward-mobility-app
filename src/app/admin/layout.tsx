@@ -18,8 +18,8 @@ export default function AdminLayout({
     { href: "/admin", icon: "dashboard", label: "Dashboard" },
     { href: "/admin/applications", icon: "description", label: "Applications" },
     { href: "/admin/opportunities", icon: "star", label: "Opportunities" },
-    { href: "/admin/workflows", icon: "account_tree", label: "Workflow Editor" },
-    { href: "/admin/settings", icon: "settings", label: "Settings" },
+    { href: "/reviewer", icon: "fact_check", label: "Review Panel" },
+    { href: "/admin/messages", icon: "chat", label: "Messaging (WIP)" },
   ];
 
   return (

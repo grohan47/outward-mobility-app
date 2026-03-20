@@ -1,52 +1,79 @@
 "use client";
 
-import { useState } from "react";
-import { loginAction } from "./actions";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
-const DEMO_ACCOUNTS = [
-  { email: "student1@plaksha.edu.in", name: "Aditya Sharma", role: "Student" },
-  { email: "student2@plaksha.edu.in", name: "Priya Kapoor", role: "Student" },
-  { email: "uge-academics@plaksha.edu.in", name: "Dr. Vikram Sahay", role: "UG Academics" },
-  { email: "student-life@plaksha.edu.in", name: "Ananya Iyer", role: "Student Life" },
-  { email: "program-chair@plaksha.edu.in", name: "Prof. Rajesh Gupta", role: "Program Chair" },
-  { email: "oge@plaksha.edu.in", name: "Rajesh Kumar", role: "OGE Admin" },
-  { email: "dean@plaksha.edu.in", name: "Dr. Sarah Jenkins", role: "Dean Academics" },
-];
+type DemoUser = {
+  email: string;
+  full_name: string;
+  role_display_name: string;
+};
+
+function roleRoute(role: string): string {
+  if (role === "STUDENT") return "/generator";
+  if (role === "OGE_ADMIN") return "/admin";
+  return "/reviewer";
+}
 
 export default function LoginPage() {
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
+  const [demoUsers, setDemoUsers] = useState<DemoUser[]>([]);
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  useEffect(() => {
+    fetch("/api/auth/demo-users")
+      .then((r) => r.json())
+      .then((d) => setDemoUsers(d.items || []))
+      .catch(() => setDemoUsers([]));
+  }, []);
+
+  const groupedUsers = useMemo(() => {
+    const students = demoUsers.filter((u) => u.role_display_name.toLowerCase() === "student");
+    const reviewers = demoUsers.filter((u) => u.role_display_name.toLowerCase() !== "student");
+    return { students, reviewers };
+  }, [demoUsers]);
+
+  async function signInWithEmail(targetEmail: string) {
     setLoading(true);
     setError(null);
 
-    const formData = new FormData(e.currentTarget);
-    const result = await loginAction(formData);
-    if (result?.error) {
-      setError(result.error);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: targetEmail.trim().toLowerCase() }),
+      });
+
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body?.detail || body?.error || "Sign in failed.");
+        setLoading(false);
+        return;
+      }
+
+      const user = body.user;
+      router.push(roleRoute(user.role));
+      router.refresh();
+    } catch {
+      setError("Unable to reach auth service. Ensure FastAPI is running on port 8000.");
       setLoading(false);
     }
   }
 
-  async function handleDemoLogin(demoEmail: string) {
-    setLoading(true);
-    setError(null);
-    const formData = new FormData();
-    formData.set("email", demoEmail);
-    const result = await loginAction(formData);
-    if (result?.error) {
-      setError(result.error);
-      setLoading(false);
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!email.trim()) {
+      setError("Please enter your email address.");
+      return;
     }
+    await signInWithEmail(email);
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-background-light via-white to-green-50 px-4">
       <div className="w-full max-w-md">
-        {/* Logo & Header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-primary/10 rounded-2xl mb-4">
             <svg fill="none" viewBox="0 0 48 48" className="w-8 h-8 text-primary">
@@ -58,22 +85,14 @@ export default function LoginPage() {
               />
             </svg>
           </div>
-          <h1 className="text-3xl font-black tracking-tight text-slate-900">
-            PRISM
-          </h1>
-          <p className="text-slate-500 mt-1 text-sm">
-            Plaksha Review Interface for Student Mobility
-          </p>
+          <h1 className="text-3xl font-black tracking-tight text-slate-900">PRISM</h1>
+          <p className="text-slate-500 mt-1 text-sm">Plaksha Review Interface for Student Mobility</p>
         </div>
 
-        {/* Login Card */}
         <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200/60 p-8">
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label
-                htmlFor="email"
-                className="block text-sm font-semibold text-slate-700 mb-1.5"
-              >
+              <label htmlFor="email" className="block text-sm font-semibold text-slate-700 mb-1.5">
                 Email Address
               </label>
               <input
@@ -87,31 +106,10 @@ export default function LoginPage() {
                 className="w-full h-11 rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all"
               />
             </div>
-            <div>
-              <label
-                htmlFor="password"
-                className="block text-sm font-semibold text-slate-700 mb-1.5"
-              >
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                defaultValue="demo123"
-                className="w-full h-11 rounded-lg border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all"
-              />
-              <p className="text-[11px] text-slate-400 mt-1 italic">
-                Password is ignored for demo — any value works.
-              </p>
-            </div>
 
             {error && (
               <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <span className="material-symbols-outlined text-red-500 text-lg mt-0.5">
-                  error
-                </span>
+                <span className="material-symbols-outlined text-red-500 text-lg mt-0.5">error</span>
                 <p className="text-sm text-red-600 font-medium">{error}</p>
               </div>
             )}
@@ -123,16 +121,12 @@ export default function LoginPage() {
             >
               {loading ? (
                 <>
-                  <span className="material-symbols-outlined animate-spin text-lg">
-                    progress_activity
-                  </span>
+                  <span className="material-symbols-outlined animate-spin text-lg">progress_activity</span>
                   Signing in...
                 </>
               ) : (
                 <>
-                  <span className="material-symbols-outlined text-lg">
-                    login
-                  </span>
+                  <span className="material-symbols-outlined text-lg">login</span>
                   Sign In
                 </>
               )}
@@ -140,61 +134,49 @@ export default function LoginPage() {
           </form>
         </div>
 
-        {/* Demo Accounts */}
         <div className="mt-6">
-          <p className="text-center text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
-            Quick Demo Login
-          </p>
+          <p className="text-center text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Quick Demo Login</p>
           <div className="grid grid-cols-1 gap-2">
-            {/* Student Area */}
-            <div>
-              <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">Applicants (Students)</h3>
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={() => handleDemoLogin("rohan@plaksha.edu.in")}
-                  className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-primary hover:bg-primary/5 transition-colors flex justify-between items-center group"
-                >
-                  <div>
-                    <div className="font-medium text-slate-800">Rohan</div>
-                    <div className="text-xs text-slate-500">rohan@plaksha.edu.in</div>
-                  </div>
-                  <span className="material-symbols-outlined text-transparent group-hover:text-primary transition-colors">arrow_forward</span>
-                </button>
-                <button
-                  onClick={() => handleDemoLogin("siddharth@plaksha.edu.in")}
-                  className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-primary hover:bg-primary/5 transition-colors flex justify-between items-center group"
-                >
-                  <div>
-                    <div className="font-medium text-slate-800">Siddharth</div>
-                    <div className="text-xs text-slate-500">siddharth@plaksha.edu.in</div>
-                  </div>
-                  <span className="material-symbols-outlined text-transparent group-hover:text-primary transition-colors">arrow_forward</span>
-                </button>
+            {groupedUsers.students.length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">Applicants (Students)</h3>
+                <div className="flex flex-col gap-2">
+                  {groupedUsers.students.map((user) => (
+                    <button
+                      key={user.email}
+                      onClick={() => signInWithEmail(user.email)}
+                      className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-primary hover:bg-primary/5 transition-colors flex justify-between items-center group"
+                    >
+                      <div>
+                        <div className="font-medium text-slate-800">{user.full_name}</div>
+                        <div className="text-xs text-slate-500">{user.email}</div>
+                      </div>
+                      <span className="material-symbols-outlined text-transparent group-hover:text-primary transition-colors">arrow_forward</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-            {DEMO_ACCOUNTS.filter(account => account.role !== "Student").map((account) => (
+            )}
+
+            {groupedUsers.reviewers.map((user) => (
               <button
-                key={account.email}
-                onClick={() => handleDemoLogin(account.email)}
+                key={user.email}
+                onClick={() => signInWithEmail(user.email)}
                 disabled={loading}
                 className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl bg-white border border-slate-200 hover:border-primary/40 hover:bg-primary/5 transition-all text-left group disabled:opacity-50"
               >
                 <div className="h-8 w-8 rounded-full bg-slate-100 group-hover:bg-primary/10 flex items-center justify-center text-[11px] font-bold text-slate-500 group-hover:text-primary transition-colors">
-                  {account.name
+                  {user.full_name
                     .split(" ")
                     .map((n) => n[0])
                     .join("")}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-slate-800 truncate">
-                    {account.name}
-                  </p>
-                  <p className="text-[11px] text-slate-400 truncate">
-                    {account.email}
-                  </p>
+                  <p className="text-sm font-semibold text-slate-800 truncate">{user.full_name}</p>
+                  <p className="text-[11px] text-slate-400 truncate">{user.email}</p>
                 </div>
                 <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                  {account.role}
+                  {user.role_display_name}
                 </span>
               </button>
             ))}

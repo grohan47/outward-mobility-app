@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 export default function MyApplications() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -18,6 +19,27 @@ export default function MyApplications() {
         setLoading(false);
       });
   }, []);
+
+  async function deleteApplication(applicationId: number) {
+    const confirmed = window.confirm("Delete this application permanently?");
+    if (!confirmed) return;
+
+    setDeletingId(applicationId);
+    try {
+      const res = await fetch(`/api/applications/${applicationId}`, {
+        method: "DELETE",
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body?.detail || "Unable to delete application.");
+      }
+      setItems((prev) => prev.filter((item) => item.id !== applicationId));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Unable to delete application.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   const columns = [
     {
@@ -49,7 +71,7 @@ export default function MyApplications() {
         } else if (item.workflow?.finalStatus === "APPROVED") {
           variant = "success";
           icon = "check_circle";
-        } else if (item.current_stage === "STUDENT_SUBMISSION") {
+        } else if (Number(item.current_step_order) === 0 || item.workflow?.stageCode === "STUDENT_REWORK") {
           variant = "warning";
           icon = "edit_document";
         }
@@ -65,6 +87,23 @@ export default function MyApplications() {
       key: "date",
       header: "Last Updated",
       cell: (item: any) => <span className="text-sm text-slate-500">{new Date(item.updated_at).toLocaleDateString()}</span>,
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      cell: (item: any) => (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void deleteApplication(item.id);
+          }}
+          disabled={deletingId === item.id}
+          className="px-2 py-1 text-xs font-bold text-red-600 border border-red-200 rounded-md hover:bg-red-50 disabled:opacity-60"
+        >
+          {deletingId === item.id ? "Deleting..." : "Delete"}
+        </button>
+      ),
     },
   ];
 

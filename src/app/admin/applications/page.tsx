@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
-import { Card } from "@/components/ui/Card";
 
 export default function AdminApplicationsLedger() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
     fetch("/api/admin/applications")
@@ -17,6 +18,27 @@ export default function AdminApplicationsLedger() {
         setLoading(false);
       });
   }, []);
+
+  async function deleteApplication(applicationId: number) {
+    const confirmed = window.confirm("Delete this application permanently?");
+    if (!confirmed) return;
+
+    setDeletingId(applicationId);
+    try {
+      const res = await fetch(`/api/applications/${applicationId}`, {
+        method: "DELETE",
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body?.detail || "Unable to delete application.");
+      }
+      setItems((prev) => prev.filter((item) => item.id !== applicationId));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Unable to delete application.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   const columns = [
     {
@@ -47,15 +69,46 @@ export default function AdminApplicationsLedger() {
         let variant: any = "info";
         if (item.workflow.finalStatus === "REJECTED") variant = "danger";
         if (item.workflow.finalStatus === "APPROVED") variant = "success";
-        
+
+        const steps = Array.isArray(item.pipeline_steps) ? item.pipeline_steps : [];
+        const currentStep = Number(item.current_step_order || 0);
+        const closed = Boolean(item.workflow?.finalStatus);
+
         return (
           <div className="flex flex-col items-start gap-1">
             <Badge variant={variant}>{item.workflow.stageLabel}</Badge>
             {item.workflow.finalStatus && (
-              <span className={`text-[10px] font-bold uppercase tracking-wider ${item.workflow.finalStatus === 'REJECTED' ? 'text-red-500' : 'text-green-600'}`}>
+              <span
+                className={`text-[10px] font-bold uppercase tracking-wider ${
+                  item.workflow.finalStatus === "REJECTED" ? "text-red-500" : "text-green-600"
+                }`}
+              >
                 {item.workflow.finalStatus}
               </span>
             )}
+            <div className="w-48 mt-1">
+              <div className="flex items-center gap-1">
+                {steps.map((step: any, idx: number) => {
+                  const stepOrder = Number(step.step_order);
+                  const done = closed || stepOrder < currentStep;
+                  const active = !closed && stepOrder === currentStep;
+                  const dotClass = done
+                    ? item.workflow.finalStatus === "REJECTED"
+                      ? "bg-red-500 border-red-500"
+                      : "bg-primary border-primary"
+                    : active
+                      ? "bg-white border-primary"
+                      : "bg-white border-slate-300";
+
+                  return (
+                    <div key={`${item.id}-step-${stepOrder}`} className="flex items-center gap-1 min-w-0">
+                      <div className={`h-2.5 w-2.5 rounded-full border ${dotClass}`} title={step.step_name} />
+                      {idx < steps.length - 1 && <div className="h-0.5 w-5 bg-slate-200" />}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         );
       },
@@ -67,14 +120,28 @@ export default function AdminApplicationsLedger() {
     },
     {
       key: "actions",
-      header: "",
+      header: "Actions",
       cell: (item: any) => (
-        <a href={`/admin/applications/${item.id}`} className="text-sm font-bold text-primary hover:text-primary-dark">
-          Manage &rarr;
-        </a>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/admin/applications/${item.id}`}
+            className="px-2 py-1 text-xs font-bold text-primary border border-primary/20 rounded-md hover:bg-primary/5"
+          >
+            Review / Edit
+          </Link>
+          <button
+            type="button"
+            onClick={() => {
+              void deleteApplication(item.id);
+            }}
+            disabled={deletingId === item.id}
+            className="px-2 py-1 text-xs font-bold text-red-600 border border-red-200 rounded-md hover:bg-red-50 disabled:opacity-60"
+          >
+            {deletingId === item.id ? "Deleting..." : "Delete"}
+          </button>
+        </div>
       ),
-      align: "right" as const,
-    }
+    },
   ];
 
   return (
@@ -82,8 +149,15 @@ export default function AdminApplicationsLedger() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Application Ledger</h1>
-          <p className="text-slate-500 mt-2">Master view of all outward mobility applications across the platform.</p>
+          <p className="text-slate-500 mt-2">Master view of all outward mobility applications.</p>
         </div>
+        <Link
+          href="/admin/messages"
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm font-semibold hover:bg-amber-100"
+        >
+          <span className="material-symbols-outlined text-[18px]">chat</span>
+          Messaging (WIP)
+        </Link>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden p-2">

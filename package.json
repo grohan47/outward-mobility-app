@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "api:dev": "uvicorn fastapi_app.main:app --reload --host 127.0.0.1 --port 8000",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

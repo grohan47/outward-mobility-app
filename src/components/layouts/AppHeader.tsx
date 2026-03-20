@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 interface AppHeaderProps {
   userName: string;
@@ -9,7 +9,13 @@ interface AppHeaderProps {
 }
 
 export function AppHeader({ userName, roleDisplayName }: AppHeaderProps) {
-  const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleLogout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.push("/");
+    router.refresh();
+  }
 
   return (
     <header className="fixed top-0 inset-x-0 h-16 bg-white border-b border-slate-200 z-50 flex items-center justify-between px-6">
@@ -51,15 +57,14 @@ export function AppHeader({ userName, roleDisplayName }: AppHeaderProps) {
         <div className="h-9 w-9 rounded-full bg-gradient-to-br from-primary to-primary-dark flex items-center justify-center text-white font-bold text-sm shadow-sm ring-2 ring-white">
           {userName.split(" ").map((n) => n[0]).join("")}
         </div>
-        <form action="/actions/logout" method="POST">
-          <button
-            type="submit"
-            className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-            title="Sign out"
-          >
-            <span className="material-symbols-outlined text-[20px]">logout</span>
-          </button>
-        </form>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+          title="Sign out"
+        >
+          <span className="material-symbols-outlined text-[20px]">logout</span>
+        </button>
       </div>
     </header>
   );

@@ -10,15 +10,23 @@ export default function ReviewerLayout({
 }) {
   const session = requireSession();
 
-  // Protect route
-  if (!["STUDENT_LIFE", "PROGRAM_CHAIR", "DEAN_ACADEMICS", "OGE_ADMIN"].includes(session.role)) {
+  if (!["REVIEWER", "STUDENT_LIFE", "PROGRAM_CHAIR", "DEAN_ACADEMICS", "OGE_ADMIN"].includes(session.role)) {
     redirect("/");
   }
 
-  const navItems = [
-    { href: "/reviewer", icon: "inbox", label: "Task Inbox", badge: 4 }, // Hardcoded badge for demo
-    { href: "/reviewer/history", icon: "history", label: "Review History" },
-  ];
+  const navItems =
+    session.role === "OGE_ADMIN"
+      ? [
+          { href: "/admin", icon: "dashboard", label: "Dashboard" },
+          { href: "/admin/applications", icon: "description", label: "Applications" },
+          { href: "/admin/opportunities", icon: "star", label: "Opportunities" },
+          { href: "/reviewer", icon: "fact_check", label: "Review Panel" },
+          { href: "/admin/messages", icon: "chat", label: "Messaging (WIP)" },
+        ]
+      : [
+          { href: "/reviewer", icon: "inbox", label: "Task Inbox" },
+          { href: "/reviewer/messages", icon: "chat", label: "Messaging (WIP)" },
+        ];
 
   return (
     <div className="min-h-screen bg-background-light">
