@@ -1,34 +1,29 @@
 {
-  "name": "prism-app",
+  "name": "prism-approvals-platform",
+  "version": "0.2.0",
   "private": true,
-  "version": "0.0.0",
-  "type": "module",
   "scripts": {
-    "dev": "vite",
-    "server:dev": "node server/httpServer.js",
-    "build": "vite build",
-    "preview": "vite preview",
-    "db:init": "node server/scripts/initDb.js",
-    "smoke:server": "node server/scripts/smokeServer.js"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:init": "node server/scripts/initDb.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.7.2",
-    "clsx": "^2.1.0",
-    "express": "^4.21.2",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.0",
-    "tailwind-merge": "^2.2.0"
+    "react": "^18",
+    "react-dom": "^18",
+    "next": "14.2.35",
+    "better-sqlite3": "^11.9.1"
   },
   "devDependencies": {
-    "@tailwindcss/container-queries": "^0.1.1",
-    "@tailwindcss/forms": "^0.5.11",
-    "@types/react": "^18.2.56",
-    "@types/react-dom": "^18.2.19",
-    "@vitejs/plugin-react": "^4.2.1",
-    "autoprefixer": "^10.4.17",
-    "postcss": "^8.4.35",
+    "typescript": "^5",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/better-sqlite3": "^7.6.12",
+    "postcss": "^8",
     "tailwindcss": "^3.4.1",
-    "vite": "^5.1.4"
+    "eslint": "^8",
+    "eslint-config-next": "14.2.35"
   }
 }

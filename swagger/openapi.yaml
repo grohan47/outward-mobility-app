@@ -1,0 +1,153 @@
+openapi: 3.0.0
+info:
+  title: PRISM Core API
+  description: Configurable approvals workflow API for Plaksha student mobility.
+  version: 0.2.0
+servers:
+  - url: http://localhost:3000/api
+    description: Local development server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  timestamp:
+                    type: string
+
+  /opportunities:
+    get:
+      summary: List opportunities
+      responses:
+        '200':
+          description: List of opportunities
+    post:
+      summary: Create opportunity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, title]
+              properties:
+                code: { type: string }
+                title: { type: string }
+                destination: { type: string }
+                term: { type: string }
+                deadline: { type: string }
+                seats: { type: integer }
+      responses:
+        '201':
+          description: Created
+
+  /applications:
+    get:
+      summary: List all applications (can filter by studentProfileId)
+      parameters:
+        - in: query
+          name: studentProfileId
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Application list
+    post:
+      summary: Create new application
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                studentProfileId: { type: integer }
+                opportunityId: { type: integer }
+      responses:
+        '201':
+          description: Created
+
+  /applications/{id}:
+    get:
+      summary: Application Details
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Application detail payload including snapshot, timeline, and reviews
+
+  /applications/{id}/approve:
+    post:
+      summary: Advance workflow sequence
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reviewerEmail: { type: string }
+                remarks: { type: string }
+      responses:
+        '200':
+          description: Approved
+
+  /applications/{id}/request-changes:
+    post:
+      summary: Flag and return to student
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reviewerEmail: { type: string }
+                remarks: { type: string }
+      responses:
+        '200':
+          description: Changes requested
+
+  /applications/{id}/reject:
+    post:
+      summary: Final rejection
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reviewerEmail: { type: string }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Rejected
