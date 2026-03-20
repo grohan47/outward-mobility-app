@@ -17,6 +17,8 @@ export default function OGEApplicationReview() {
     const [error, setError] = useState('');
     const [appData, setAppData] = useState(null);
     const [actionMessage, setActionMessage] = useState('');
+    const [commentText, setCommentText] = useState('');
+    const [commentLoading, setCommentLoading] = useState(false);
 
     useEffect(() => {
         let mounted = true;
@@ -45,6 +47,27 @@ export default function OGEApplicationReview() {
             mounted = false;
         };
     }, [id]);
+
+    async function submitComment() {
+        setCommentLoading(true);
+        try {
+            await apiPost('/api/remarks', {
+                applicationId: Number(id),
+                remarkType: 'COMMENT',
+                text: commentText,
+                visibilityScope: 'INTERNAL',
+                createdBy: 99, // Replace with actual reviewer user id
+            });
+            setCommentText('');
+            // Reload application data to show new comment
+            const refreshed = await apiGet(`/api/applications/${id}`);
+            setAppData(refreshed);
+        } catch (err) {
+            setActionMessage(err.message || 'Failed to submit comment');
+        } finally {
+            setCommentLoading(false);
+        }
+    }
 
     async function submitDecision(decision) {
         try {
@@ -149,6 +172,45 @@ export default function OGEApplicationReview() {
                 </div>
 
                 <div className="max-w-3xl mx-auto py-8 px-6 space-y-10">
+                                        {/* Comments Section */}
+                                        <section className="mb-10">
+                                            <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+                                                <span className="flex items-center justify-center size-6 rounded-full bg-slate-100 dark:bg-slate-800 text-xs text-slate-500">💬</span>
+                                                Reviewer Comments
+                                            </h2>
+                                            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm space-y-6">
+                                                <div className="space-y-4">
+                                                    {(appData?.remarks ?? []).length === 0 && <p className="text-sm text-slate-500">No comments yet.</p>}
+                                                    {(appData?.remarks ?? []).map((remark) => (
+                                                        <div key={remark.id} className="border border-slate-200 dark:border-slate-700 rounded-lg p-3">
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className="material-symbols-outlined text-slate-400">chat</span>
+                                                                <span className="text-xs text-slate-500">{new Date(remark.created_at).toLocaleString()}</span>
+                                                            </div>
+                                                            <div className="text-sm text-slate-900 dark:text-white">{remark.text}</div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div className="flex gap-2 mt-4">
+                                                    <input
+                                                        type="text"
+                                                        value={commentText}
+                                                        onChange={e => setCommentText(e.target.value)}
+                                                        placeholder="Add a comment..."
+                                                        className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-white"
+                                                        disabled={commentLoading}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={submitComment}
+                                                        className="px-4 py-2 rounded-lg bg-primary text-white font-bold text-sm hover:bg-green-600 transition-colors"
+                                                        disabled={commentLoading || !commentText.trim()}
+                                                    >
+                                                        {commentLoading ? 'Posting...' : 'Post'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </section>
                     <header className="flex items-center justify-between pb-2">
                         <div>
                             <h1 className="text-2xl font-black text-slate-900 dark:text-white">{appData?.student_user?.full_name ?? 'Unknown Student'}</h1>

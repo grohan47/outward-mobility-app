@@ -21,6 +21,9 @@ export function createPrismServices(options = {}) {
     const reviewsRepository = new ApplicationReviewsRepository(db);
     const timelineRepository = new TimelineRepository(db);
     const snapshotsRepository = new ApplicationStudentSnapshotRepository(db);
+    // Add ApplicationRemarksRepository
+    const { ApplicationRemarksRepository } = await import('./repositories/applicationRemarksRepository.js');
+    const remarksRepository = new ApplicationRemarksRepository(db);
 
     const applicationService = new ApplicationService({
         db,
@@ -44,6 +47,7 @@ export function createPrismServices(options = {}) {
             reviewsRepository,
             timelineRepository,
             snapshotsRepository,
+            remarksRepository,
         },
         services: {
             applicationService,

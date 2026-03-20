@@ -188,6 +188,7 @@ app.get("/api/applications/:id", withErrorHandling((req, res) => {
     const decisions = prism.repositories.decisionsRepository.findByApplicationId(application.id);
     const timeline = prism.repositories.timelineRepository.findByApplicationId(application.id);
     const snapshot = prism.repositories.snapshotsRepository.findByApplicationId(application.id);
+    const remarks = prism.repositories.remarksRepository.findByApplicationId(application.id);
 
     res.json({
         application,
@@ -198,6 +199,7 @@ app.get("/api/applications/:id", withErrorHandling((req, res) => {
         reviews,
         decisions,
         timeline,
+        remarks,
         workflow: getWorkflowMeta(application),
     });
 }));
@@ -249,6 +251,24 @@ app.post("/api/applications/:id/resubmit", withErrorHandling((req, res) => {
 }));
 
 app.post("/api/reviews/submit", withErrorHandling((req, res) => {
+    // Create a new application remark (comment)
+    app.post("/api/remarks", withErrorHandling((req, res) => {
+        try {
+            const { applicationId, remarkType, text, visibilityScope, createdBy } = req.body;
+            const now = new Date().toISOString();
+            const created = prism.repositories.remarksRepository.create({
+                application_id: Number(applicationId),
+                remark_type: remarkType || "COMMENT",
+                text,
+                visibility_scope: visibilityScope || "INTERNAL",
+                created_by: Number(createdBy),
+                created_at: now,
+            });
+            res.status(201).json({ remark: created });
+        } catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    });
     try {
         const { applicationId, reviewerUserId, reviewerRole, decision, remarks, visibilityScope } = req.body;
         const updated = prism.services.reviewService.submitReview({
