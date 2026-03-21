@@ -17,10 +17,11 @@ type ApplicationDetailPayload = {
   };
   opportunity?: { title?: string; term?: string };
   workflow: { stageLabel: string; finalStatus: string | null };
-  reviews: Array<{ id: number; reviewer_role: string; decision: string; remarks: string | null; created_at: string }>;
+  reviews: Array<{ id: number; reviewer_name?: string; reviewer_role: string; decision: string; remarks: string | null; created_at: string }>;
   comments: Array<{ id: number; author_email: string; text: string; visibility: string; created_at: string }>;
   timeline: Array<{ id: number; event_type: string; created_at: string; event_payload: { to_stage?: string } | null }>;
   pipeline_steps: Array<{ step_order: number; step_name: string }>;
+  field_labels?: Record<string, string>;
 };
 
 export default function ApplicationDetailView() {
@@ -55,6 +56,7 @@ export default function ApplicationDetailView() {
       return {};
     }
   }, [data]);
+  const fieldLabels = data?.field_labels || {};
 
   if (loading) {
     return (
@@ -190,7 +192,7 @@ export default function ApplicationDetailView() {
                 Object.entries(submittedData).map(([key, value]) => (
                   <div key={key} className="border-b border-slate-200 last:border-0 pb-2 last:pb-0">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                      {key.replace(/_/g, " ")}
+                      {fieldLabels[key] || key.replace(/_/g, " ")}
                     </p>
                     <p className="text-sm text-slate-800 font-medium">{String(value)}</p>
                   </div>
@@ -218,7 +220,7 @@ export default function ApplicationDetailView() {
                   >
                     <div className="flex justify-between items-start mb-2">
                       <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                        {review.reviewer_role} • {review.decision}
+                        {(review.reviewer_name || review.reviewer_role)} • {review.decision}
                       </span>
                       <span className="text-[10px] text-slate-400 font-medium">
                         {new Date(review.created_at).toLocaleDateString()}

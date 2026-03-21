@@ -149,7 +149,7 @@ export default function AdminApplicationsLedger() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Application Ledger</h1>
-          <p className="text-slate-500 mt-2">Master view of all outward mobility applications.</p>
+          <p className="text-slate-500 mt-2">Master view of all approval requests across configured workflows.</p>
         </div>
         <Link
           href="/admin/messages"

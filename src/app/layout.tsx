@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PRISM — Plaksha Review Interface for Student Mobility",
+  title: "PRISM — Workflow Platform",
   description:
-    "A configurable approvals workflow platform for managing student mobility applications end-to-end.",
+    "PRISM is an app to manage approval flows across any department and any organization.",
 };
 
 export default function RootLayout({

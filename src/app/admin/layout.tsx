@@ -10,7 +10,7 @@ export default function AdminLayout({
 }) {
   const session = requireSession();
 
-  if (session.role !== "OGE_ADMIN") {
+  if (session.role !== "ADMIN") {
     redirect("/");
   }
 

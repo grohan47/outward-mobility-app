@@ -1,62 +1,85 @@
-# PRISM Configurable Approvals Platform: Midsem Progress
+# PRISM Endpoint Progress Sheet (Midsem)
 
-**Goal:** Transform the PRISM prototype into a generalized approvals platform, seeded with the OGE Outward Mobility workflow, achieving ≥70% backend endpoint implementation.
+## Legend
+- <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span>
+- <span style="display:inline-block;padding:2px 8px;background:#fef9c3;color:#854d0e;border-radius:6px;font-weight:600;">In Progress</span>
+- <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span>
 
-## Sprint Metrics
-* **Total Endpoints Planned:** 33
-* **Endpoints Implemented:** 24 (73%)
-* **Status:** <span style="color:green; font-weight:bold;">🟢 ON TRACK (Midsem Target Met)</span>
+## Snapshot
+| Metric | Value |
+|---|---|
+| Non-AI endpoints tracked | 31 |
+| Non-AI endpoints implemented | 31 / 31 (100%) |
+| AI/Gemini endpoints tracked | 5 |
+| AI/Gemini endpoints implemented | 0 / 5 |
+| Test suite | `python3 -m unittest -v fastapi_app.tests.test_api_endpoints` |
+| Latest automated result | **PASS (4/4 tests)** |
 
----
+## Endpoint Matrix (Non-AI)
+| Group | Group Description | Endpoint | Method | Endpoint Description | Status | Verification |
+|---|---|---|---|---|---|---|
+| Utility & Docs | Core service checks and API documentation/demo surfaces. | `/api/health` | GET | Health probe for backend + DB readiness. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Utility & Docs | Core service checks and API documentation/demo surfaces. | `/openapi.json` | GET | Machine-readable OpenAPI contract export. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated route inventory test |
+| Utility & Docs | Core service checks and API documentation/demo surfaces. | `/swagger` | GET | Interactive Swagger UI for live API demo calls. | <span style="display:inline-block;padding:2px 8px;background:#fef9c3;color:#854d0e;border-radius:6px;font-weight:600;">In Progress</span> | Route configured; UI click-through pending local browser run |
+| Auth & Session | Identity lifecycle and cookie-backed session ownership in FastAPI. | `/api/auth/login` | POST | Login by email and issue HttpOnly session cookie. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Auth & Session | Identity lifecycle and cookie-backed session ownership in FastAPI. | `/api/auth/me` | GET | Resolve currently authenticated user from session. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Auth & Session | Identity lifecycle and cookie-backed session ownership in FastAPI. | `/api/auth/logout` | POST | Invalidate/clear current session cookie. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Auth & Session | Identity lifecycle and cookie-backed session ownership in FastAPI. | `/api/users/me` | GET | Alias endpoint for user identity payload. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Auth & Session | Identity lifecycle and cookie-backed session ownership in FastAPI. | `/api/auth/demo-users` | GET | Returns seeded/demo users for quick login switching. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/form-fields` | GET | Fetches field catalog and default workflow template object. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/opportunities` | GET | Generator-facing list of published opportunities. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/opportunities/{opportunity_id}` | GET | Generator-facing opportunity detail with required fields + pipeline. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/opportunities` | GET | Admin list of opportunities with applicant counts. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/opportunities/{opportunity_id}` | GET | Admin detail for one opportunity, including workflow and custom fields. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/opportunities` | POST | Creates opportunity metadata, form requirements, and ordered reviewer pipeline. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/opportunities/{opportunity_id}` | PATCH | Edits opportunity metadata and/or rewrites form/workflow structure. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/opportunities/{opportunity_id}` | DELETE | Deletes opportunity and cascades related applications/reviews/comments/timeline. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/visibility-audit` | GET | Full-system audit to verify reviewer field visibility rules. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Opportunity Config | Opportunity creation/editing + dynamic form and workflow configuration. | `/api/admin/opportunities/{opportunity_id}/visibility-audit` | GET | Single-opportunity visibility/access audit report. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications` | POST | Creates a new application submission for an opportunity. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications` | GET | Role-scoped list of applications (admin/reviewer/student behavior differs). | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications/{application_id}` | GET | Detailed application record with workflow/timeline/access filtering. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications/{application_id}` | DELETE | Deletes application (student own record or admin override). | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications/{application_id}/approve` | POST | Approves current step and advances/finishes pipeline. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications/{application_id}/request-changes` | POST | Sends application backward to student or prior reviewer step. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications/{application_id}/student-response` | POST | Accepts student rework response and returns file to requested stage. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Applications Workflow | Core application lifecycle, transitions, and decision actions. | `/api/applications/{application_id}/reject` | POST | Final reject decision (restricted to final-authority roles). | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/applications/{application_id}/comments` | GET | Fetch comments with reviewer comment visibility constraints. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/applications/{application_id}/comments` | POST | Add comment entry to application record. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/my/applications` | GET | Generator-only personal application list. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/reviewer/inbox` | GET | Reviewer queue containing currently assigned applications. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/admin/dashboard/summary` | GET | Admin KPI aggregation (counts, avg processing, flagged ratio, active opps). | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/admin/applications` | GET | Admin full applications ledger endpoint. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
+| Comments & Dashboards | Reviewer/admin/student operational views and comments stream. | `/api/admin/applications/{application_id}` | PATCH | Admin edit of submitted application data payload. | <span style="display:inline-block;padding:2px 8px;background:#dcfce7;color:#166534;border-radius:6px;font-weight:600;">Done</span> | Automated test |
 
-## 🟢 Implemented (Completed for Midsem)
+## Endpoint Matrix (AI / Gemini Planned)
+| Group | Group Description | Endpoint | Method | Endpoint Description | Status |
+|---|---|---|---|---|---|
+| AI Automation | Gemini-powered workflow generation and policy audit assistants. | `/api/ai/generate-workflow-from-prompt` | POST | Generate full opportunity + pipeline from a single admin prompt. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| AI Automation | Gemini-powered workflow generation and policy audit assistants. | `/api/ai/audit-application` | POST | Audit submitted application for policy completeness/consistency. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| AI Automation | Gemini-powered workflow generation and policy audit assistants. | `/api/ai/auto-reject-suggestion` | POST | Return reject/flag recommendation with rationale trace. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| AI Automation | Gemini-powered workflow generation and policy audit assistants. | `/api/ai/fraud-risk-score` | POST | Score risk of bogus/fabricated or inconsistent applications. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| AI Automation | Gemini-powered workflow generation and policy audit assistants. | `/api/ai/application-summary` | POST | Generate concise reviewer/admin summary for quicker decisions. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
 
-**Group A: Utility / Core**
-1. `GET /api/health` — Returns system health and DB readiness.
-2. `GET /api/users/me` — Returns current logged-in session user.
+## Endpoint Matrix (Microsoft SSO Planned)
+| Group | Group Description | Endpoint | Method | Endpoint Description | Status |
+|---|---|---|---|---|---|
+| Microsoft SSO Auth | Enterprise login via Microsoft identity platform (Azure AD / Entra ID). | `/api/auth/microsoft/login` | GET | Starts OAuth2/OIDC sign-in flow and redirects to Microsoft consent/login. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Microsoft SSO Auth | Enterprise login via Microsoft identity platform (Azure AD / Entra ID). | `/api/auth/microsoft/callback` | GET | Handles Microsoft auth callback, validates state/code, issues local app session. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Microsoft SSO Auth | Enterprise login via Microsoft identity platform (Azure AD / Entra ID). | `/api/auth/microsoft/refresh` | POST | Refreshes Microsoft-backed session/token state without full re-login. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Microsoft SSO Auth | Enterprise login via Microsoft identity platform (Azure AD / Entra ID). | `/api/auth/microsoft/logout` | POST | Logs out from local app session and triggers Microsoft SSO sign-out flow. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
 
-**Group B: Generator (Student) Surface**
-3. `GET /api/opportunities` — Lists published program opportunities.
-4. `GET /api/opportunities/:id` — Details of specific opportunity (incl. form schema).
-5. `POST /api/applications` — Creates an application (links user profile + opportunity).
-6. `GET /api/my/applications` — Lists active/past applications for logged-in student.
-7. `GET /api/applications/:id` — (Shared) Full application JSON including history timeline, reviews, snapshot.
+## Endpoint Matrix (Chat / Messaging Planned)
+| Group | Group Description | Endpoint | Method | Endpoint Description | Status |
+|---|---|---|---|---|---|
+| Chat & Messaging | Cross-stakeholder communication threads tied to applications. | `/api/chat/threads` | GET | Lists message threads visible to current user. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Chat & Messaging | Cross-stakeholder communication threads tied to applications. | `/api/chat/threads` | POST | Creates a new message thread for an application/context. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Chat & Messaging | Cross-stakeholder communication threads tied to applications. | `/api/chat/threads/{thread_id}/messages` | GET | Fetches paginated messages for one thread. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Chat & Messaging | Cross-stakeholder communication threads tied to applications. | `/api/chat/threads/{thread_id}/messages` | POST | Sends a message in a thread. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
+| Chat & Messaging | Cross-stakeholder communication threads tied to applications. | `/api/chat/threads/{thread_id}/read` | POST | Marks thread messages as read for the current user. | <span style="display:inline-block;padding:2px 8px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:6px;font-weight:600;">Not Implemented</span> |
 
-**Group C: Reviewer Surface (Configurable Roles)**
-8. `GET /api/reviewer/inbox` — Fetches applications assigned to logged-in reviewer based on workflow config.
-9. `POST /api/applications/:id/approve` — Approves step, automatically advances `current_stage` to next step, logs timeline & review.
-10. `POST /api/applications/:id/request-changes` — Flags application, sends back to `STUDENT_SUBMISSION`, logs visible review.
-11. `POST /api/applications/:id/reject` — Closes workflow with `final_status=REJECTED` (restricted to OGE/Dean).
-12. `POST /api/applications/:id/comments` — Adds a remark/comment with `internal` or `generator_visible` scoping.
-13. `GET /api/applications/:id/comments` — Fetches application comments.
-
-**Group D: Admin (OGE) Surface**
-14. `GET /api/admin/dashboard/summary` — Aggregates counts (total, pending, awaiting action, approved) for master dashboard.
-15. `GET /api/admin/applications` — Fetches complete, unfiltered ledger of all applications across all workflows.
-
----
-
-## 🟡 Partial / Mocked (Functional MVP)
-
-**Group E: Form & Workflow Templates**
-16. *Database seed layer functions as the API substitute for midsem.* The DB is initialized with `form_templates` (JSON schemas) and `workflow_templates` (sequential step arrays).
-17. Opportunities reference these templates to dynamically build approval chains. Full CRUD endpoints deferred to post-midsem.
-
-**Group F: Authentication**
-18. `POST /actions/login` (Next.js server action) — Email-based pseudo-auth. Associates email with role configuration to drive reviewer visibility.
-
----
-
-## ⚪ Planned for Final Release
-
-**Advanced Management APIs**
-19. `POST /api/admin/opportunities`
-20. `PATCH /api/admin/opportunities/:id`
-21. `POST /api/admin/workflow-templates`
-22. `PATCH /api/admin/workflow-templates/:id`
-23. `POST /api/admin/form-templates`
-
-**AI Assistant Integration (Stubs existing)**
-24. `POST /api/ai/validate-application`
-25. `POST /api/ai/suggest-workflow`
-26. `POST /api/ai/summarize-application`
+## Notes for Midsem Demo
+- Backend auth is cookie-based (`prism_session`, HttpOnly) and handled by FastAPI.
+- Sensitive identity/session state is not stored in `localStorage`.
+- Swagger live demo sequence (local browser): login -> create opportunity -> create application -> reviewer approve.
+- Microsoft SSO login and chat APIs are intentionally listed as planned and currently not implemented.

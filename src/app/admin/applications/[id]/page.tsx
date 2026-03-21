@@ -27,6 +27,7 @@ type PipelineStep = {
 
 type ReviewRecord = {
   id: number;
+  reviewer_name?: string;
   reviewer_role: string;
   decision: string;
   remarks: string | null;
@@ -54,6 +55,7 @@ type DetailPayload = {
   timeline: TimelineRecord[];
   pipeline_steps: PipelineStep[];
   application_file?: Record<string, unknown>;
+  field_labels?: Record<string, string>;
 };
 
 function formatValue(value: unknown): string {
@@ -147,6 +149,7 @@ export default function AdminApplicationReviewPage() {
   }, [data]);
 
   const requiredInputs = currentStep?.required_inputs || [];
+  const fieldLabels = data?.field_labels || {};
 
   const priorSteps = useMemo(() => {
     if (!data) return [];
@@ -282,7 +285,9 @@ export default function AdminApplicationReviewPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {Object.entries(fileDraft).map(([key, value]) => (
                 <div key={key}>
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">{labelFromKey(key)}</label>
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                    {fieldLabels[key] || labelFromKey(key)}
+                  </label>
                   <input
                     value={value}
                     onChange={(e) => setFileDraft((prev) => ({ ...prev, [key]: e.target.value }))}
@@ -442,7 +447,7 @@ export default function AdminApplicationReviewPage() {
             {data.reviews.length === 0 && <p className="text-slate-400 italic text-sm">No review entries yet.</p>}
             {data.reviews.map((review) => (
               <div key={review.id} className="pb-4 border-b border-slate-100 last:border-0 last:pb-0">
-                <p className="text-sm font-bold text-slate-900">{review.reviewer_role}</p>
+                <p className="text-sm font-bold text-slate-900">{review.reviewer_name || review.reviewer_role}</p>
                 <p className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">{review.decision}</p>
                 <p className="text-sm text-slate-700 mt-2">{review.remarks || "No remarks."}</p>
                 <p className="text-[10px] text-slate-400 font-bold tracking-wider mt-2 uppercase">

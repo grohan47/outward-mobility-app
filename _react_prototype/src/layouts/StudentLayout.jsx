@@ -9,7 +9,7 @@ export default function StudentLayout() {
             <main className="flex-1 overflow-y-auto ml-64 p-8">
                 <header className="mb-8">
                     <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Student Dashboard</h2>
-                    <p className="text-slate-500 dark:text-slate-400 mt-1">Welcome back to Plaksha Review Interface for Student Mobility</p>
+                    <p className="text-slate-500 dark:text-slate-400 mt-1">Welcome back to PRISM</p>
                 </header>
 
                 <Outlet />

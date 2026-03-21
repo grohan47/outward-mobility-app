@@ -10,12 +10,12 @@ export default function ReviewerLayout({
 }) {
   const session = requireSession();
 
-  if (!["REVIEWER", "STUDENT_LIFE", "PROGRAM_CHAIR", "DEAN_ACADEMICS", "OGE_ADMIN"].includes(session.role)) {
+  if (!["REVIEWER", "ADMIN"].includes(session.role)) {
     redirect("/");
   }
 
   const navItems =
-    session.role === "OGE_ADMIN"
+    session.role === "ADMIN"
       ? [
           { href: "/admin", icon: "dashboard", label: "Dashboard" },
           { href: "/admin/applications", icon: "description", label: "Applications" },

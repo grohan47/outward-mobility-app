@@ -58,7 +58,7 @@ export default function GeneratorDashboard() {
         <h1 className="text-3xl font-black text-slate-900 tracking-tight">
           Welcome back{user?.name ? `, ${user.name.split(" ")[0]}` : ""}
         </h1>
-        <p className="text-slate-500 mt-2 text-lg">Here is an overview of your outward mobility applications.</p>
+        <p className="text-slate-500 mt-2 text-lg">Here is an overview of your approval requests and workflow activity.</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

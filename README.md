@@ -1,5 +1,7 @@
 # PRISM Approvals Platform (Next.js + FastAPI)
 
+PRISM is an app to manage approval flows across any department and any organization.
+
 This repository now runs with:
 - `Next.js` for role-based frontend surfaces.
 - `FastAPI` as the single backend for auth + all `/api/*` calls.
@@ -40,9 +42,9 @@ npm run dev
 ## Auth + Roles
 
 Use any seeded Plaksha email from the login quick-list (loaded from DB), for example:
-- `rohan@plaksha.edu.in` (Student)
-- `oge@plaksha.edu.in` (OGE Admin)
-- `dean@plaksha.edu.in` (Dean Academics)
+- `rohan@plaksha.edu.in` (Generator)
+- `student-life@plaksha.edu.in` (Reviewer)
+- `oge@plaksha.edu.in` (Admin)
 
 ## Key Notes
 

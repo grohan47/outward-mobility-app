@@ -32,6 +32,7 @@ type PipelineStep = {
 
 type ReviewRecord = {
   id: number;
+  reviewer_name?: string;
   reviewer_role: string;
   decision: string;
   remarks: string | null;
@@ -61,6 +62,7 @@ type DetailPayload = {
   timeline: TimelineRecord[];
   pipeline_steps: PipelineStep[];
   application_file?: Record<string, unknown>;
+  field_labels?: Record<string, string>;
   permissions?: { can_view_comments?: boolean };
 };
 
@@ -131,6 +133,7 @@ export default function ReviewerApplicationDetail() {
 
   const requiredInputs = currentStep?.required_inputs || [];
   const canViewComments = Boolean(data?.permissions?.can_view_comments);
+  const fieldLabels = data?.field_labels || {};
 
   const visibleDataEntries = useMemo(() => {
     const visibleFields = currentStep?.visible_fields || [];
@@ -266,7 +269,9 @@ export default function ReviewerApplicationDetail() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {visibleDataEntries.map(([key, value]) => (
                     <div key={key}>
-                      <p className="font-bold text-[10px] text-slate-400 uppercase tracking-wider mb-1">{labelFromKey(key)}</p>
+                      <p className="font-bold text-[10px] text-slate-400 uppercase tracking-wider mb-1">
+                        {fieldLabels[key] || labelFromKey(key)}
+                      </p>
                       <p className="font-medium text-slate-800">{formatValue(value)}</p>
                     </div>
                   ))}
@@ -384,7 +389,7 @@ export default function ReviewerApplicationDetail() {
                   size="md"
                   loading={actionLoading}
                   onClick={() => handleAction("reject")}
-                  disabled={!remarks || !["OGE_ADMIN", "DEAN_ACADEMICS"].includes(user?.role || "")}
+                  disabled={!remarks || user?.role !== "ADMIN"}
                 >
                   Reject
                 </Button>
@@ -432,7 +437,7 @@ export default function ReviewerApplicationDetail() {
                 {data.reviews.length === 0 && <p className="text-slate-400 italic text-sm">No review entries yet.</p>}
                 {data.reviews.map((review) => (
                   <div key={review.id} className="pb-4 border-b border-slate-100 last:border-0 last:pb-0">
-                    <p className="text-sm font-bold text-slate-900">{review.reviewer_role}</p>
+                    <p className="text-sm font-bold text-slate-900">{review.reviewer_name || review.reviewer_role}</p>
                     <p className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">{review.decision}</p>
                     <p className="text-sm text-slate-700 mt-2">{review.remarks || "No remarks."}</p>
                     <p className="text-[10px] text-slate-400 font-bold tracking-wider mt-2 uppercase">

@@ -5,7 +5,7 @@ This document directly answers the 5 review checkpoints and upcoming mid-sem exp
 ## 1) Product Pitch
 
 ### Product
-PRISM (Plaksha Review Interface for Student Mobility) is a workflow product for managing outbound student mobility applications end-to-end.
+PRISM is an app to manage approval flows across any department and any organization.
 
 ### Problem it solves
 Current process is fragmented (forms, email threads, manual handoffs), making it hard to track ownership, stage status, and audit trail.

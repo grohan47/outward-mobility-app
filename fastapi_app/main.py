@@ -34,11 +34,13 @@ CANONICAL_TABLES = {
     "timeline_events",
 }
 
-STUDENT_ROLE = "STUDENT"
+GENERATOR_ROLE = "GENERATOR"
 REVIEWER_ROLE = "REVIEWER"
-REVIEWER_ROLES = {REVIEWER_ROLE, "STUDENT_LIFE", "PROGRAM_CHAIR", "OGE_ADMIN", "DEAN_ACADEMICS"}
-ADMIN_ROLE = "OGE_ADMIN"
-FINAL_ROLES = {"OGE_ADMIN", "DEAN_ACADEMICS"}
+ADMIN_ROLE = "ADMIN"
+REVIEWER_ROLES = {REVIEWER_ROLE, ADMIN_ROLE}
+FINAL_ROLES = {ADMIN_ROLE}
+# Backward naming alias for student-centric code paths.
+STUDENT_ROLE = GENERATOR_ROLE
 REQUIRED_INPUT_TYPES = {"text", "number", "dropdown", "multiselect"}
 
 
@@ -111,6 +113,13 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
     }
     for table, columns in required_columns.items():
         if not columns.issubset(table_columns(conn, table)):
+            return True
+
+    if "roles" in existing:
+        role_rows = conn.execute("SELECT code FROM roles").fetchall()
+        role_codes = {row["code"] for row in role_rows}
+        expected_role_codes = {GENERATOR_ROLE, REVIEWER_ROLE, ADMIN_ROLE}
+        if role_codes and (role_codes - expected_role_codes):
             return True
 
     fk_rows = conn.execute("PRAGMA foreign_key_list(opportunity_step_field_access)").fetchall()
@@ -291,12 +300,9 @@ def seed_data(conn: sqlite3.Connection) -> None:
     now = now_iso()
 
     role_rows = [
-        ("STUDENT", "Student"),
+        (GENERATOR_ROLE, "Generator"),
         (REVIEWER_ROLE, "Reviewer"),
-        ("STUDENT_LIFE", "Student Life"),
-        ("PROGRAM_CHAIR", "Program Chair"),
-        ("OGE_ADMIN", "OGE Administrator"),
-        ("DEAN_ACADEMICS", "Dean Academics"),
+        (ADMIN_ROLE, "Administrator"),
     ]
     for code, display_name in role_rows:
         conn.execute(
@@ -318,12 +324,12 @@ def seed_data(conn: sqlite3.Connection) -> None:
         )
 
     role_map = {
-        "rohan@plaksha.edu.in": "STUDENT",
-        "siddharth@plaksha.edu.in": "STUDENT",
-        "student-life@plaksha.edu.in": "STUDENT_LIFE",
-        "program-chair@plaksha.edu.in": "PROGRAM_CHAIR",
-        "oge@plaksha.edu.in": "OGE_ADMIN",
-        "dean@plaksha.edu.in": "DEAN_ACADEMICS",
+        "rohan@plaksha.edu.in": GENERATOR_ROLE,
+        "siddharth@plaksha.edu.in": GENERATOR_ROLE,
+        "student-life@plaksha.edu.in": REVIEWER_ROLE,
+        "program-chair@plaksha.edu.in": REVIEWER_ROLE,
+        "dean@plaksha.edu.in": REVIEWER_ROLE,
+        "oge@plaksha.edu.in": ADMIN_ROLE,
     }
     for email, role_code in role_map.items():
         user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
@@ -646,22 +652,22 @@ def seed_data(conn: sqlite3.Connection) -> None:
         )
 
     seeded_reviews = [
-        (2, 1, "oge@plaksha.edu.in", "OGE_ADMIN", "APPROVE", "Documents complete.", {"oge_intake_notes": "All baseline docs verified."}),
+        (2, 1, "oge@plaksha.edu.in", ADMIN_ROLE, "APPROVE", "Documents complete.", {"oge_intake_notes": "All baseline docs verified."}),
         (
             2,
             2,
             "student-life@plaksha.edu.in",
-            "STUDENT_LIFE",
+            REVIEWER_ROLE,
             "APPROVE",
             "No serious issues flagged.",
             {"student_life_flags": ["No infractions"]},
         ),
-        (4, 1, "oge@plaksha.edu.in", "OGE_ADMIN", "APPROVE", "Eligible for NUS nomination.", {"oge_intake_notes": "Nomination-ready."}),
+        (4, 1, "oge@plaksha.edu.in", ADMIN_ROLE, "APPROVE", "Eligible for NUS nomination.", {"oge_intake_notes": "Nomination-ready."}),
         (
             4,
             2,
             "student-life@plaksha.edu.in",
-            "STUDENT_LIFE",
+            REVIEWER_ROLE,
             "APPROVE",
             "Minor historical dues, now resolved.",
             {"student_life_flags": ["Library dues pending"]},
@@ -670,7 +676,7 @@ def seed_data(conn: sqlite3.Connection) -> None:
             4,
             3,
             "program-chair@plaksha.edu.in",
-            "PROGRAM_CHAIR",
+            REVIEWER_ROLE,
             "APPROVE",
             "Strong fit with host curriculum.",
             {"program_fit_score": 9},
@@ -863,12 +869,9 @@ def get_user_role(conn: sqlite3.Connection, email: str) -> dict[str, Any] | None
         JOIN roles r ON r.id = ur.role_id
         WHERE u.email = ? AND u.is_active = 1
         ORDER BY CASE r.code
-          WHEN 'OGE_ADMIN' THEN 1
-          WHEN 'DEAN_ACADEMICS' THEN 2
-          WHEN 'PROGRAM_CHAIR' THEN 3
-          WHEN 'STUDENT_LIFE' THEN 4
-          WHEN 'REVIEWER' THEN 5
-          WHEN 'STUDENT' THEN 6
+          WHEN 'ADMIN' THEN 1
+          WHEN 'REVIEWER' THEN 2
+          WHEN 'GENERATOR' THEN 3
           ELSE 99 END
         LIMIT 1
         """,
@@ -886,15 +889,9 @@ def derive_name_from_email(email: str) -> str:
 
 def infer_reviewer_role_code(email: str, step_name: str) -> str:
     normalized_email = email.strip().lower()
-    normalized_step = step_name.strip().lower()
-    if normalized_email == "oge@plaksha.edu.in" or "oge" in normalized_step:
-        return "OGE_ADMIN"
-    if normalized_email == "dean@plaksha.edu.in" or "dean" in normalized_step:
-        return "DEAN_ACADEMICS"
-    if "student life" in normalized_step or normalized_email.startswith("student-life@"):
-        return "STUDENT_LIFE"
-    if "program chair" in normalized_step or normalized_email.startswith("program-chair@"):
-        return "PROGRAM_CHAIR"
+    _ = step_name
+    if normalized_email == "oge@plaksha.edu.in":
+        return ADMIN_ROLE
     return REVIEWER_ROLE
 
 
@@ -1565,7 +1562,13 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
         user = conn.execute("SELECT id, email, full_name FROM users WHERE id = ?", (profile["user_id"],)).fetchone()
 
     reviews = conn.execute(
-        "SELECT * FROM application_reviews WHERE application_id = ? ORDER BY id ASC",
+        """
+        SELECT ar.*, COALESCE(u.full_name, ar.reviewer_email) AS reviewer_name
+        FROM application_reviews ar
+        LEFT JOIN users u ON LOWER(u.email) = LOWER(ar.reviewer_email)
+        WHERE ar.application_id = ?
+        ORDER BY ar.id ASC
+        """,
         (application_id,),
     ).fetchall()
     comments = conn.execute(
@@ -1588,6 +1591,33 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
         except json.JSONDecodeError:
             base_submitted_data = {}
 
+    field_labels: dict[str, str] = {}
+    form_label_rows = conn.execute(
+        """
+        SELECT orf.field_key, f.label
+        FROM opportunity_required_fields orf
+        JOIN form_field_catalog f ON f.field_key = orf.field_key
+        WHERE orf.opportunity_id = ?
+        ORDER BY orf.display_order ASC
+        """,
+        (app["opportunity_id"],),
+    ).fetchall()
+    for row in form_label_rows:
+        field_labels[str(row["field_key"])] = str(row["label"])
+
+    step_label_rows = conn.execute(
+        """
+        SELECT sri.input_key, sri.input_label
+        FROM opportunity_pipeline_steps s
+        JOIN opportunity_step_required_inputs sri ON sri.pipeline_step_id = s.id
+        WHERE s.opportunity_id = ?
+        ORDER BY s.step_order ASC, sri.display_order ASC
+        """,
+        (app["opportunity_id"],),
+    ).fetchall()
+    for row in step_label_rows:
+        field_labels[str(row["input_key"])] = str(row["input_label"])
+
     review_payload: list[dict[str, Any]] = []
     review_added_data: dict[str, Any] = {}
     for row in reviews:
@@ -1602,6 +1632,8 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
                 parsed_inputs = {}
         for key, value in parsed_inputs.items():
             review_added_data[str(key)] = value
+            if str(key) not in field_labels:
+                field_labels[str(key)] = str(key)
         record["required_inputs"] = parsed_inputs
         review_payload.append(record)
 
@@ -1625,6 +1657,7 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
         "pipeline_steps": pipeline_steps,
         "workflow": compute_workflow_meta(app),
         "application_file": application_file,
+        "field_labels": field_labels,
     }
 
 
@@ -1857,19 +1890,16 @@ def auth_demo_users() -> dict[str, Any]:
     with db_conn() as conn:
         rows = conn.execute(
             """
-            SELECT u.email, u.full_name, r.display_name AS role_display_name
+            SELECT u.email, u.full_name, r.code AS role_code, r.display_name AS role_display_name
             FROM users u
             JOIN user_roles ur ON ur.user_id = u.id
             JOIN roles r ON r.id = ur.role_id
             WHERE u.is_active = 1
               AND LOWER(u.email) <> 'ug-academics@plaksha.edu.in'
             ORDER BY CASE r.code
-              WHEN 'STUDENT' THEN 1
-              WHEN 'STUDENT_LIFE' THEN 2
-              WHEN 'PROGRAM_CHAIR' THEN 3
-              WHEN 'REVIEWER' THEN 4
-              WHEN 'OGE_ADMIN' THEN 5
-              WHEN 'DEAN_ACADEMICS' THEN 6
+              WHEN 'GENERATOR' THEN 1
+              WHEN 'REVIEWER' THEN 2
+              WHEN 'ADMIN' THEN 3
               ELSE 99 END,
               u.email ASC
             """
@@ -2417,6 +2447,10 @@ def application_detail(application_id: int, session: SessionUser = Depends(get_s
             visible_keys = set(current_step.get("visible_fields") or [])
             filtered_file = {key: value for key, value in full_file.items() if key in visible_keys}
             detail["application_file"] = filtered_file
+            if isinstance(detail.get("field_labels"), dict):
+                detail["field_labels"] = {
+                    key: value for key, value in detail["field_labels"].items() if key in visible_keys
+                }
             detail["application"]["submitted_data_json"] = json.dumps(filtered_file)
 
             profile = detail.get("student_profile")
@@ -2691,7 +2725,7 @@ def reject_application(
     ensure_db_initialized()
 
     if session.role not in FINAL_ROLES:
-        raise HTTPException(status_code=403, detail="Only OGE Admin or Dean can reject applications")
+        raise HTTPException(status_code=403, detail="Only administrators can reject applications")
 
     with db_conn() as conn:
         app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()

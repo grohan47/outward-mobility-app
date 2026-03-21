@@ -201,8 +201,6 @@ export interface SessionUser {
 }
 
 export type RoleCode =
-  | "STUDENT"
-  | "STUDENT_LIFE"
-  | "PROGRAM_CHAIR"
-  | "OGE_ADMIN"
-  | "DEAN_ACADEMICS";
+  | "GENERATOR"
+  | "REVIEWER"
+  | "ADMIN";

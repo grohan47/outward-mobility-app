@@ -112,7 +112,7 @@ export default function MyApplications() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">My Applications</h1>
-          <p className="text-slate-500 mt-2">Track the status of your outward mobility requests.</p>
+          <p className="text-slate-500 mt-2">Track the status of your approval requests.</p>
         </div>
       </div>
 

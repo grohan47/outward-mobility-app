@@ -41,7 +41,7 @@ export default function GeneratorOpportunities() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Opportunities</h1>
-          <p className="text-slate-500 mt-2">Discover and apply for exchange programs.</p>
+          <p className="text-slate-500 mt-2">Discover available workflows and submit approval requests.</p>
         </div>
       </div>
 

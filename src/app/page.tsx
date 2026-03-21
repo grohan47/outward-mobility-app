@@ -6,12 +6,13 @@ import { useRouter } from "next/navigation";
 type DemoUser = {
   email: string;
   full_name: string;
+  role_code: string;
   role_display_name: string;
 };
 
 function roleRoute(role: string): string {
-  if (role === "STUDENT") return "/generator";
-  if (role === "OGE_ADMIN") return "/admin";
+  if (role === "GENERATOR") return "/generator";
+  if (role === "ADMIN") return "/admin";
   return "/reviewer";
 }
 
@@ -30,8 +31,8 @@ export default function LoginPage() {
   }, []);
 
   const groupedUsers = useMemo(() => {
-    const students = demoUsers.filter((u) => u.role_display_name.toLowerCase() === "student");
-    const reviewers = demoUsers.filter((u) => u.role_display_name.toLowerCase() !== "student");
+    const students = demoUsers.filter((u) => u.role_code === "GENERATOR");
+    const reviewers = demoUsers.filter((u) => u.role_code !== "GENERATOR");
     return { students, reviewers };
   }, [demoUsers]);
 
@@ -86,7 +87,7 @@ export default function LoginPage() {
             </svg>
           </div>
           <h1 className="text-3xl font-black tracking-tight text-slate-900">PRISM</h1>
-          <p className="text-slate-500 mt-1 text-sm">Plaksha Review Interface for Student Mobility</p>
+          <p className="text-slate-500 mt-1 text-sm">Manage approval flows across any department or organization</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200/60 p-8">
@@ -139,7 +140,7 @@ export default function LoginPage() {
           <div className="grid grid-cols-1 gap-2">
             {groupedUsers.students.length > 0 && (
               <div>
-                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">Applicants (Students)</h3>
+                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-2">Generators (Students in this demo)</h3>
                 <div className="flex flex-col gap-2">
                   {groupedUsers.students.map((user) => (
                     <button
