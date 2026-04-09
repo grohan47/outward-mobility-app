@@ -6,9 +6,10 @@ import { useRouter } from "next/navigation";
 interface AppHeaderProps {
   userName: string;
   roleDisplayName: string;
+  canSwitchWorkspace?: boolean;
 }
 
-export function AppHeader({ userName, roleDisplayName }: AppHeaderProps) {
+export function AppHeader({ userName, roleDisplayName, canSwitchWorkspace = false }: AppHeaderProps) {
   const router = useRouter();
 
   async function handleLogout() {
@@ -46,6 +47,15 @@ export function AppHeader({ userName, roleDisplayName }: AppHeaderProps) {
       </div>
 
       <div className="flex items-center gap-5">
+        {canSwitchWorkspace && (
+          <Link
+            href="/select-workspace"
+            className="hidden sm:inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-slate-600 hover:border-primary/30 hover:bg-primary/5 hover:text-primary transition-colors"
+          >
+            <span className="material-symbols-outlined text-[16px]">swap_horiz</span>
+            Switch Workspace
+          </Link>
+        )}
         <div className="flex flex-col items-end hidden sm:flex">
           <span className="text-sm font-bold text-slate-900 leading-tight">
             {userName}

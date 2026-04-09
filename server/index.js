@@ -1,5 +1,6 @@
 import { ApplicationsRepository } from "./repositories/applicationsRepository.js";
 import { ApplicationDecisionsRepository } from "./repositories/applicationDecisionsRepository.js";
+import { ApplicationRemarksRepository } from "./repositories/applicationRemarksRepository.js";
 import { ApplicationReviewsRepository } from "./repositories/applicationReviewsRepository.js";
 import { TimelineRepository } from "./repositories/timelineRepository.js";
 import { ApplicationStudentSnapshotRepository } from "./repositories/applicationStudentSnapshotRepository.js";
@@ -21,8 +22,6 @@ export function createPrismServices(options = {}) {
     const reviewsRepository = new ApplicationReviewsRepository(db);
     const timelineRepository = new TimelineRepository(db);
     const snapshotsRepository = new ApplicationStudentSnapshotRepository(db);
-    // Add ApplicationRemarksRepository
-    const { ApplicationRemarksRepository } = await import('./repositories/applicationRemarksRepository.js');
     const remarksRepository = new ApplicationRemarksRepository(db);
 
     const applicationService = new ApplicationService({

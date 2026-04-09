@@ -55,7 +55,12 @@ export default function LoginPage() {
       }
 
       const user = body.user;
-      router.push(roleRoute(user.role));
+      const workspaces = user?.availableWorkspaces || [];
+      if (workspaces.length > 1) {
+        router.push("/select-workspace");
+      } else {
+        router.push(roleRoute(user.role));
+      }
       router.refresh();
     } catch {
       setError("Unable to reach auth service. Ensure FastAPI is running on port 8000.");
@@ -88,6 +93,7 @@ export default function LoginPage() {
           </div>
           <h1 className="text-3xl font-black tracking-tight text-slate-900">PRISM</h1>
           <p className="text-slate-500 mt-1 text-sm">Manage approval flows across any department or organization</p>
+          <p className="text-xs text-slate-400 mt-2">Accounts with multiple roles will choose a workspace after signing in.</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200/60 p-8">

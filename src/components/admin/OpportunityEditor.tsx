@@ -40,6 +40,13 @@ type WorkflowStep = {
   canViewComments: boolean;
 };
 
+type GeneratorVisibilityRuleType = "EMAIL" | "GROUP_EMAIL";
+
+type GeneratorVisibilityRule = {
+  ruleType: GeneratorVisibilityRuleType;
+  ruleValue: string;
+};
+
 type OpportunityEditorProps = {
   mode: "create" | "edit";
   opportunityId?: string;
@@ -151,6 +158,9 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
 
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
   const [customFields, setCustomFields] = useState<CustomFieldDraft[]>([]);
+  const [generatorVisibilityRules, setGeneratorVisibilityRules] = useState<GeneratorVisibilityRule[]>([
+    { ruleType: "GROUP_EMAIL", ruleValue: "" },
+  ]);
   const [useDefaultTemplate, setUseDefaultTemplate] = useState(mode === "create");
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([blankStep(1)]);
 
@@ -230,6 +240,14 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
             description: String(field.description || ""),
           }))
         );
+        setGeneratorVisibilityRules(
+          Array.isArray(detailData.generator_visibility_rules) && detailData.generator_visibility_rules.length > 0
+            ? detailData.generator_visibility_rules.map((rule: any) => ({
+                ruleType: rule.ruleType === "EMAIL" ? "EMAIL" : "GROUP_EMAIL",
+                ruleValue: String(rule.ruleValue || ""),
+              }))
+            : [{ ruleType: "GROUP_EMAIL", ruleValue: "" }]
+        );
         setWorkflowSteps(steps.length > 0 ? steps : defaults.length > 0 ? defaults : [blankStep(1)]);
         setUseDefaultTemplate(false);
       } catch (err) {
@@ -280,6 +298,20 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
     const fieldKey = makeCustomFieldKey(`custom_${Date.now()}`);
     setCustomFields((prev) => [...prev, { field_key: fieldKey, label: "", description: "" }]);
     setSelectedFields((prev) => (prev.includes(fieldKey) ? prev : [...prev, fieldKey]));
+  }
+
+  function addVisibilityRule() {
+    setGeneratorVisibilityRules((prev) => [...prev, { ruleType: "EMAIL", ruleValue: "" }]);
+  }
+
+  function updateVisibilityRule(index: number, patch: Partial<GeneratorVisibilityRule>) {
+    setGeneratorVisibilityRules((prev) =>
+      prev.map((rule, idx) => (idx === index ? { ...rule, ...patch } : rule))
+    );
+  }
+
+  function removeVisibilityRule(index: number) {
+    setGeneratorVisibilityRules((prev) => prev.filter((_, idx) => idx !== index));
   }
 
   function updateCustomField(fieldKey: string, patch: Partial<CustomFieldDraft>) {
@@ -471,6 +503,18 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
       label: field.label.trim(),
       description: field.description.trim(),
     }));
+    const visibilityRulesPayload = generatorVisibilityRules
+      .map((rule) => ({
+        ruleType: rule.ruleType,
+        ruleValue: rule.ruleValue.trim().toLowerCase(),
+      }))
+      .filter((rule) => rule.ruleValue.length > 0);
+
+    const invalidGeneratorRule = visibilityRulesPayload.find((rule) => !validPlakshaEmail(rule.ruleValue));
+    if (invalidGeneratorRule) {
+      setError(`Generator visibility emails must end with @plaksha.edu.in (${invalidGeneratorRule.ruleValue}).`);
+      return;
+    }
 
     const rawPipeline = useDefaultTemplate ? defaultPipeline : workflowSteps;
     const pipelineToSubmit = normalizePipelineForSubmit(rawPipeline);
@@ -519,6 +563,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           formFields: selectedFields,
           customFields: customFieldsPayload,
           workflowSteps: pipelineToSubmit,
+          generatorVisibilityRules: visibilityRulesPayload,
           useDefaultTemplate,
         };
 
@@ -545,6 +590,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           formFields: selectedFields,
           customFields: customFieldsPayload,
           workflowSteps: pipelineToSubmit,
+          generatorVisibilityRules: visibilityRulesPayload,
           useDefaultTemplate,
         };
 
@@ -766,6 +812,65 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
             )}
           </Card>
 
+          <Card className="p-6">
+            <div className="flex items-center justify-between gap-4 mb-2">
+              <h2 className="text-xl font-medium">3. Eligible Generators</h2>
+              <Button variant="secondary" size="sm" onClick={addVisibilityRule}>
+                <span className="material-symbols-outlined mr-1">add</span>
+                Add Email Rule
+              </Button>
+            </div>
+            <p className="text-slate-500 text-sm mb-4">
+              Define who is allowed to apply. Use exact emails for individuals and group emails for Outlook cohorts like
+              <span className="font-medium text-slate-700"> ug2024@plaksha.edu.in</span>. Leave this section empty to keep the opportunity open to all generators.
+            </p>
+
+            <div className="space-y-3">
+              {generatorVisibilityRules.map((rule, index) => (
+                <div key={`${rule.ruleType}-${index}`} className="grid grid-cols-1 md:grid-cols-[180px,1fr,auto] gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                      Rule Type
+                    </label>
+                    <select
+                      className="w-full border rounded-lg p-2 text-sm bg-white"
+                      value={rule.ruleType}
+                      onChange={(e) => updateVisibilityRule(index, { ruleType: e.target.value as GeneratorVisibilityRuleType })}
+                    >
+                      <option value="GROUP_EMAIL">Group Email</option>
+                      <option value="EMAIL">Exact Email</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                      {rule.ruleType === "GROUP_EMAIL" ? "Group Address" : "Email Address"}
+                    </label>
+                    <input
+                      type="email"
+                      className="w-full border rounded-lg p-2 text-sm bg-white"
+                      placeholder={rule.ruleType === "GROUP_EMAIL" ? "ug2024@plaksha.edu.in" : "john.doe@plaksha.edu.in"}
+                      value={rule.ruleValue}
+                      onChange={(e) => updateVisibilityRule(index, { ruleValue: e.target.value })}
+                    />
+                    {rule.ruleValue.trim() && !validPlakshaEmail(rule.ruleValue) && (
+                      <p className="mt-1 text-xs text-red-500">Must be a valid `@plaksha.edu.in` email address.</p>
+                    )}
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={() => removeVisibilityRule(index)}
+                      disabled={generatorVisibilityRules.length === 1 && !rule.ruleValue.trim()}
+                      className="inline-flex h-10 items-center justify-center rounded-lg border border-red-200 px-3 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
           <div className="flex justify-end">
             <Button onClick={() => setStep(2)} disabled={selectedFields.length === 0 || !oppData.title || !oppData.code}>
               Next: Configure Pipeline
@@ -790,6 +895,9 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
             </div>
             <p className="text-slate-500 text-sm mb-6">
               Define reviewers, response SLAs, field visibility, and stage inputs.
+            </p>
+            <p className="text-xs text-slate-500 mb-4">
+              If you want to review this opportunity yourself, add your own email as one of the reviewer emails below and place it in the order you want within the chain.
             </p>
             {useDefaultTemplate && (
               <p className="text-xs text-slate-500 mb-6">Uncheck "Use Default Template" to edit reviewer stages or input options.</p>

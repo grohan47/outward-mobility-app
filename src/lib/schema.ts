@@ -27,6 +27,21 @@ CREATE TABLE IF NOT EXISTS user_roles (
   FOREIGN KEY (role_id) REFERENCES roles(id)
 );
 
+CREATE TABLE IF NOT EXISTS user_scope_roles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  role_id INTEGER NOT NULL,
+  scope_type TEXT NOT NULL CHECK(scope_type IN ('SYSTEM', 'OPPORTUNITY')),
+  scope_id INTEGER,
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE(user_id, role_id, scope_type, scope_id),
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (role_id) REFERENCES roles(id),
+  FOREIGN KEY (scope_id) REFERENCES opportunities(id),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS student_profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL UNIQUE,
@@ -51,6 +66,36 @@ CREATE TABLE IF NOT EXISTS opportunities (
   workflow_template_id INTEGER,
   created_at TEXT,
   updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS email_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email_address TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS email_group_memberships (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(group_id, user_id),
+  FOREIGN KEY (group_id) REFERENCES email_groups(id),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS opportunity_visibility_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id INTEGER NOT NULL,
+  rule_type TEXT NOT NULL CHECK(rule_type IN ('EMAIL', 'GROUP_EMAIL')),
+  rule_value TEXT NOT NULL,
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE(opportunity_id, rule_type, rule_value),
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id),
+  FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS form_templates (
@@ -220,6 +265,71 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at TEXT NOT NULL,
   FOREIGN KEY (application_id) REFERENCES applications(id)
 );
+
+CREATE VIEW IF NOT EXISTS opportunity_visible_users AS
+SELECT DISTINCT
+  rules.opportunity_id AS opportunity_id,
+  users.id AS user_id
+FROM opportunity_visibility_rules rules
+JOIN users ON rules.rule_type = 'EMAIL'
+  AND LOWER(users.email) = LOWER(rules.rule_value)
+UNION
+SELECT DISTINCT
+  rules.opportunity_id AS opportunity_id,
+  memberships.user_id AS user_id
+FROM opportunity_visibility_rules rules
+JOIN email_groups groups ON rules.rule_type = 'GROUP_EMAIL'
+  AND LOWER(groups.email_address) = LOWER(rules.rule_value)
+  AND groups.is_active = 1
+JOIN email_group_memberships memberships ON memberships.group_id = groups.id;
+
+CREATE VIEW IF NOT EXISTS user_role_contexts AS
+SELECT
+  ur.user_id,
+  r.code AS source_role_code,
+  r.display_name AS source_role_display_name,
+  CASE
+    WHEN r.code IN ('ADMIN', 'OGE_ADMIN', 'DEAN_ACADEMICS') THEN 'ADMIN'
+    WHEN r.code IN ('REVIEWER', 'STUDENT_LIFE', 'PROGRAM_CHAIR') THEN 'REVIEWER'
+    WHEN r.code IN ('GENERATOR', 'STUDENT') THEN 'GENERATOR'
+    ELSE r.code
+  END AS workspace_role_code,
+  CASE
+    WHEN r.code IN ('ADMIN', 'OGE_ADMIN', 'DEAN_ACADEMICS') THEN 'Administrator'
+    WHEN r.code IN ('REVIEWER', 'STUDENT_LIFE', 'PROGRAM_CHAIR') THEN 'Reviewer'
+    WHEN r.code IN ('GENERATOR', 'STUDENT') THEN 'Generator'
+    ELSE r.display_name
+  END AS workspace_role_display_name,
+  'SYSTEM' AS scope_type,
+  NULL AS scope_id,
+  NULL AS opportunity_code,
+  NULL AS opportunity_title
+FROM user_roles ur
+JOIN roles r ON r.id = ur.role_id
+UNION
+SELECT
+  usr.user_id,
+  r.code AS source_role_code,
+  r.display_name AS source_role_display_name,
+  CASE
+    WHEN r.code IN ('ADMIN', 'OGE_ADMIN', 'DEAN_ACADEMICS') THEN 'ADMIN'
+    WHEN r.code IN ('REVIEWER', 'STUDENT_LIFE', 'PROGRAM_CHAIR') THEN 'REVIEWER'
+    WHEN r.code IN ('GENERATOR', 'STUDENT') THEN 'GENERATOR'
+    ELSE r.code
+  END AS workspace_role_code,
+  CASE
+    WHEN r.code IN ('ADMIN', 'OGE_ADMIN', 'DEAN_ACADEMICS') THEN 'Administrator'
+    WHEN r.code IN ('REVIEWER', 'STUDENT_LIFE', 'PROGRAM_CHAIR') THEN 'Reviewer'
+    WHEN r.code IN ('GENERATOR', 'STUDENT') THEN 'Generator'
+    ELSE r.display_name
+  END AS workspace_role_display_name,
+  usr.scope_type,
+  usr.scope_id,
+  opportunities.code AS opportunity_code,
+  opportunities.title AS opportunity_title
+FROM user_scope_roles usr
+JOIN roles r ON r.id = usr.role_id
+LEFT JOIN opportunities ON usr.scope_type = 'OPPORTUNITY' AND opportunities.id = usr.scope_id;
 `;
 
 // ── Initialization ──
@@ -247,6 +357,9 @@ export function initSchema() {
 
   // Seed roles
   const roles = [
+    ["GENERATOR", "Generator"],
+    ["REVIEWER", "Reviewer"],
+    ["ADMIN", "Administrator"],
     ["STUDENT", "Student"],
     ["STUDENT_LIFE", "Student Life Office"],
     ["PROGRAM_CHAIR", "Program Chair"],
@@ -272,6 +385,10 @@ export function seedDemoData() {
   const users = [
     [1, "rohan@plaksha.edu.in", "Rohan", now],
     [2, "siddharth@plaksha.edu.in", "Siddharth", now],
+    [3, "john.doe@plaksha.edu.in", "John Doe", now],
+    [4, "jane.roe@plaksha.edu.in", "Jane Roe", now],
+    [5, "prof.a@plaksha.edu.in", "Prof A", now],
+    [6, "prof.b@plaksha.edu.in", "Prof B", now],
     [10, "ug-academics@plaksha.edu.in", "Dr. Vikram Sahay", now],
     [11, "student-life@plaksha.edu.in", "Ananya Iyer", now],
     [12, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", now],
@@ -288,20 +405,24 @@ export function seedDemoData() {
   }
 
   // ── User role assignments ──
-  const roleMap: Record<string, string> = {
-    "rohan@plaksha.edu.in": "STUDENT",
-    "siddharth@plaksha.edu.in": "STUDENT",
-    "ug-academics@plaksha.edu.in": "STUDENT_LIFE",
-    "student-life@plaksha.edu.in": "STUDENT_LIFE",
-    "program-chair@plaksha.edu.in": "PROGRAM_CHAIR",
-    "oge@plaksha.edu.in": "OGE_ADMIN",
-    "dean@plaksha.edu.in": "DEAN_ACADEMICS",
+  const roleMap: Record<string, string[]> = {
+    "rohan@plaksha.edu.in": ["GENERATOR", "STUDENT"],
+    "siddharth@plaksha.edu.in": ["GENERATOR", "STUDENT"],
+    "john.doe@plaksha.edu.in": ["GENERATOR"],
+    "jane.roe@plaksha.edu.in": ["GENERATOR"],
+    "ug-academics@plaksha.edu.in": ["REVIEWER", "STUDENT_LIFE"],
+    "student-life@plaksha.edu.in": ["REVIEWER", "STUDENT_LIFE"],
+    "program-chair@plaksha.edu.in": ["REVIEWER", "PROGRAM_CHAIR"],
+    "oge@plaksha.edu.in": ["ADMIN", "REVIEWER", "OGE_ADMIN"],
+    "dean@plaksha.edu.in": ["ADMIN", "REVIEWER", "DEAN_ACADEMICS"],
   };
 
-  for (const [email, roleCode] of Object.entries(roleMap)) {
+  for (const [email, roleCodes] of Object.entries(roleMap)) {
     const user = db.prepare(`SELECT id FROM users WHERE email = ?`).get(email) as { id: number } | undefined;
-    const role = db.prepare(`SELECT id FROM roles WHERE code = ?`).get(roleCode) as { id: number } | undefined;
-    if (user && role) {
+    if (!user) continue;
+    for (const roleCode of roleCodes) {
+      const role = db.prepare(`SELECT id FROM roles WHERE code = ?`).get(roleCode) as { id: number } | undefined;
+      if (!role) continue;
       db.prepare(
         `INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)`
       ).run(user.id, role.id, now);
@@ -373,6 +494,46 @@ export function seedDemoData() {
   );
   for (const o of opps) {
     insertOpp.run(...o, now, now);
+  }
+
+  // ── Demo email distribution groups ──
+  const insertGroup = db.prepare(
+    `INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
+     VALUES (?, ?, ?, 1, ?)`
+  );
+  insertGroup.run(1, "ug2024@plaksha.edu.in", "UG 2024 Cohort", now);
+  insertGroup.run(2, "professors@plaksha.edu.in", "All Professors", now);
+
+  const insertMembership = db.prepare(
+    `INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
+     VALUES (?, ?, ?)`
+  );
+  // ug2024 group members
+  insertMembership.run(1, 1, now);
+  insertMembership.run(1, 2, now);
+  insertMembership.run(1, 3, now);
+  // professors group members
+  insertMembership.run(2, 5, now);
+  insertMembership.run(2, 6, now);
+
+  const insertVisibilityRule = db.prepare(
+    `INSERT OR IGNORE INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  );
+  // TU Delft visible to UG2024 cohort + explicit John Doe
+  insertVisibilityRule.run(1, "GROUP_EMAIL", "ug2024@plaksha.edu.in", 13, now);
+  insertVisibilityRule.run(1, "EMAIL", "john.doe@plaksha.edu.in", 13, now);
+  // NUS visible to professors cohort
+  insertVisibilityRule.run(2, "GROUP_EMAIL", "professors@plaksha.edu.in", 13, now);
+
+  const insertScopedRole = db.prepare(
+    `INSERT OR IGNORE INTO user_scope_roles (user_id, role_id, scope_type, scope_id, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  );
+  const siddharthUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get("siddharth@plaksha.edu.in") as { id: number } | undefined;
+  const reviewerRole = db.prepare(`SELECT id FROM roles WHERE code = ?`).get("REVIEWER") as { id: number } | undefined;
+  if (siddharthUser && reviewerRole) {
+    insertScopedRole.run(siddharthUser.id, reviewerRole.id, "OPPORTUNITY", 1, 13, now);
   }
 
   // ── Form template (OGE standard form) ──
@@ -476,4 +637,18 @@ export function ensureDbInitialized() {
   initSchema();
   seedDemoData();
   _initialized = true;
+}
+
+export function listVisibleOpportunitiesForUser(userId: number) {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT opportunities.*
+       FROM opportunities
+       JOIN opportunity_visible_users visible_users
+         ON visible_users.opportunity_id = opportunities.id
+       WHERE visible_users.user_id = ?
+       ORDER BY opportunities.deadline ASC, opportunities.id ASC`
+    )
+    .all(userId);
 }

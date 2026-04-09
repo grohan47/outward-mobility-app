@@ -6,20 +6,25 @@ export class ApplicationRemarksRepository {
         this.db = db;
     }
 
-    // Create a new remark
     create({ application_id, remark_type, text, visibility_scope, created_by, created_at }) {
-        return this.db.run(
+        const stmt = this.db.prepare(
             `INSERT INTO ${TABLES.APPLICATION_REMARKS} (application_id, remark_type, text, visibility_scope, created_by, created_at)
              VALUES (?, ?, ?, ?, ?, ?)`,
-            [application_id, remark_type, text, visibility_scope, created_by, created_at]
         );
+        const result = stmt.run(
+            application_id,
+            remark_type,
+            text,
+            visibility_scope,
+            created_by,
+            created_at
+        );
+        return this.db.prepare(`SELECT * FROM ${TABLES.APPLICATION_REMARKS} WHERE id = ?`).get(result.lastInsertRowid);
     }
 
-    // Get all remarks for an application
     findByApplicationId(application_id) {
-        return this.db.all(
+        return this.db.prepare(
             `SELECT * FROM ${TABLES.APPLICATION_REMARKS} WHERE application_id = ? ORDER BY created_at ASC`,
-            [application_id]
-        );
+        ).all(application_id);
     }
 }

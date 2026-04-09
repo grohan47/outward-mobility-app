@@ -21,9 +21,13 @@ CANONICAL_TABLES = {
     "users",
     "roles",
     "user_roles",
+    "user_scope_roles",
     "student_profiles",
     "form_field_catalog",
     "opportunities",
+    "email_groups",
+    "email_group_memberships",
+    "opportunity_visibility_rules",
     "opportunity_required_fields",
     "opportunity_pipeline_steps",
     "opportunity_step_field_access",
@@ -37,8 +41,7 @@ CANONICAL_TABLES = {
 GENERATOR_ROLE = "GENERATOR"
 REVIEWER_ROLE = "REVIEWER"
 ADMIN_ROLE = "ADMIN"
-REVIEWER_ROLES = {REVIEWER_ROLE, ADMIN_ROLE}
-FINAL_ROLES = {ADMIN_ROLE}
+REVIEWER_ROLES = {REVIEWER_ROLE}
 # Backward naming alias for student-centric code paths.
 STUDENT_ROLE = GENERATOR_ROLE
 REQUIRED_INPUT_TYPES = {"text", "number", "dropdown", "multiselect"}
@@ -72,6 +75,10 @@ def parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def valid_plaksha_email(email: str) -> bool:
+    return email.strip().lower().endswith(PLAKSHA_DOMAIN)
 
 
 @contextmanager
@@ -162,6 +169,19 @@ CREATE TABLE user_roles (
   FOREIGN KEY (role_id) REFERENCES roles(id)
 );
 
+CREATE TABLE user_scope_roles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  role_id INTEGER NOT NULL,
+  scope_type TEXT NOT NULL CHECK(scope_type IN ('SYSTEM', 'OPPORTUNITY')),
+  scope_id INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE(user_id, role_id, scope_type, scope_id),
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (role_id) REFERENCES roles(id),
+  FOREIGN KEY (scope_id) REFERENCES opportunities(id)
+);
+
 CREATE TABLE student_profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL UNIQUE,
@@ -194,6 +214,34 @@ CREATE TABLE opportunities (
   status TEXT NOT NULL DEFAULT 'published',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE email_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email_address TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE email_group_memberships (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(group_id, user_id),
+  FOREIGN KEY (group_id) REFERENCES email_groups(id),
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE opportunity_visibility_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id INTEGER NOT NULL,
+  rule_type TEXT NOT NULL CHECK(rule_type IN ('EMAIL', 'GROUP_EMAIL')),
+  rule_value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(opportunity_id, rule_type, rule_value),
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
 );
 
 CREATE TABLE opportunity_required_fields (
@@ -312,6 +360,10 @@ def seed_data(conn: sqlite3.Connection) -> None:
     user_rows = [
         (1, "rohan@plaksha.edu.in", "Rohan", 1),
         (2, "siddharth@plaksha.edu.in", "Siddharth", 1),
+        (3, "john.doe@plaksha.edu.in", "John Doe", 1),
+        (4, "jane.roe@plaksha.edu.in", "Jane Roe", 1),
+        (5, "prof.a@plaksha.edu.in", "Prof A", 1),
+        (6, "prof.b@plaksha.edu.in", "Prof B", 1),
         (11, "student-life@plaksha.edu.in", "Ananya Iyer", 1),
         (12, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", 1),
         (13, "oge@plaksha.edu.in", "Rajesh Kumar", 1),
@@ -323,15 +375,21 @@ def seed_data(conn: sqlite3.Connection) -> None:
             (*user, now),
         )
 
-    role_map = {
-        "rohan@plaksha.edu.in": GENERATOR_ROLE,
-        "siddharth@plaksha.edu.in": GENERATOR_ROLE,
-        "student-life@plaksha.edu.in": REVIEWER_ROLE,
-        "program-chair@plaksha.edu.in": REVIEWER_ROLE,
-        "dean@plaksha.edu.in": REVIEWER_ROLE,
-        "oge@plaksha.edu.in": ADMIN_ROLE,
-    }
-    for email, role_code in role_map.items():
+    role_assignments = [
+        ("rohan@plaksha.edu.in", GENERATOR_ROLE),
+        ("siddharth@plaksha.edu.in", GENERATOR_ROLE),
+        ("siddharth@plaksha.edu.in", REVIEWER_ROLE),
+        ("john.doe@plaksha.edu.in", GENERATOR_ROLE),
+        ("jane.roe@plaksha.edu.in", GENERATOR_ROLE),
+        ("prof.a@plaksha.edu.in", REVIEWER_ROLE),
+        ("prof.b@plaksha.edu.in", REVIEWER_ROLE),
+        ("student-life@plaksha.edu.in", REVIEWER_ROLE),
+        ("program-chair@plaksha.edu.in", REVIEWER_ROLE),
+        ("dean@plaksha.edu.in", REVIEWER_ROLE),
+        ("oge@plaksha.edu.in", REVIEWER_ROLE),
+        ("oge@plaksha.edu.in", ADMIN_ROLE),
+    ]
+    for email, role_code in role_assignments:
         user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
         role = conn.execute("SELECT id FROM roles WHERE code = ?", (role_code,)).fetchone()
         if user and role:
@@ -412,6 +470,49 @@ def seed_data(conn: sqlite3.Connection) -> None:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (*opp, now, now),
+        )
+
+    email_groups = [
+        (1, "ug2024@plaksha.edu.in", "UG 2024 Cohort"),
+        (2, "professors@plaksha.edu.in", "All Professors"),
+    ]
+    for group_id, email_address, display_name in email_groups:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (group_id, email_address, display_name, now),
+        )
+
+    email_group_memberships = [
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (2, 5),
+        (2, 6),
+    ]
+    for group_id, user_id in email_group_memberships:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (group_id, user_id, now),
+        )
+
+    visibility_rules = [
+        (1, "GROUP_EMAIL", "ug2024@plaksha.edu.in"),
+        (1, "EMAIL", "john.doe@plaksha.edu.in"),
+        (2, "GROUP_EMAIL", "professors@plaksha.edu.in"),
+    ]
+    for opportunity_id, rule_type, rule_value in visibility_rules:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (opportunity_id, rule_type, rule_value, now),
         )
 
     required_fields_by_opp = {
@@ -758,10 +859,15 @@ class SessionUser(BaseModel):
     role: str
     roleDisplayName: str
     userId: int
+    availableWorkspaces: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class LoginBody(BaseModel):
     email: str
+
+
+class WorkspaceSelectBody(BaseModel):
+    role: str
 
 
 class CommentCreateBody(BaseModel):
@@ -804,6 +910,7 @@ class OpportunityPatchBody(BaseModel):
     formFields: list[str] | None = None
     customFields: list[CustomFormFieldPayload] | None = None
     workflowSteps: list["WorkflowStepPayload"] | None = None
+    generatorVisibilityRules: list["VisibilityRulePayload"] | None = None
     useDefaultTemplate: bool | None = None
 
 
@@ -830,7 +937,13 @@ class OpportunityCreatePayload(BaseModel):
     formFields: list[str]
     customFields: list[CustomFormFieldPayload] = Field(default_factory=list)
     workflowSteps: list[WorkflowStepPayload]
+    generatorVisibilityRules: list["VisibilityRulePayload"] = Field(default_factory=list)
     useDefaultTemplate: bool | None = False
+
+
+class VisibilityRulePayload(BaseModel):
+    ruleType: Literal["EMAIL", "GROUP_EMAIL"]
+    ruleValue: str
 
 
 class ApplicationCreateBody(BaseModel):
@@ -858,6 +971,170 @@ def require_roles(*allowed_roles: str):
 def get_role_display_name(conn: sqlite3.Connection, role_code: str) -> str:
     row = conn.execute("SELECT display_name FROM roles WHERE code = ?", (role_code,)).fetchone()
     return row["display_name"] if row else role_code
+
+
+def role_dashboard_path(role_code: str) -> str:
+    if role_code == GENERATOR_ROLE:
+        return "/generator"
+    if role_code == ADMIN_ROLE:
+        return "/admin"
+    return "/reviewer"
+
+
+def get_user_identity(conn: sqlite3.Connection, email: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, email, full_name
+        FROM users
+        WHERE LOWER(email) = LOWER(?) AND is_active = 1
+        LIMIT 1
+        """,
+        (email,),
+    ).fetchone()
+
+
+def get_user_workspaces(conn: sqlite3.Connection, email: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT r.code AS role_code, r.display_name AS role_display_name
+        FROM users u
+        JOIN user_roles ur ON ur.user_id = u.id
+        JOIN roles r ON r.id = ur.role_id
+        WHERE LOWER(u.email) = LOWER(?) AND u.is_active = 1
+        ORDER BY CASE r.code
+          WHEN 'GENERATOR' THEN 1
+          WHEN 'REVIEWER' THEN 2
+          WHEN 'ADMIN' THEN 3
+          ELSE 99 END
+        """,
+        (email,),
+    ).fetchall()
+    return [
+        {
+            "role": row["role_code"],
+            "roleDisplayName": row["role_display_name"],
+            "dashboardPath": role_dashboard_path(row["role_code"]),
+        }
+        for row in rows
+    ]
+
+
+def build_session_payload(
+    user: sqlite3.Row | dict[str, Any],
+    available_workspaces: list[dict[str, Any]],
+    active_role: str | None = None,
+) -> dict[str, Any]:
+    if not available_workspaces:
+        raise HTTPException(status_code=403, detail="No workspaces are available for this account.")
+
+    active_workspace = next(
+        (workspace for workspace in available_workspaces if workspace["role"] == active_role),
+        available_workspaces[0],
+    )
+    return {
+        "email": user["email"],
+        "name": user["full_name"],
+        "role": active_workspace["role"],
+        "roleDisplayName": active_workspace["roleDisplayName"],
+        "userId": user["id"],
+        "availableWorkspaces": available_workspaces,
+    }
+
+
+def can_user_view_opportunity(conn: sqlite3.Connection, user_id: int, opportunity_id: int) -> bool:
+    rule_count_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM opportunity_visibility_rules WHERE opportunity_id = ?",
+        (opportunity_id,),
+    ).fetchone()
+    if not rule_count_row or int(rule_count_row["c"]) == 0:
+        return True
+
+    exact_match = conn.execute(
+        """
+        SELECT 1
+        FROM opportunity_visibility_rules rules
+        JOIN users u ON rules.rule_type = 'EMAIL' AND LOWER(u.email) = LOWER(rules.rule_value)
+        WHERE rules.opportunity_id = ? AND u.id = ?
+        LIMIT 1
+        """,
+        (opportunity_id, user_id),
+    ).fetchone()
+    if exact_match:
+        return True
+
+    group_match = conn.execute(
+        """
+        SELECT 1
+        FROM opportunity_visibility_rules rules
+        JOIN email_groups groups
+          ON rules.rule_type = 'GROUP_EMAIL'
+         AND LOWER(groups.email_address) = LOWER(rules.rule_value)
+         AND groups.is_active = 1
+        JOIN email_group_memberships memberships ON memberships.group_id = groups.id
+        WHERE rules.opportunity_id = ? AND memberships.user_id = ?
+        LIMIT 1
+        """,
+        (opportunity_id, user_id),
+    ).fetchone()
+    return bool(group_match)
+
+
+def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_rule in rules or []:
+        rule = raw_rule if isinstance(raw_rule, VisibilityRulePayload) else VisibilityRulePayload(**raw_rule)
+        rule_type = rule.ruleType.strip().upper()
+        rule_value = rule.ruleValue.strip().lower()
+        if not rule_value:
+            continue
+        if not valid_plaksha_email(rule_value):
+            raise HTTPException(
+                status_code=400,
+                detail=f'Visibility rule "{rule_value}" must be a valid @plaksha.edu.in email address.',
+            )
+        key = (rule_type, rule_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"rule_type": rule_type, "rule_value": rule_value})
+    return normalized
+
+
+def get_opportunity_visibility_rules(conn: sqlite3.Connection, opportunity_id: int) -> list[dict[str, str]]:
+    rows = conn.execute(
+        """
+        SELECT rule_type, rule_value
+        FROM opportunity_visibility_rules
+        WHERE opportunity_id = ?
+        ORDER BY CASE rule_type WHEN 'GROUP_EMAIL' THEN 1 ELSE 2 END, LOWER(rule_value) ASC
+        """,
+        (opportunity_id,),
+    ).fetchall()
+    return [
+        {
+            "ruleType": row["rule_type"],
+            "ruleValue": row["rule_value"],
+        }
+        for row in rows
+    ]
+
+
+def replace_opportunity_visibility_rules(
+    conn: sqlite3.Connection,
+    opportunity_id: int,
+    rules: list[dict[str, str]],
+    created_at: str,
+) -> None:
+    conn.execute("DELETE FROM opportunity_visibility_rules WHERE opportunity_id = ?", (opportunity_id,))
+    for rule in rules:
+        conn.execute(
+            """
+            INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (opportunity_id, rule["rule_type"], rule["rule_value"], created_at),
+        )
 
 
 def get_user_role(conn: sqlite3.Connection, email: str) -> dict[str, Any] | None:
@@ -1676,8 +1953,6 @@ def ensure_reviewer_assigned(conn: sqlite3.Connection, application_row: sqlite3.
     step = get_current_pipeline_step(conn, application_row)
     if not step:
         raise HTTPException(status_code=400, detail="No pipeline step configured for current application stage.")
-    if session.role == ADMIN_ROLE:
-        return step
     if step["reviewer_email"].lower() != session.email.lower():
         raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
     return step
@@ -1822,7 +2097,7 @@ def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
     ensure_db_initialized()
     email = body.email.strip().lower()
     with db_conn() as conn:
-        user = get_user_role(conn, email)
+        user = get_user_identity(conn, email)
         if not user:
             assignment = conn.execute(
                 """
@@ -1843,18 +2118,43 @@ def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
                     now_iso(),
                 )
                 conn.commit()
-                user = get_user_role(conn, email)
+                user = get_user_identity(conn, email)
 
         if not user:
             raise HTTPException(status_code=404, detail=f'No account found for "{body.email}".')
 
-        session_payload = {
-            "email": user["email"],
-            "name": user["full_name"],
-            "role": user["role_code"],
-            "roleDisplayName": user["role_display_name"],
-            "userId": user["id"],
-        }
+        available_workspaces = get_user_workspaces(conn, email)
+        session_payload = build_session_payload(user, available_workspaces)
+
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=quote(json.dumps(session_payload), safe=""),
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24,
+        path="/",
+    )
+    return {"user": session_payload}
+
+
+@app.post("/api/auth/select-workspace")
+def auth_select_workspace(
+    body: WorkspaceSelectBody,
+    response: Response,
+    session: SessionUser = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        user = get_user_identity(conn, session.email)
+        if not user:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        available_workspaces = get_user_workspaces(conn, session.email)
+        if not any(workspace["role"] == body.role for workspace in available_workspaces):
+            raise HTTPException(status_code=403, detail="That workspace is not available for this account.")
+
+        session_payload = build_session_payload(user, available_workspaces, active_role=body.role)
 
     response.set_cookie(
         key=SESSION_COOKIE,
@@ -1935,6 +2235,8 @@ def list_opportunities(session: SessionUser = Depends(get_session)) -> dict[str,
         rows = conn.execute("SELECT * FROM opportunities ORDER BY created_at DESC").fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
+            if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, int(row["id"])):
+                continue
             required_fields = conn.execute(
                 """
                 SELECT f.field_key, f.label, f.input_type, f.section_key
@@ -1959,6 +2261,8 @@ def opportunity_detail(opportunity_id: int, session: SessionUser = Depends(get_s
         opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
+        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
+            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
 
         required_fields = conn.execute(
             """
@@ -2018,11 +2322,13 @@ def admin_get_opportunity(opportunity_id: int, session: SessionUser = Depends(re
             (opportunity_id,),
         ).fetchall()
         steps = get_pipeline_steps(conn, opportunity_id)
+        visibility_rules = get_opportunity_visibility_rules(conn, opportunity_id)
     return {
         "opportunity": dict(opp),
         "form_fields": [row["field_key"] for row in required_fields],
         "custom_fields": [dict(row) for row in custom_fields],
         "workflow_steps": steps,
+        "generator_visibility_rules": visibility_rules,
     }
 
 
@@ -2075,6 +2381,7 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
     if payload.useDefaultTemplate or not workflow_steps:
         workflow_steps = [WorkflowStepPayload(**item) for item in default_pipeline_template()]
     custom_fields = normalize_custom_form_fields(payload.customFields or [])
+    visibility_rules = normalize_visibility_rules(payload.generatorVisibilityRules)
 
     ts = now_iso()
     with db_conn() as conn:
@@ -2104,6 +2411,7 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
         opportunity_id = int(cursor.lastrowid)
         upsert_custom_form_fields(conn, custom_fields)
         replace_opportunity_structure(conn, opportunity_id, payload.formFields, workflow_steps, ts)
+        replace_opportunity_visibility_rules(conn, opportunity_id, visibility_rules, ts)
         conn.commit()
 
     return {"id": opportunity_id}
@@ -2119,10 +2427,11 @@ def admin_patch_opportunity(
     form_fields_override = body.formFields
     custom_fields_override = body.customFields
     workflow_steps_override = body.workflowSteps
+    visibility_rules_override = body.generatorVisibilityRules
     use_default_template = body.useDefaultTemplate
     core_updates = {
         k: v
-        for k, v in body.model_dump(exclude={"formFields", "customFields", "workflowSteps", "useDefaultTemplate"}).items()
+        for k, v in body.model_dump(exclude={"formFields", "customFields", "workflowSteps", "generatorVisibilityRules", "useDefaultTemplate"}).items()
         if v is not None
     }
 
@@ -2130,6 +2439,7 @@ def admin_patch_opportunity(
         form_fields_override is not None
         or custom_fields_override is not None
         or workflow_steps_override is not None
+        or visibility_rules_override is not None
         or bool(use_default_template)
     )
 
@@ -2174,6 +2484,9 @@ def admin_patch_opportunity(
                 upsert_custom_form_fields(conn, normalized_custom_fields)
 
             replace_opportunity_structure(conn, opportunity_id, form_fields, workflow_steps, ts)
+            if visibility_rules_override is not None:
+                normalized_visibility_rules = normalize_visibility_rules(visibility_rules_override)
+                replace_opportunity_visibility_rules(conn, opportunity_id, normalized_visibility_rules, ts)
             conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
 
         conn.commit()
@@ -2194,11 +2507,13 @@ def admin_patch_opportunity(
             (opportunity_id,),
         ).fetchall()
         steps = get_pipeline_steps(conn, opportunity_id)
+        visibility_rules = get_opportunity_visibility_rules(conn, opportunity_id)
     return {
         "opportunity": dict(opp) if opp else None,
         "form_fields": [row["field_key"] for row in required_fields],
         "custom_fields": [dict(row) for row in custom_fields],
         "workflow_steps": steps,
+        "generator_visibility_rules": visibility_rules,
     }
 
 
@@ -2267,6 +2582,8 @@ def create_application(body: ApplicationCreateBody, session: SessionUser = Depen
         opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (body.opportunityId,)).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
+        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, body.opportunityId):
+            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
 
         first_step = conn.execute(
             """
@@ -2724,9 +3041,6 @@ def reject_application(
 ) -> dict[str, Any]:
     ensure_db_initialized()
 
-    if session.role not in FINAL_ROLES:
-        raise HTTPException(status_code=403, detail="Only administrators can reject applications")
-
     with db_conn() as conn:
         app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
         if not app_row:
@@ -2735,6 +3049,9 @@ def reject_application(
             raise HTTPException(status_code=400, detail="Application already closed")
 
         current_step = ensure_reviewer_assigned(conn, app_row, session)
+        allowed_actions = json.loads(current_step["allowed_actions_json"])
+        if "reject" not in allowed_actions:
+            raise HTTPException(status_code=403, detail="This review step is not allowed to reject applications.")
 
         ts = now_iso()
         conn.execute(

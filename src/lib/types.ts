@@ -14,6 +14,28 @@ export interface Role {
   display_name: string;
 }
 
+export interface UserScopeRole {
+  id: number;
+  user_id: number;
+  role_id: number;
+  scope_type: "SYSTEM" | "OPPORTUNITY";
+  scope_id: number | null;
+  created_by: number | null;
+  created_at: string;
+}
+
+export interface UserRoleContext {
+  user_id: number;
+  source_role_code: string;
+  source_role_display_name: string;
+  workspace_role_code: "GENERATOR" | "REVIEWER" | "ADMIN" | string;
+  workspace_role_display_name: string;
+  scope_type: "SYSTEM" | "OPPORTUNITY";
+  scope_id: number | null;
+  opportunity_code: string | null;
+  opportunity_title: string | null;
+}
+
 export interface StudentProfile {
   id: number;
   user_id: number;
@@ -198,6 +220,11 @@ export interface SessionUser {
   role: string;
   roleDisplayName: string;
   userId: number;
+  availableWorkspaces?: Array<{
+    role: string;
+    roleDisplayName: string;
+    dashboardPath: string;
+  }>;
 }
 
 export type RoleCode =

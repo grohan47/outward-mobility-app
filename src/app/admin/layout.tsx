@@ -11,20 +11,23 @@ export default function AdminLayout({
   const session = requireSession();
 
   if (session.role !== "ADMIN") {
-    redirect("/");
+    redirect("/select-workspace");
   }
 
   const navItems = [
     { href: "/admin", icon: "dashboard", label: "Dashboard" },
     { href: "/admin/applications", icon: "description", label: "Applications" },
     { href: "/admin/opportunities", icon: "star", label: "Opportunities" },
-    { href: "/reviewer", icon: "fact_check", label: "Review Panel" },
     { href: "/admin/messages", icon: "chat", label: "Messaging (WIP)" },
   ];
 
   return (
     <div className="min-h-screen bg-background-light">
-      <AppHeader userName={session.name} roleDisplayName={session.roleDisplayName} />
+      <AppHeader
+        userName={session.name}
+        roleDisplayName={session.roleDisplayName}
+        canSwitchWorkspace={(session.availableWorkspaces?.length || 0) > 1}
+      />
       <Sidebar items={navItems} />
       <main className="pl-64 pt-16 min-h-screen">
         <div className="p-8 max-w-[1600px] mx-auto">{children}</div>
