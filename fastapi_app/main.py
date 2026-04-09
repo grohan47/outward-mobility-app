@@ -45,6 +45,7 @@ REVIEWER_ROLES = {REVIEWER_ROLE}
 # Backward naming alias for student-centric code paths.
 STUDENT_ROLE = GENERATOR_ROLE
 REQUIRED_INPUT_TYPES = {"text", "number", "dropdown", "multiselect"}
+CUSTOM_FIELD_INPUT_TYPES = {"text", "textarea", "single_select", "multiselect"}
 
 
 def dedupe_preserve_order(values: list[str]) -> list[str]:
@@ -79,6 +80,48 @@ def parse_iso(value: str | None) -> datetime | None:
 
 def valid_plaksha_email(email: str) -> bool:
     return email.strip().lower().endswith(PLAKSHA_DOMAIN)
+
+
+def parse_options_json(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item).strip()]
+
+
+def serialize_form_field(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "field_key": row["field_key"],
+        "label": row["label"],
+        "description": row["description"],
+        "field_hint": row["field_hint"],
+        "input_type": row["input_type"],
+        "options": parse_options_json(row["options_json"]),
+        "section_key": row["section_key"],
+    }
+
+
+def extract_ctas_from_description(description: str | None) -> list[str]:
+    if not description:
+        return []
+    snippets = re.split(r"[.\n;]+", description)
+    action_terms = ("submit", "prepare", "highlight", "show", "include", "share", "explain", "attach")
+    ctas: list[str] = []
+    for snippet in snippets:
+        text = snippet.strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if any(term in lowered for term in action_terms):
+            ctas.append(text[:90])
+    if not ctas:
+        ctas = [segment.strip()[:90] for segment in snippets if segment.strip()][:3]
+    return dedupe_preserve_order(ctas)[:4]
 
 
 @contextmanager
@@ -117,6 +160,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         "opportunity_pipeline_steps": {"sla_hours", "can_view_comments"},
         "opportunity_step_required_inputs": {"options_json", "display_order"},
         "applications": {"return_to_step_order", "return_to_stage_label"},
+        "form_field_catalog": {"field_hint", "options_json"},
     }
     for table, columns in required_columns.items():
         if not columns.issubset(table_columns(conn, table)):
@@ -196,7 +240,9 @@ CREATE TABLE form_field_catalog (
   field_key TEXT PRIMARY KEY,
   label TEXT NOT NULL,
   description TEXT,
+  field_hint TEXT,
   input_type TEXT NOT NULL,
+  options_json TEXT,
   section_key TEXT NOT NULL,
   is_active INTEGER NOT NULL DEFAULT 1
 );
@@ -412,26 +458,26 @@ def seed_data(conn: sqlite3.Connection) -> None:
         )
 
     form_fields = [
-        ("full_name", "Full Name", "Enter the applicant's legal full name.", "text", "personal"),
-        ("student_id", "Student ID", "Enter the institutional student ID.", "text", "personal"),
-        ("email", "Email Address", "Enter the applicant's official email address.", "email", "personal"),
-        ("phone", "Phone Number", "Enter a reachable phone number.", "text", "personal"),
-        ("program", "Academic Program", "Enter the current academic program or department.", "text", "academic"),
-        ("cgpa", "Current CGPA", "Enter the latest approved CGPA/GPA.", "number", "academic"),
-        ("passport_number", "Passport Number", "Enter passport number if travel documentation is required.", "text", "documents"),
-        ("statement_of_purpose", "Statement of Purpose", "Provide a short motivation statement.", "textarea", "documents"),
-        ("language_score", "Language Score (IELTS/TOEFL)", "Enter the latest validated language test score.", "number", "academic"),
-        ("prior_exchange_experience", "Prior Exchange Experience", "List prior exchange or mobility participation, if any.", "text", "experience"),
-        ("disciplinary_history", "Declared Disciplinary History", "Declare relevant disciplinary history or write none.", "text", "compliance"),
-        ("transcript_upload", "Transcript Upload", "Add the transcript file link or document reference.", "file", "documents"),
-        ("recommendation_upload", "Recommendation Upload", "Add recommendation letter file link or document reference.", "file", "documents"),
-        ("resume_upload", "Resume Upload", "Add the resume/CV file link or document reference.", "file", "documents"),
+        ("full_name", "Full Name", "Enter the applicant's legal full name.", "Use your passport/legal record name.", "text", None, "personal"),
+        ("student_id", "Student ID", "Enter the institutional student ID.", "Format: PL-YYYY-XXX", "text", None, "personal"),
+        ("email", "Email Address", "Enter the applicant's official email address.", "Prefer your Plaksha email.", "email", None, "personal"),
+        ("phone", "Phone Number", "Enter a reachable phone number.", "Include country code.", "text", None, "personal"),
+        ("program", "Academic Program", "Enter the current academic program or department.", "Example: BTech CSE", "text", None, "academic"),
+        ("cgpa", "Current CGPA", "Enter the latest approved CGPA/GPA.", "Use official transcript value.", "number", None, "academic"),
+        ("passport_number", "Passport Number", "Enter passport number if travel documentation is required.", "Type NA if unavailable.", "text", None, "documents"),
+        ("statement_of_purpose", "Statement of Purpose", "Provide a short motivation statement.", "Explain goals and fit in 200-400 words.", "textarea", None, "documents"),
+        ("language_score", "Language Score (IELTS/TOEFL)", "Enter the latest validated language test score.", "Numeric value only.", "number", None, "academic"),
+        ("prior_exchange_experience", "Prior Exchange Experience", "List prior exchange or mobility participation, if any.", "Mention location, duration, and outcome.", "text", None, "experience"),
+        ("disciplinary_history", "Declared Disciplinary History", "Declare relevant disciplinary history or write none.", "Be transparent and concise.", "text", None, "compliance"),
+        ("transcript_upload", "Transcript Upload", "Add the transcript file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
+        ("recommendation_upload", "Recommendation Upload", "Add recommendation letter file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
+        ("resume_upload", "Resume Upload", "Add the resume/CV file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
     ]
     for row in form_fields:
         conn.execute(
             """
-            INSERT OR IGNORE INTO form_field_catalog (field_key, label, description, input_type, section_key, is_active)
-            VALUES (?, ?, ?, ?, ?, 1)
+            INSERT OR IGNORE INTO form_field_catalog (field_key, label, description, field_hint, input_type, options_json, section_key, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             """,
             row,
         )
@@ -832,6 +878,12 @@ def ensure_db_initialized() -> None:
         form_field_columns = table_columns(conn, "form_field_catalog")
         if "description" not in form_field_columns:
             conn.execute("ALTER TABLE form_field_catalog ADD COLUMN description TEXT")
+        if "field_hint" not in form_field_columns:
+            conn.execute("ALTER TABLE form_field_catalog ADD COLUMN field_hint TEXT")
+        if "options_json" not in form_field_columns:
+            conn.execute("ALTER TABLE form_field_catalog ADD COLUMN options_json TEXT")
+        if "field_hint" in table_columns(conn, "form_field_catalog"):
+            conn.execute("UPDATE form_field_catalog SET field_hint = COALESCE(field_hint, description)")
             conn.commit()
 
         required = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
@@ -896,6 +948,9 @@ class CustomFormFieldPayload(BaseModel):
     key: str | None = None
     label: str
     description: str | None = None
+    fieldHint: str | None = None
+    inputType: Literal["text", "textarea", "single_select", "multiselect"] = "text"
+    options: list[str] = Field(default_factory=list)
 
 
 class OpportunityPatchBody(BaseModel):
@@ -1411,8 +1466,8 @@ def normalize_custom_field_key(raw_key: str, fallback_label: str) -> str:
     return base
 
 
-def normalize_custom_form_fields(custom_fields: list[CustomFormFieldPayload]) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
+def normalize_custom_form_fields(custom_fields: list[CustomFormFieldPayload]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
     used_keys: set[str] = set()
     for index, field in enumerate(custom_fields, start=1):
         label = field.label.strip()
@@ -1427,17 +1482,33 @@ def normalize_custom_form_fields(custom_fields: list[CustomFormFieldPayload]) ->
             suffix += 1
         used_keys.add(key)
 
+        input_type = field.inputType.strip().lower()
+        if input_type not in CUSTOM_FIELD_INPUT_TYPES:
+            raise HTTPException(status_code=400, detail=f"Unsupported custom field type: {field.inputType}")
+
+        options = dedupe_preserve_order(field.options or [])
+        if input_type in {"single_select", "multiselect"} and not options:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Custom field "{label}" requires at least one option.',
+            )
+        if input_type not in {"single_select", "multiselect"}:
+            options = []
+
         normalized.append(
             {
                 "field_key": key,
                 "label": label,
                 "description": (field.description or "").strip(),
+                "field_hint": (field.fieldHint or field.description or "").strip(),
+                "input_type": input_type,
+                "options": options,
             }
         )
     return normalized
 
 
-def upsert_custom_form_fields(conn: sqlite3.Connection, custom_fields: list[dict[str, str]]) -> None:
+def upsert_custom_form_fields(conn: sqlite3.Connection, custom_fields: list[dict[str, Any]]) -> None:
     for field in custom_fields:
         existing = conn.execute(
             "SELECT field_key, section_key FROM form_field_catalog WHERE field_key = ?",
@@ -1451,16 +1522,25 @@ def upsert_custom_form_fields(conn: sqlite3.Connection, custom_fields: list[dict
 
         conn.execute(
             """
-            INSERT INTO form_field_catalog (field_key, label, description, input_type, section_key, is_active)
-            VALUES (?, ?, ?, 'text', 'custom', 1)
+            INSERT INTO form_field_catalog (field_key, label, description, field_hint, input_type, options_json, section_key, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 'custom', 1)
             ON CONFLICT(field_key) DO UPDATE SET
               label = excluded.label,
               description = excluded.description,
-              input_type = 'text',
+              field_hint = excluded.field_hint,
+              input_type = excluded.input_type,
+              options_json = excluded.options_json,
               section_key = 'custom',
               is_active = 1
             """,
-            (field["field_key"], field["label"], field["description"] or None),
+            (
+                field["field_key"],
+                field["label"],
+                field["description"] or None,
+                field["field_hint"] or None,
+                field["input_type"],
+                json.dumps(field["options"]) if field["options"] else None,
+            ),
         )
 
 
@@ -2282,10 +2362,15 @@ def form_fields(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> di
     ensure_db_initialized()
     with db_conn() as conn:
         rows = conn.execute(
-            "SELECT field_key, label, description, input_type, section_key FROM form_field_catalog WHERE is_active = 1 ORDER BY section_key ASC, label ASC"
+            """
+            SELECT field_key, label, description, field_hint, input_type, options_json, section_key
+            FROM form_field_catalog
+            WHERE is_active = 1
+            ORDER BY section_key ASC, label ASC
+            """
         ).fetchall()
     return {
-        "items": [dict(row) for row in rows],
+        "items": [serialize_form_field(row) for row in rows],
         "defaultPipelineTemplate": default_pipeline_template(),
     }
 
@@ -2301,8 +2386,7 @@ def list_opportunities(session: SessionUser = Depends(get_session)) -> dict[str,
                 continue
             required_fields = conn.execute(
                 """
-                SELECT f.field_key, f.label, f.input_type, f.section_key
-                     , f.description
+                SELECT f.field_key, f.label, f.input_type, f.section_key, f.description, f.field_hint, f.options_json
                 FROM opportunity_required_fields orf
                 JOIN form_field_catalog f ON f.field_key = orf.field_key
                 WHERE orf.opportunity_id = ?
@@ -2311,7 +2395,8 @@ def list_opportunities(session: SessionUser = Depends(get_session)) -> dict[str,
                 (row["id"],),
             ).fetchall()
             item = dict(row)
-            item["required_fields"] = [dict(f) for f in required_fields]
+            item["required_fields"] = [serialize_form_field(f) for f in required_fields]
+            item["ai_ctas"] = extract_ctas_from_description(row["description"])
             result.append(item)
     return {"items": result}
 
@@ -2328,8 +2413,7 @@ def opportunity_detail(opportunity_id: int, session: SessionUser = Depends(get_s
 
         required_fields = conn.execute(
             """
-            SELECT f.field_key, f.label, f.input_type, f.section_key
-                 , f.description
+            SELECT f.field_key, f.label, f.input_type, f.section_key, f.description, f.field_hint, f.options_json
             FROM opportunity_required_fields orf
             JOIN form_field_catalog f ON f.field_key = orf.field_key
             WHERE orf.opportunity_id = ?
@@ -2340,9 +2424,21 @@ def opportunity_detail(opportunity_id: int, session: SessionUser = Depends(get_s
         steps = get_pipeline_steps(conn, opportunity_id)
     return {
         "opportunity": dict(opp),
-        "required_fields": [dict(row) for row in required_fields],
+        "required_fields": [serialize_form_field(row) for row in required_fields],
         "workflow_steps": steps,
     }
+
+
+@app.get("/api/opportunities/{opportunity_id}/ai-cta")
+def opportunity_ai_cta(opportunity_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        opp = conn.execute("SELECT id, description FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        if not opp:
+            raise HTTPException(status_code=404, detail="Opportunity not found")
+        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
+            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
+    return {"ctas": extract_ctas_from_description(opp["description"])}
 
 
 @app.get("/api/admin/opportunities")
@@ -2375,7 +2471,7 @@ def admin_get_opportunity(opportunity_id: int, session: SessionUser = Depends(re
         ).fetchall()
         custom_fields = conn.execute(
             """
-            SELECT f.field_key, f.label, f.description
+            SELECT f.field_key, f.label, f.description, f.field_hint, f.input_type, f.options_json, f.section_key
             FROM opportunity_required_fields orf
             JOIN form_field_catalog f ON f.field_key = orf.field_key
             WHERE orf.opportunity_id = ? AND f.section_key = 'custom'
@@ -2388,7 +2484,7 @@ def admin_get_opportunity(opportunity_id: int, session: SessionUser = Depends(re
     return {
         "opportunity": dict(opp),
         "form_fields": [row["field_key"] for row in required_fields],
-        "custom_fields": [dict(row) for row in custom_fields],
+        "custom_fields": [serialize_form_field(row) for row in custom_fields],
         "workflow_steps": steps,
         "generator_visibility_rules": visibility_rules,
     }
@@ -2570,7 +2666,7 @@ def admin_patch_opportunity(
         ).fetchall()
         custom_fields = conn.execute(
             """
-            SELECT f.field_key, f.label, f.description
+            SELECT f.field_key, f.label, f.description, f.field_hint, f.input_type, f.options_json, f.section_key
             FROM opportunity_required_fields orf
             JOIN form_field_catalog f ON f.field_key = orf.field_key
             WHERE orf.opportunity_id = ? AND f.section_key = 'custom'
@@ -2583,7 +2679,7 @@ def admin_patch_opportunity(
     return {
         "opportunity": dict(opp) if opp else None,
         "form_fields": [row["field_key"] for row in required_fields],
-        "custom_fields": [dict(row) for row in custom_fields],
+        "custom_fields": [serialize_form_field(row) for row in custom_fields],
         "workflow_steps": steps,
         "generator_visibility_rules": visibility_rules,
     }

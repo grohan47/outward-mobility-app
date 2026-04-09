@@ -9,7 +9,9 @@ type CatalogField = {
   field_key: string;
   label: string;
   description?: string | null;
+  field_hint?: string | null;
   input_type: string;
+  options?: string[];
   section_key: string;
 };
 
@@ -17,6 +19,9 @@ type CustomFieldDraft = {
   field_key: string;
   label: string;
   description: string;
+  fieldHint: string;
+  inputType: "text" | "textarea" | "single_select" | "multiselect";
+  optionsText: string;
 };
 
 type RequiredInputType = "text" | "number" | "dropdown" | "multiselect";
@@ -238,6 +243,11 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
             field_key: String(field.field_key || makeCustomFieldKey(field.label || "custom_field")),
             label: String(field.label || ""),
             description: String(field.description || ""),
+            fieldHint: String(field.field_hint || field.description || ""),
+            inputType: ["text", "textarea", "single_select", "multiselect"].includes(field.input_type)
+              ? field.input_type
+              : "text",
+            optionsText: Array.isArray(field.options) ? field.options.join(", ") : "",
           }))
         );
         setGeneratorVisibilityRules(
@@ -278,7 +288,9 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
         field_key: custom.field_key,
         label: custom.label || "Custom Field",
         description: custom.description,
-        input_type: "text",
+        field_hint: custom.fieldHint,
+        input_type: custom.inputType,
+        options: parseOptionsText(custom.optionsText),
         section_key: "custom",
       });
     }
@@ -296,7 +308,10 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
 
   function addCustomField() {
     const fieldKey = makeCustomFieldKey(`custom_${Date.now()}`);
-    setCustomFields((prev) => [...prev, { field_key: fieldKey, label: "", description: "" }]);
+    setCustomFields((prev) => [
+      ...prev,
+      { field_key: fieldKey, label: "", description: "", fieldHint: "", inputType: "text", optionsText: "" },
+    ]);
     setSelectedFields((prev) => (prev.includes(fieldKey) ? prev : [...prev, fieldKey]));
   }
 
@@ -497,11 +512,21 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
       setError("Each selected custom field must include a label.");
       return;
     }
+    const invalidCustomOptions = selectedCustomFields.find(
+      (field) => (field.inputType === "single_select" || field.inputType === "multiselect") && parseOptionsText(field.optionsText).length === 0
+    );
+    if (invalidCustomOptions) {
+      setError(`Custom field "${invalidCustomOptions.label || "Untitled"}" needs options for select inputs.`);
+      return;
+    }
 
     const customFieldsPayload = selectedCustomFields.map((field) => ({
       key: field.field_key,
       label: field.label.trim(),
       description: field.description.trim(),
+      fieldHint: field.fieldHint.trim() || field.description.trim(),
+      inputType: field.inputType,
+      options: parseOptionsText(field.optionsText),
     }));
     const visibilityRulesPayload = generatorVisibilityRules
       .map((rule) => ({
@@ -735,10 +760,10 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
               <h2 className="text-xl font-medium">2. Applicant Form Fields</h2>
               <Button variant="secondary" size="sm" onClick={addCustomField}>
                 <span className="material-symbols-outlined mr-1">add</span>
-                Add Custom Text Field
+                Add Custom Field
               </Button>
             </div>
-            <p className="text-slate-500 text-sm mb-4">Select preset fields and add custom text fields as needed.</p>
+            <p className="text-slate-500 text-sm mb-4">Select preset fields and add custom fields with hints and input modes.</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {presetFields.map((field) => (
                 <label
@@ -764,7 +789,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
 
             {customFields.length > 0 && (
               <div className="mt-6 pt-6 border-t border-slate-100 space-y-4">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Custom Text Fields</h3>
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Custom Fields</h3>
                 {customFields.map((field, index) => (
                   <div key={field.field_key} className="border border-slate-200 rounded-xl p-4 bg-slate-50 space-y-3">
                     <div className="flex items-center justify-between">
@@ -800,17 +825,58 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
-                          Prompt / Description
+                          Description
                         </label>
                         <input
                           type="text"
                           value={field.description}
                           onChange={(e) => updateCustomField(field.field_key, { description: e.target.value })}
-                          placeholder="Explain what should be entered in this text box"
+                          placeholder="What this field captures"
                           className="w-full border rounded-lg p-2 text-sm bg-white"
                         />
                       </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                          Field Hint
+                        </label>
+                        <input
+                          type="text"
+                          value={field.fieldHint}
+                          onChange={(e) => updateCustomField(field.field_key, { fieldHint: e.target.value })}
+                          placeholder="Instruction shown to generator"
+                          className="w-full border rounded-lg p-2 text-sm bg-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                          Input Type
+                        </label>
+                        <select
+                          value={field.inputType}
+                          onChange={(e) => updateCustomField(field.field_key, { inputType: e.target.value as CustomFieldDraft["inputType"] })}
+                          className="w-full border rounded-lg p-2 text-sm bg-white"
+                        >
+                          <option value="text">Simple text box</option>
+                          <option value="textarea">Large text box</option>
+                          <option value="single_select">Single select</option>
+                          <option value="multiselect">Multi select</option>
+                        </select>
+                      </div>
                     </div>
+                    {(field.inputType === "single_select" || field.inputType === "multiselect") && (
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
+                          Options (comma separated)
+                        </label>
+                        <input
+                          type="text"
+                          value={field.optionsText}
+                          onChange={(e) => updateCustomField(field.field_key, { optionsText: e.target.value })}
+                          placeholder="Option A, Option B"
+                          className="w-full border rounded-lg p-2 text-sm bg-white"
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -905,7 +971,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
               If you want to review this opportunity yourself, add your own email as one of the reviewer emails below and place it in the order you want within the chain.
             </p>
             {useDefaultTemplate && (
-              <p className="text-xs text-slate-500 mb-6">Uncheck "Use Default Template" to edit reviewer stages or input options.</p>
+              <p className="text-xs text-slate-500 mb-6">Uncheck &quot;Use Default Template&quot; to edit reviewer stages or input options.</p>
             )}
 
             <div className="space-y-6">
