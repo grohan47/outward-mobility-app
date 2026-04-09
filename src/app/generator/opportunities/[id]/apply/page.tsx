@@ -9,7 +9,9 @@ type RequiredField = {
   field_key: string;
   label: string;
   description?: string | null;
+  field_hint?: string | null;
   input_type: string;
+  options?: string[];
   section_key: string;
 };
 
@@ -17,6 +19,7 @@ type OpportunityDetailPayload = {
   opportunity: {
     id: number;
     title: string;
+    description: string | null;
     term: string | null;
     destination: string | null;
     deadline: string | null;
@@ -39,6 +42,7 @@ export default function OpportunityApplyPage() {
   const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<OpportunityDetailPayload | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [ctaItems, setCtaItems] = useState<string[]>([]);
 
   useEffect(() => {
     fetch(`/api/opportunities/${params.id}`)
@@ -57,6 +61,13 @@ export default function OpportunityApplyPage() {
         setError("Unable to load opportunity form.");
         setLoading(false);
       });
+  }, [params.id]);
+
+  useEffect(() => {
+    fetch(`/api/opportunities/${params.id}/ai-cta`)
+      .then((r) => r.json())
+      .then((d) => setCtaItems(Array.isArray(d.ctas) ? d.ctas : []))
+      .catch(() => setCtaItems([]));
   }, [params.id]);
 
   const fields = useMemo(() => payload?.required_fields || [], [payload]);
@@ -126,6 +137,25 @@ export default function OpportunityApplyPage() {
         <p className="text-slate-500 mt-1">
           {[payload.opportunity.term, payload.opportunity.destination].filter(Boolean).join(" • ")}
         </p>
+        {payload.opportunity.description && (
+          <div className="mt-5 grid gap-4 lg:grid-cols-[2fr,1fr]">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-sm font-semibold text-slate-600 mb-1">Opportunity Description</p>
+              <p className="text-sm text-slate-700 leading-6">{payload.opportunity.description}</p>
+            </div>
+            <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
+              <p className="text-sm font-semibold text-primary mb-2">AI-Suggested CTAs</p>
+              <ul className="space-y-2">
+                {ctaItems.map((cta) => (
+                  <li key={cta} className="text-xs text-slate-700 bg-white border border-primary/20 rounded-lg px-2.5 py-2">
+                    {cta}
+                  </li>
+                ))}
+                {ctaItems.length === 0 && <li className="text-xs text-slate-500">No CTAs generated yet.</li>}
+              </ul>
+            </div>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -142,8 +172,9 @@ export default function OpportunityApplyPage() {
               return (
                 <div key={field.field_key}>
                   <label className="block text-sm font-medium mb-1 text-slate-700">{field.label}</label>
-                  {field.description && <p className="text-xs text-slate-500 mb-2">{field.description}</p>}
-                  <textarea
+                {field.description && <p className="text-xs text-slate-500 mb-2">{field.description}</p>}
+                {field.field_hint && <p className="text-xs text-primary mb-2">{field.field_hint}</p>}
+                <textarea
                     rows={4}
                     className="w-full border rounded-lg p-3"
                     value={values[field.field_key] || ""}
@@ -153,10 +184,64 @@ export default function OpportunityApplyPage() {
               );
             }
 
+            if (field.input_type === "single_select") {
+              return (
+                <div key={field.field_key}>
+                  <label className="block text-sm font-medium mb-1 text-slate-700">{field.label}</label>
+                  {field.description && <p className="text-xs text-slate-500 mb-2">{field.description}</p>}
+                  {field.field_hint && <p className="text-xs text-primary mb-2">{field.field_hint}</p>}
+                  <select
+                    className="w-full border rounded-lg p-3 bg-white"
+                    value={values[field.field_key] || ""}
+                    onChange={(e) => setFieldValue(field.field_key, e.target.value)}
+                  >
+                    <option value="">Select an option</option>
+                    {(field.options || []).map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            }
+
+            if (field.input_type === "multiselect") {
+              const selected = (values[field.field_key] || "").split("||").filter(Boolean);
+              return (
+                <div key={field.field_key}>
+                  <label className="block text-sm font-medium mb-1 text-slate-700">{field.label}</label>
+                  {field.description && <p className="text-xs text-slate-500 mb-2">{field.description}</p>}
+                  {field.field_hint && <p className="text-xs text-primary mb-2">{field.field_hint}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    {(field.options || []).map((option) => {
+                      const isActive = selected.includes(option);
+                      return (
+                        <button
+                          key={option}
+                          type="button"
+                          className={`rounded-full border px-3 py-1.5 text-xs transition ${
+                            isActive ? "border-primary bg-primary text-white" : "border-slate-300 text-slate-700 bg-white"
+                          }`}
+                          onClick={() => {
+                            const next = isActive ? selected.filter((item) => item !== option) : [...selected, option];
+                            setFieldValue(field.field_key, next.join("||"));
+                          }}
+                        >
+                          {option}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div key={field.field_key}>
                 <label className="block text-sm font-medium mb-1 text-slate-700">{field.label}</label>
                 {field.description && <p className="text-xs text-slate-500 mb-2">{field.description}</p>}
+                {field.field_hint && <p className="text-xs text-primary mb-2">{field.field_hint}</p>}
                 <input
                   type={inputTypeForField(field.input_type)}
                   className="w-full border rounded-lg p-3"

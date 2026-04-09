@@ -130,7 +130,7 @@ export default function SelectWorkspacePage() {
                       <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-400">{workspace.role}</p>
                       <p className="mt-1 text-lg font-black text-slate-950">{workspace.roleDisplayName}</p>
                       <p className="mt-1 text-sm text-slate-500">
-                        {workspace.role === "GENERATOR" && "Browse visible opportunities and track your own applications."}
+                        {workspace.role === "GENERATOR" && "Browse only the opportunities you were explicitly assigned to and track your applications."}
                         {workspace.role === "REVIEWER" && "Open the reviewer inbox and work through assigned approval steps."}
                         {workspace.role === "ADMIN" && "Configure opportunities, workflows, and platform settings."}
                       </p>
