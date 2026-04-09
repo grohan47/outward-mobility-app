@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/Button";
 interface Opportunity {
   id: number;
   title: string;
+  description?: string | null;
+  ai_ctas?: string[];
   code: string;
   destination: string;
   term: string;
@@ -20,6 +22,7 @@ interface Opportunity {
 export default function GeneratorOpportunities() {
   const [items, setItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [focusedId, setFocusedId] = useState<number | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -35,6 +38,8 @@ export default function GeneratorOpportunities() {
   function applyToOpportunity(opportunityId: number) {
     router.push(`/generator/opportunities/${opportunityId}/apply`);
   }
+
+  const focusedOpportunity = items.find((item) => item.id === focusedId) || null;
 
   return (
     <div className="space-y-6">
@@ -61,7 +66,12 @@ export default function GeneratorOpportunities() {
           {items.map((opp) => (
             <Card
               key={opp.id}
-              className="group hover:-translate-y-1 hover:shadow-lg transition-all duration-300 border border-slate-200 hover:border-primary/30 flex flex-col"
+              onClick={() => setFocusedId(opp.id)}
+              className={`group transition-all duration-500 border cursor-pointer flex flex-col ${
+                focusedId === opp.id
+                  ? "-translate-y-3 shadow-xl border-primary/50 ring-2 ring-primary/15"
+                  : "hover:-translate-y-1 hover:shadow-lg border-slate-200 hover:border-primary/30"
+              }`}
             >
               <div className="flex-1">
                 {opp.cover_image_url && (
@@ -80,7 +90,16 @@ export default function GeneratorOpportunities() {
                 </div>
 
                 <h3 className="text-xl font-black text-slate-900 mb-2 group-hover:text-primary transition-colors">{opp.title}</h3>
-
+                {!!opp.ai_ctas?.length && (
+                  <ul className="mb-3 space-y-1">
+                    {opp.ai_ctas.slice(0, 2).map((cta) => (
+                      <li key={cta} className="text-xs text-slate-600 flex items-start gap-1.5">
+                        <span className="material-symbols-outlined text-[14px] text-primary mt-[1px]">auto_awesome</span>
+                        <span>{cta}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="grid grid-cols-2 gap-4 mt-6">
                   <div className="flex flex-col">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Term</span>
@@ -103,14 +122,90 @@ export default function GeneratorOpportunities() {
               <div className="mt-8 pt-4 border-t border-slate-100">
                 <Button
                   className="w-full"
-                  icon="edit_document"
-                  onClick={() => applyToOpportunity(opp.id)}
+                  icon="visibility"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFocusedId(opp.id);
+                  }}
                 >
-                  Fill and Apply
+                  View Opportunity
                 </Button>
               </div>
             </Card>
           ))}
+        </div>
+      )}
+
+      {focusedOpportunity && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-900/35 backdrop-blur-sm p-4 md:p-8 overflow-y-auto"
+          onClick={() => setFocusedId(null)}
+        >
+          <div className="min-h-full flex items-center justify-center">
+            <div
+              className="w-full max-w-5xl rounded-3xl bg-white shadow-2xl border border-white/70 overflow-hidden transition-all duration-500"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="relative">
+                {focusedOpportunity.cover_image_url ? (
+                  <img
+                    src={focusedOpportunity.cover_image_url}
+                    alt={focusedOpportunity.title}
+                    className="w-full h-56 md:h-72 object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-56 md:h-72 bg-gradient-to-r from-primary/20 via-sky-200 to-indigo-100" />
+                )}
+                <button
+                  type="button"
+                  onClick={() => setFocusedId(null)}
+                  className="absolute top-4 right-4 rounded-full bg-white/90 hover:bg-white h-10 w-10 flex items-center justify-center shadow"
+                >
+                  <span className="material-symbols-outlined text-slate-600">close</span>
+                </button>
+              </div>
+
+              <div className="p-6 md:p-8">
+                <div className="flex flex-wrap items-center gap-3 mb-3">
+                  <Badge variant="neutral" icon="pin_drop">
+                    {focusedOpportunity.destination}
+                  </Badge>
+                  <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md">{focusedOpportunity.code}</span>
+                </div>
+
+                <h2 className="text-3xl font-black text-slate-900 tracking-tight mb-6">{focusedOpportunity.title}</h2>
+
+                <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
+                    <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-2">Description</p>
+                    <p className="text-sm md:text-[15px] text-slate-700 leading-7 whitespace-pre-wrap">
+                      {focusedOpportunity.description || "No description available for this opportunity yet."}
+                    </p>
+                  </div>
+
+                  <aside className="rounded-2xl border border-primary/20 bg-primary/5 p-5">
+                    <p className="text-xs uppercase tracking-wider font-semibold text-primary mb-3">AI CTA Highlights</p>
+                    <ul className="space-y-2">
+                      {(focusedOpportunity.ai_ctas || []).map((cta) => (
+                        <li key={cta} className="rounded-lg bg-white border border-primary/20 px-3 py-2 text-xs text-slate-700">
+                          {cta}
+                        </li>
+                      ))}
+                      {(focusedOpportunity.ai_ctas || []).length === 0 && (
+                        <li className="text-xs text-slate-500">No CTA highlights available.</li>
+                      )}
+                    </ul>
+                  </aside>
+                </div>
+
+                <div className="mt-8 pt-6 border-t border-slate-100 flex justify-end">
+                  <Button className="w-full md:w-auto md:min-w-56" icon="rocket_launch" onClick={() => applyToOpportunity(focusedOpportunity.id)}>
+                    Apply Now
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
