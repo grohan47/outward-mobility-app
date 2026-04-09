@@ -994,29 +994,91 @@ def get_user_identity(conn: sqlite3.Connection, email: str) -> sqlite3.Row | Non
 
 
 def get_user_workspaces(conn: sqlite3.Connection, email: str) -> list[dict[str, Any]]:
-    rows = conn.execute(
+    user = get_user_identity(conn, email)
+    if not user:
+        return []
+
+    user_id = int(user["id"])
+    normalized_email = email.strip().lower()
+
+    workspaces: list[dict[str, Any]] = []
+    admin_role = conn.execute(
         """
-        SELECT DISTINCT r.code AS role_code, r.display_name AS role_display_name
-        FROM users u
-        JOIN user_roles ur ON ur.user_id = u.id
+        SELECT 1
+        FROM user_roles ur
         JOIN roles r ON r.id = ur.role_id
-        WHERE LOWER(u.email) = LOWER(?) AND u.is_active = 1
-        ORDER BY CASE r.code
-          WHEN 'GENERATOR' THEN 1
-          WHEN 'REVIEWER' THEN 2
-          WHEN 'ADMIN' THEN 3
-          ELSE 99 END
+        WHERE ur.user_id = ? AND r.code = ?
+        LIMIT 1
         """,
-        (email,),
-    ).fetchall()
-    return [
-        {
-            "role": row["role_code"],
-            "roleDisplayName": row["role_display_name"],
-            "dashboardPath": role_dashboard_path(row["role_code"]),
-        }
-        for row in rows
-    ]
+        (user_id, ADMIN_ROLE),
+    ).fetchone()
+    if admin_role:
+        workspaces.append(
+            {
+                "role": ADMIN_ROLE,
+                "roleDisplayName": get_role_display_name(conn, ADMIN_ROLE),
+                "dashboardPath": role_dashboard_path(ADMIN_ROLE),
+            }
+        )
+
+    reviewer_assignment = conn.execute(
+        """
+        SELECT 1
+        FROM opportunity_pipeline_steps
+        WHERE LOWER(reviewer_email) = LOWER(?)
+        LIMIT 1
+        """,
+        (normalized_email,),
+    ).fetchone()
+    if reviewer_assignment:
+        workspaces.append(
+            {
+                "role": REVIEWER_ROLE,
+                "roleDisplayName": get_role_display_name(conn, REVIEWER_ROLE),
+                "dashboardPath": role_dashboard_path(REVIEWER_ROLE),
+            }
+        )
+
+    generator_assignment = conn.execute(
+        """
+        SELECT 1
+        FROM opportunities o
+        WHERE o.status = 'published'
+          AND EXISTS (
+              SELECT 1
+              FROM opportunity_visibility_rules rules
+              WHERE rules.opportunity_id = o.id
+                AND (
+                    (rules.rule_type = 'EMAIL' AND LOWER(rules.rule_value) = LOWER(?))
+                    OR (
+                        rules.rule_type = 'GROUP_EMAIL'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM email_groups groups
+                            JOIN email_group_memberships memberships ON memberships.group_id = groups.id
+                            WHERE LOWER(groups.email_address) = LOWER(rules.rule_value)
+                              AND groups.is_active = 1
+                              AND memberships.user_id = ?
+                        )
+                    )
+                )
+          )
+        LIMIT 1
+        """,
+        (normalized_email, user_id),
+    ).fetchone()
+    if generator_assignment:
+        workspaces.append(
+            {
+                "role": GENERATOR_ROLE,
+                "roleDisplayName": get_role_display_name(conn, GENERATOR_ROLE),
+                "dashboardPath": role_dashboard_path(GENERATOR_ROLE),
+            }
+        )
+
+    order = {GENERATOR_ROLE: 1, REVIEWER_ROLE: 2, ADMIN_ROLE: 3}
+    workspaces.sort(key=lambda item: order.get(item["role"], 99))
+    return workspaces
 
 
 def build_session_payload(
@@ -1047,7 +1109,7 @@ def can_user_view_opportunity(conn: sqlite3.Connection, user_id: int, opportunit
         (opportunity_id,),
     ).fetchone()
     if not rule_count_row or int(rule_count_row["c"]) == 0:
-        return True
+        return False
 
     exact_match = conn.execute(
         """
@@ -2187,31 +2249,31 @@ def users_me(session: SessionUser = Depends(get_session)) -> dict[str, Any]:
 @app.get("/api/auth/demo-users")
 def auth_demo_users() -> dict[str, Any]:
     ensure_db_initialized()
+    items: list[dict[str, Any]] = []
     with db_conn() as conn:
         rows = conn.execute(
             """
-            SELECT u.email, u.full_name, r.code AS role_code, r.display_name AS role_display_name
+            SELECT u.email, u.full_name
             FROM users u
-            JOIN user_roles ur ON ur.user_id = u.id
-            JOIN roles r ON r.id = ur.role_id
             WHERE u.is_active = 1
               AND LOWER(u.email) <> 'ug-academics@plaksha.edu.in'
-            ORDER BY CASE r.code
-              WHEN 'GENERATOR' THEN 1
-              WHEN 'REVIEWER' THEN 2
-              WHEN 'ADMIN' THEN 3
-              ELSE 99 END,
-              u.email ASC
+            ORDER BY u.email ASC
             """
         ).fetchall()
-    items: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in rows:
-        email = row["email"]
-        if email in seen:
-            continue
-        seen.add(email)
-        items.append(dict(row))
+        for row in rows:
+            email = str(row["email"]).strip().lower()
+            workspaces = get_user_workspaces(conn, email)
+            if not workspaces:
+                continue
+            primary = workspaces[0]
+            items.append(
+                {
+                    "email": email,
+                    "full_name": row["full_name"],
+                    "role_code": primary["role"],
+                    "role_display_name": primary["roleDisplayName"],
+                }
+            )
     return {"items": items}
 
 
@@ -2382,6 +2444,11 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
         workflow_steps = [WorkflowStepPayload(**item) for item in default_pipeline_template()]
     custom_fields = normalize_custom_form_fields(payload.customFields or [])
     visibility_rules = normalize_visibility_rules(payload.generatorVisibilityRules)
+    if not visibility_rules:
+        raise HTTPException(
+            status_code=400,
+            detail="Define at least one eligible generator email/group rule for this opportunity.",
+        )
 
     ts = now_iso()
     with db_conn() as conn:
@@ -2486,6 +2553,11 @@ def admin_patch_opportunity(
             replace_opportunity_structure(conn, opportunity_id, form_fields, workflow_steps, ts)
             if visibility_rules_override is not None:
                 normalized_visibility_rules = normalize_visibility_rules(visibility_rules_override)
+                if not normalized_visibility_rules:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Define at least one eligible generator email/group rule for this opportunity.",
+                    )
                 replace_opportunity_visibility_rules(conn, opportunity_id, normalized_visibility_rules, ts)
             conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
 

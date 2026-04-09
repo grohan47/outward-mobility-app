@@ -510,6 +510,11 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
       }))
       .filter((rule) => rule.ruleValue.length > 0);
 
+    if (visibilityRulesPayload.length === 0) {
+      setError("Define at least one eligible generator email/group before saving this opportunity.");
+      return;
+    }
+
     const invalidGeneratorRule = visibilityRulesPayload.find((rule) => !validPlakshaEmail(rule.ruleValue));
     if (invalidGeneratorRule) {
       setError(`Generator visibility emails must end with @plaksha.edu.in (${invalidGeneratorRule.ruleValue}).`);
@@ -822,7 +827,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
             </div>
             <p className="text-slate-500 text-sm mb-4">
               Define who is allowed to apply. Use exact emails for individuals and group emails for Outlook cohorts like
-              <span className="font-medium text-slate-700"> ug2024@plaksha.edu.in</span>. Leave this section empty to keep the opportunity open to all generators.
+              <span className="font-medium text-slate-700"> ug2024@plaksha.edu.in</span>. This list is mandatory: only explicitly listed emails/groups can access this opportunity in generator mode.
             </p>
 
             <div className="space-y-3">
