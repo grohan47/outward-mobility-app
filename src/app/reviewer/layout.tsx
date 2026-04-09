@@ -16,7 +16,7 @@ export default function ReviewerLayout({
 
   const navItems = [
     { href: "/reviewer", icon: "inbox", label: "Task Inbox" },
-    { href: "/reviewer/messages", icon: "chat", label: "Messaging (WIP)" },
+    { href: "/reviewer/messages", icon: "chat", label: "Messaging" },
   ];
 
   return (

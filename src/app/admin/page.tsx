@@ -97,7 +97,7 @@ export default function AdminDashboard() {
             href="/admin/messages"
             className="px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-bold text-sm rounded-xl transition-colors"
           >
-            Messaging (WIP)
+            Messaging
           </Link>
           <Link
             href="/admin/opportunities/new"

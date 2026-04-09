@@ -172,6 +172,24 @@ export interface DeficiencyItem {
   created_at: string;
 }
 
+export interface ChatThread {
+  id: number;
+  application_id: number;
+}
+
+export interface ChatThreadParticipant {
+  thread_id: number;
+  user_id: number;
+}
+
+export interface ChatMessage {
+  id: number;
+  thread_id: number;
+  sender_user_id: number;
+  body: string;
+  created_at: string;
+}
+
 export interface ApplicationSnapshot {
   id: number;
   application_id: number;

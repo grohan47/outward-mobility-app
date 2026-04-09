@@ -18,7 +18,7 @@ export default function GeneratorLayout({
     { href: "/generator", icon: "dashboard", label: "Dashboard" },
     { href: "/generator/opportunities", icon: "explore", label: "Opportunities" },
     { href: "/generator/applications", icon: "description", label: "My Applications" },
-    { href: "/generator/messages", icon: "chat", label: "Messaging (WIP)" },
+    { href: "/generator/messages", icon: "chat", label: "Messaging" },
   ];
 
   return (

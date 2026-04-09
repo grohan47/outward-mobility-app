@@ -16,4 +16,7 @@ export const TABLES = Object.freeze({
     APPLICATION_DECISIONS: "application_decisions",
     APPLICATION_REMARKS: "application_remarks",
     TIMELINE_EVENTS: "timeline_events",
+    CHAT_THREADS: "chat_threads",
+    CHAT_THREAD_PARTICIPANTS: "chat_thread_participants",
+    CHAT_MESSAGES: "chat_messages",
 });

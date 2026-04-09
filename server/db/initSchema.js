@@ -176,6 +176,30 @@ CREATE TABLE IF NOT EXISTS timeline_events (
     FOREIGN KEY (actor_user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS chat_threads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id INTEGER NOT NULL,
+    FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_thread_participants (
+    thread_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, user_id),
+    FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL,
+    sender_user_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE VIEW IF NOT EXISTS opportunity_visible_users AS
 SELECT DISTINCT
     rules.opportunity_id AS opportunity_id,

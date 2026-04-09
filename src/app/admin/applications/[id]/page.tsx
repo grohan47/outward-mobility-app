@@ -256,7 +256,7 @@ export default function AdminApplicationReviewPage() {
           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm font-semibold hover:bg-amber-100"
         >
           <span className="material-symbols-outlined text-[18px]">chat</span>
-          Messaging (WIP)
+          Messaging
         </Link>
       </div>
 

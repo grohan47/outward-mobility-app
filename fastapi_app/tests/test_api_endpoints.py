@@ -6,6 +6,9 @@ from fastapi import HTTPException, Response
 from fastapi_app.main import (
     ADMIN_ROLE,
     ApplicationCreateBody,
+    ChatMessageCreateBody,
+    ChatParticipantsAddBody,
+    ChatThreadCreateBody,
     CommentCreateBody,
     CustomFormFieldPayload,
     DecisionBody,
@@ -33,6 +36,12 @@ from fastapi_app.main import (
     auth_login,
     auth_logout,
     auth_me,
+    chat_add_participants,
+    chat_application_detail,
+    chat_create_thread,
+    chat_inbox,
+    chat_send_message,
+    chat_thread_detail,
     create_application,
     db_conn,
     delete_application,
@@ -184,6 +193,12 @@ class ApiEndpointTests(unittest.TestCase):
             ("POST", "/api/applications/{application_id}/request-changes"),
             ("POST", "/api/applications/{application_id}/student-response"),
             ("POST", "/api/applications/{application_id}/reject"),
+            ("GET", "/api/chat/inbox"),
+            ("GET", "/api/chat/applications/{application_id}"),
+            ("POST", "/api/chat/applications/{application_id}/threads"),
+            ("GET", "/api/chat/threads/{thread_id}"),
+            ("POST", "/api/chat/threads/{thread_id}/messages"),
+            ("POST", "/api/chat/threads/{thread_id}/participants"),
             ("GET", "/api/applications/{application_id}/comments"),
             ("POST", "/api/applications/{application_id}/comments"),
             ("GET", "/api/my/applications"),
@@ -408,6 +423,92 @@ class ApiEndpointTests(unittest.TestCase):
 
             deleted_by_admin = delete_application(second_application_id, session=admin_session)
             self.assertTrue(deleted_by_admin.get("ok"))
+        finally:
+            self.safe_delete_opportunity(opportunity_id)
+
+    def test_chat_thread_lifecycle_and_visibility(self):
+        opportunity_id = self.create_test_opportunity("CHAT")
+        admin_session = self.session_for("oge@plaksha.edu.in")
+        student_session = self.session_for("rohan@plaksha.edu.in")
+
+        try:
+            application_id = self.create_test_application(opportunity_id)
+            vc_session = self.session_for("vc@plaksha.edu.in")
+            program_chair_session = self.session_for("program-chair@plaksha.edu.in")
+
+            student_inbox = chat_inbox(session=student_session)
+            self.assertIn(application_id, [row["applicationId"] for row in student_inbox.get("items", [])])
+
+            reviewer_inbox = chat_inbox(session=admin_session)
+            self.assertIn(application_id, [row["applicationId"] for row in reviewer_inbox.get("items", [])])
+
+            app_threads = chat_application_detail(application_id, session=student_session)
+            eligible_ids = [row["userId"] for row in app_threads.get("eligibleParticipants", [])]
+            self.assertIn(student_session.userId, eligible_ids)
+            self.assertIn(admin_session.userId, eligible_ids)
+            self.assertIn(vc_session.userId, eligible_ids)
+
+            created = chat_create_thread(
+                application_id,
+                ChatThreadCreateBody(
+                    participantUserIds=[admin_session.userId],
+                    initialMessage="Need a quick clarification on the latest application state.",
+                ),
+                session=student_session,
+            )
+            thread_id = created["thread"]["id"]
+            first_message_id = created["messages"][0]["id"]
+            self.assertEqual(created["thread"]["participantCount"], 2)
+            self.assertEqual(len(created.get("messages", [])), 1)
+
+            thread_for_admin = chat_thread_detail(thread_id, session=admin_session)
+            self.assertEqual(thread_for_admin["thread"]["id"], thread_id)
+            self.assertEqual(len(thread_for_admin.get("messages", [])), 1)
+
+            with self.assertRaises(HTTPException) as hidden_from_other_stakeholder:
+                chat_thread_detail(thread_id, session=vc_session)
+            self.assertEqual(hidden_from_other_stakeholder.exception.status_code, 403)
+
+            chat_add_participants(
+                thread_id,
+                ChatParticipantsAddBody(participantUserIds=[vc_session.userId]),
+                session=admin_session,
+            )
+            thread_for_vc = chat_thread_detail(thread_id, session=vc_session)
+            self.assertEqual(thread_for_vc["thread"]["participantCount"], 3)
+
+            sent = chat_send_message(
+                thread_id,
+                ChatMessageCreateBody(body="Looping VC in for a final read."),
+                session=vc_session,
+            )
+            self.assertIsNotNone(sent.get("message"))
+
+            incremental = chat_thread_detail(thread_id, afterMessageId=first_message_id, session=student_session)
+            self.assertEqual(len(incremental.get("messages", [])), 1)
+            self.assertEqual(incremental["messages"][0]["sender"]["userId"], vc_session.userId)
+
+            stakeholder_only = chat_create_thread(
+                application_id,
+                ChatThreadCreateBody(
+                    participantUserIds=[vc_session.userId],
+                    initialMessage="Internal reviewer sync before we respond.",
+                ),
+                session=admin_session,
+            )
+            stakeholder_thread_id = stakeholder_only["thread"]["id"]
+
+            with self.assertRaises(HTTPException) as hidden_from_student:
+                chat_thread_detail(stakeholder_thread_id, session=student_session)
+            self.assertEqual(hidden_from_student.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as invalid_add:
+                chat_add_participants(
+                    stakeholder_thread_id,
+                    ChatParticipantsAddBody(participantUserIds=[program_chair_session.userId]),
+                    session=admin_session,
+                )
+            self.assertEqual(invalid_add.exception.status_code, 400)
         finally:
             self.safe_delete_opportunity(opportunity_id)
 

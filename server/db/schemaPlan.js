@@ -19,4 +19,7 @@ export const SCHEMA_PLAN = Object.freeze({
     [TABLES.APPLICATION_DECISIONS]: ["id", "application_id", "stage_code", "decision", "reason", "decided_by", "decided_at"],
     [TABLES.APPLICATION_REMARKS]: ["id", "application_id", "remark_type", "text", "visibility_scope", "created_by", "created_at"],
     [TABLES.TIMELINE_EVENTS]: ["id", "application_id", "event_type", "event_payload", "actor_user_id", "created_at"],
+    [TABLES.CHAT_THREADS]: ["id", "application_id"],
+    [TABLES.CHAT_THREAD_PARTICIPANTS]: ["thread_id", "user_id"],
+    [TABLES.CHAT_MESSAGES]: ["id", "thread_id", "sender_user_id", "body", "created_at"],
 });

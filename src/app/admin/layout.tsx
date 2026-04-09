@@ -18,7 +18,7 @@ export default function AdminLayout({
     { href: "/admin", icon: "dashboard", label: "Dashboard" },
     { href: "/admin/applications", icon: "description", label: "Applications" },
     { href: "/admin/opportunities", icon: "star", label: "Opportunities" },
-    { href: "/admin/messages", icon: "chat", label: "Messaging (WIP)" },
+    { href: "/admin/messages", icon: "chat", label: "Messaging" },
   ];
 
   return (

@@ -38,6 +38,12 @@ CANONICAL_TABLES = {
     "timeline_events",
 }
 
+CHAT_TABLES = {
+    "chat_threads",
+    "chat_thread_participants",
+    "chat_messages",
+}
+
 GENERATOR_ROLE = "GENERATOR"
 REVIEWER_ROLE = "REVIEWER"
 ADMIN_ROLE = "ADMIN"
@@ -110,7 +116,7 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 def schema_needs_reset(conn: sqlite3.Connection) -> bool:
     existing = list_tables(conn)
-    if existing != CANONICAL_TABLES:
+    if not CANONICAL_TABLES.issubset(existing):
         return True
 
     required_columns: dict[str, set[str]] = {
@@ -126,7 +132,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         role_rows = conn.execute("SELECT code FROM roles").fetchall()
         role_codes = {row["code"] for row in role_rows}
         expected_role_codes = {GENERATOR_ROLE, REVIEWER_ROLE, ADMIN_ROLE}
-        if role_codes and (role_codes - expected_role_codes):
+        if role_codes and not expected_role_codes.issubset(role_codes):
             return True
 
     fk_rows = conn.execute("PRAGMA foreign_key_list(opportunity_step_field_access)").fetchall()
@@ -134,6 +140,47 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         if row["from"] == "field_key":
             return True
     return False
+
+
+def ensure_chat_schema(conn: sqlite3.Connection) -> None:
+    execute_script(
+        conn,
+        """
+CREATE TABLE IF NOT EXISTS chat_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  application_id INTEGER NOT NULL,
+  FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_thread_participants (
+  thread_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, user_id),
+  FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL,
+  sender_user_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+  FOREIGN KEY (sender_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_application
+  ON chat_threads(application_id, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_thread_participants_user
+  ON chat_thread_participants(user_id, thread_id);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_thread
+  ON chat_messages(thread_id, id ASC);
+""",
+    )
+    conn.commit()
 
 
 def reset_schema(conn: sqlite3.Connection) -> None:
@@ -827,6 +874,7 @@ def ensure_db_initialized() -> None:
         if schema_needs_reset(conn):
             reset_schema(conn)
             seed_data(conn)
+            ensure_chat_schema(conn)
             return
 
         form_field_columns = table_columns(conn, "form_field_catalog")
@@ -837,6 +885,7 @@ def ensure_db_initialized() -> None:
         required = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         if required == 0:
             seed_data(conn)
+        ensure_chat_schema(conn)
 
 
 def parse_session(raw_session: str | None) -> dict[str, Any] | None:
@@ -874,6 +923,19 @@ class CommentCreateBody(BaseModel):
     text: str = Field(min_length=1)
     visibility: str = "internal"
     authorEmail: str | None = None
+
+
+class ChatThreadCreateBody(BaseModel):
+    participantUserIds: list[int] = Field(default_factory=list)
+    initialMessage: str = Field(min_length=1)
+
+
+class ChatMessageCreateBody(BaseModel):
+    body: str = Field(min_length=1)
+
+
+class ChatParticipantsAddBody(BaseModel):
+    participantUserIds: list[int] = Field(default_factory=list)
 
 
 class DecisionBody(BaseModel):
@@ -1937,6 +1999,313 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
         "field_labels": field_labels,
     }
 
+
+def get_chat_application_summary(conn: sqlite3.Connection, application_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT a.id, a.opportunity_id, a.current_step_order, a.current_stage_label, a.final_status, a.updated_at,
+               o.title AS opportunity_title, o.term AS opportunity_term, o.destination AS opportunity_destination,
+               sp.student_id,
+               u.id AS applicant_user_id, u.full_name AS applicant_name, u.email AS applicant_email
+        FROM applications a
+        JOIN opportunities o ON o.id = a.opportunity_id
+        JOIN student_profiles sp ON sp.id = a.student_profile_id
+        JOIN users u ON u.id = sp.user_id
+        WHERE a.id = ?
+        LIMIT 1
+        """,
+        (application_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "opportunityId": int(row["opportunity_id"]),
+        "opportunityTitle": row["opportunity_title"],
+        "opportunityTerm": row["opportunity_term"],
+        "opportunityDestination": row["opportunity_destination"],
+        "studentId": row["student_id"],
+        "applicant": {
+            "userId": int(row["applicant_user_id"]),
+            "fullName": row["applicant_name"],
+            "email": row["applicant_email"],
+        },
+        "currentStepOrder": int(row["current_step_order"]),
+        "currentStage": row["current_stage_label"],
+        "finalStatus": row["final_status"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def get_chat_eligible_participants(conn: sqlite3.Connection, application_id: int) -> list[dict[str, Any]]:
+    summary = get_chat_application_summary(conn, application_id)
+    if not summary:
+        return []
+
+    participants: dict[int, dict[str, Any]] = {}
+    applicant = summary["applicant"]
+    participants[int(applicant["userId"])] = {
+        "userId": int(applicant["userId"]),
+        "fullName": applicant["fullName"],
+        "email": applicant["email"],
+        "kind": "APPLICANT",
+        "contextLabels": ["Applicant"],
+        "sortOrder": 0,
+    }
+
+    rows = conn.execute(
+        """
+        SELECT s.step_order, s.step_name, s.reviewer_email,
+               COALESCE(NULLIF(TRIM(u.full_name), ''), NULLIF(TRIM(s.reviewer_display_name), ''), s.reviewer_email) AS reviewer_name,
+               u.id AS user_id, u.email AS user_email
+        FROM opportunity_pipeline_steps s
+        LEFT JOIN users u ON LOWER(u.email) = LOWER(s.reviewer_email)
+        WHERE s.opportunity_id = ?
+        ORDER BY s.step_order ASC, s.id ASC
+        """,
+        (summary["opportunityId"],),
+    ).fetchall()
+
+    for row in rows:
+        if row["user_id"] is None:
+            continue
+        user_id = int(row["user_id"])
+        label = row["step_name"] or "Stakeholder"
+        if user_id in participants:
+            context_labels = participants[user_id]["contextLabels"]
+            if label not in context_labels:
+                context_labels.append(label)
+            participants[user_id]["sortOrder"] = min(participants[user_id]["sortOrder"], int(row["step_order"]))
+            continue
+
+        participants[user_id] = {
+            "userId": user_id,
+            "fullName": row["reviewer_name"],
+            "email": row["user_email"] or row["reviewer_email"],
+            "kind": "STAKEHOLDER",
+            "contextLabels": [label],
+            "sortOrder": int(row["step_order"]),
+        }
+
+    ordered = sorted(
+        participants.values(),
+        key=lambda item: (item["sortOrder"], item["fullName"].lower(), item["userId"]),
+    )
+    for item in ordered:
+        item.pop("sortOrder", None)
+    return ordered
+
+
+def ensure_chat_application_access(
+    conn: sqlite3.Connection,
+    application_id: int,
+    session: SessionUser,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    summary = get_chat_application_summary(conn, application_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    eligible_participants = get_chat_eligible_participants(conn, application_id)
+    eligible_ids = {int(item["userId"]) for item in eligible_participants}
+    if int(session.userId) not in eligible_ids:
+        raise HTTPException(status_code=403, detail="You are not eligible to access chat for this application.")
+
+    return summary, eligible_participants
+
+
+def ensure_chat_thread_participant(
+    conn: sqlite3.Connection,
+    thread_id: int,
+    session: SessionUser,
+) -> sqlite3.Row:
+    thread_row = conn.execute(
+        "SELECT * FROM chat_threads WHERE id = ?",
+        (thread_id,),
+    ).fetchone()
+    if not thread_row:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+
+    participant_row = conn.execute(
+        """
+        SELECT 1
+        FROM chat_thread_participants
+        WHERE thread_id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (thread_id, session.userId),
+    ).fetchone()
+    if not participant_row:
+        raise HTTPException(status_code=403, detail="You are not a participant in this thread.")
+    return thread_row
+
+
+def get_chat_thread_participants(
+    conn: sqlite3.Connection,
+    thread_id: int,
+    eligible_participants: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    eligible_lookup = {
+        int(item["userId"]): item for item in (eligible_participants or [])
+    }
+    rows = conn.execute(
+        """
+        SELECT u.id, u.email, u.full_name
+        FROM chat_thread_participants ctp
+        JOIN users u ON u.id = ctp.user_id
+        WHERE ctp.thread_id = ?
+        ORDER BY LOWER(u.full_name) ASC, u.id ASC
+        """,
+        (thread_id,),
+    ).fetchall()
+
+    participants: list[dict[str, Any]] = []
+    for row in rows:
+        user_id = int(row["id"])
+        context = eligible_lookup.get(user_id, {})
+        participants.append(
+            {
+                "userId": user_id,
+                "fullName": row["full_name"],
+                "email": row["email"],
+                "kind": context.get("kind", "PARTICIPANT"),
+                "contextLabels": context.get("contextLabels", []),
+            }
+        )
+    return participants
+
+
+def get_chat_thread_last_message(conn: sqlite3.Connection, thread_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT cm.id, cm.body, cm.created_at,
+               u.id AS sender_user_id, u.full_name AS sender_name, u.email AS sender_email
+        FROM chat_messages cm
+        JOIN users u ON u.id = cm.sender_user_id
+        WHERE cm.thread_id = ?
+        ORDER BY cm.id DESC
+        LIMIT 1
+        """,
+        (thread_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "body": row["body"],
+        "createdAt": row["created_at"],
+        "sender": {
+            "userId": int(row["sender_user_id"]),
+            "fullName": row["sender_name"],
+            "email": row["sender_email"],
+        },
+    }
+
+
+def get_chat_thread_message_count(conn: sqlite3.Connection, thread_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM chat_messages WHERE thread_id = ?",
+        (thread_id,),
+    ).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def list_chat_messages(
+    conn: sqlite3.Connection,
+    thread_id: int,
+    after_message_id: int | None = None,
+) -> list[dict[str, Any]]:
+    if after_message_id is None:
+        rows = conn.execute(
+            """
+            SELECT cm.id, cm.body, cm.created_at,
+                   u.id AS sender_user_id, u.full_name AS sender_name, u.email AS sender_email
+            FROM chat_messages cm
+            JOIN users u ON u.id = cm.sender_user_id
+            WHERE cm.thread_id = ?
+            ORDER BY cm.id ASC
+            """,
+            (thread_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT cm.id, cm.body, cm.created_at,
+                   u.id AS sender_user_id, u.full_name AS sender_name, u.email AS sender_email
+            FROM chat_messages cm
+            JOIN users u ON u.id = cm.sender_user_id
+            WHERE cm.thread_id = ? AND cm.id > ?
+            ORDER BY cm.id ASC
+            """,
+            (thread_id, after_message_id),
+        ).fetchall()
+
+    return [
+        {
+            "id": int(row["id"]),
+            "body": row["body"],
+            "createdAt": row["created_at"],
+            "sender": {
+                "userId": int(row["sender_user_id"]),
+                "fullName": row["sender_name"],
+                "email": row["sender_email"],
+            },
+        }
+        for row in rows
+    ]
+
+
+def build_chat_thread_summary(
+    conn: sqlite3.Connection,
+    thread_id: int,
+    eligible_participants: list[dict[str, Any]],
+) -> dict[str, Any]:
+    participants = get_chat_thread_participants(conn, thread_id, eligible_participants)
+    return {
+        "id": thread_id,
+        "participants": participants,
+        "participantCount": len(participants),
+        "messageCount": get_chat_thread_message_count(conn, thread_id),
+        "lastMessage": get_chat_thread_last_message(conn, thread_id),
+    }
+
+
+def get_visible_chat_threads_for_application(
+    conn: sqlite3.Connection,
+    application_id: int,
+    user_id: int,
+    eligible_participants: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT ct.id
+        FROM chat_threads ct
+        JOIN chat_thread_participants ctp ON ctp.thread_id = ct.id
+        WHERE ct.application_id = ? AND ctp.user_id = ?
+        ORDER BY COALESCE((SELECT MAX(id) FROM chat_messages WHERE thread_id = ct.id), 0) DESC, ct.id DESC
+        """,
+        (application_id, user_id),
+    ).fetchall()
+    return [
+        build_chat_thread_summary(conn, int(row["id"]), eligible_participants)
+        for row in rows
+    ]
+
+
+def get_chat_inbox_application_ids(conn: sqlite3.Connection, session: SessionUser) -> list[int]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT a.id, a.updated_at
+        FROM applications a
+        JOIN student_profiles sp ON sp.id = a.student_profile_id
+        LEFT JOIN opportunity_pipeline_steps s
+          ON s.opportunity_id = a.opportunity_id
+         AND LOWER(s.reviewer_email) = LOWER(?)
+        WHERE sp.user_id = ? OR s.id IS NOT NULL
+        ORDER BY a.updated_at DESC, a.id DESC
+        """,
+        (session.email, session.userId),
+    ).fetchall()
+    return [int(row["id"]) for row in rows]
 
 def get_current_pipeline_step(conn: sqlite3.Connection, application_row: sqlite3.Row) -> sqlite3.Row | None:
     return conn.execute(
@@ -3083,6 +3452,212 @@ def reject_application(
         updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
 
     return {"application": dict(updated) if updated else None}
+
+
+@app.get("/api/chat/inbox")
+def chat_inbox(session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        application_ids = get_chat_inbox_application_ids(conn, session)
+        items: list[dict[str, Any]] = []
+        for application_id in application_ids:
+            summary, eligible_participants = ensure_chat_application_access(conn, application_id, session)
+            visible_threads = get_visible_chat_threads_for_application(
+                conn,
+                application_id,
+                session.userId,
+                eligible_participants,
+            )
+            last_message = next(
+                (thread["lastMessage"] for thread in visible_threads if thread["lastMessage"]),
+                None,
+            )
+            items.append(
+                {
+                    "applicationId": summary["id"],
+                    "opportunityTitle": summary["opportunityTitle"],
+                    "opportunityTerm": summary["opportunityTerm"],
+                    "opportunityDestination": summary["opportunityDestination"],
+                    "currentStage": summary["currentStage"],
+                    "finalStatus": summary["finalStatus"],
+                    "updatedAt": summary["updatedAt"],
+                    "studentId": summary["studentId"],
+                    "applicant": summary["applicant"],
+                    "visibleThreadCount": len(visible_threads),
+                    "lastMessage": last_message,
+                }
+            )
+    return {"items": items}
+
+
+@app.get("/api/chat/applications/{application_id}")
+def chat_application_detail(
+    application_id: int,
+    session: SessionUser = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        application, eligible_participants = ensure_chat_application_access(conn, application_id, session)
+        visible_threads = get_visible_chat_threads_for_application(
+            conn,
+            application_id,
+            session.userId,
+            eligible_participants,
+        )
+    return {
+        "application": application,
+        "eligibleParticipants": eligible_participants,
+        "threads": visible_threads,
+        "canAddExternalStakeholder": False,
+    }
+
+
+@app.post("/api/chat/applications/{application_id}/threads", status_code=201)
+def chat_create_thread(
+    application_id: int,
+    body: ChatThreadCreateBody,
+    session: SessionUser = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    participant_ids = dedupe_preserve_order([str(user_id) for user_id in body.participantUserIds])
+    if len(participant_ids) == 0:
+        raise HTTPException(status_code=400, detail="Select at least one participant to start a thread.")
+
+    with db_conn() as conn:
+        application, eligible_participants = ensure_chat_application_access(conn, application_id, session)
+        eligible_lookup = {int(item["userId"]): item for item in eligible_participants}
+
+        normalized_ids = [int(user_id) for user_id in participant_ids]
+        for user_id in normalized_ids:
+            if user_id not in eligible_lookup:
+                raise HTTPException(status_code=400, detail="One or more selected participants are not eligible for this application.")
+
+        if session.userId not in normalized_ids:
+            normalized_ids.append(session.userId)
+        normalized_ids = [int(user_id) for user_id in dedupe_preserve_order([str(user_id) for user_id in normalized_ids])]
+
+        if len(normalized_ids) < 2:
+            raise HTTPException(status_code=400, detail="A chat thread must include at least two participants.")
+
+        cursor = conn.execute(
+            "INSERT INTO chat_threads (application_id) VALUES (?)",
+            (application_id,),
+        )
+        thread_id = int(cursor.lastrowid)
+
+        conn.executemany(
+            """
+            INSERT INTO chat_thread_participants (thread_id, user_id)
+            VALUES (?, ?)
+            """,
+            [(thread_id, user_id) for user_id in normalized_ids],
+        )
+        ts = now_iso()
+        conn.execute(
+            """
+            INSERT INTO chat_messages (thread_id, sender_user_id, body, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (thread_id, session.userId, body.initialMessage.strip(), ts),
+        )
+        conn.commit()
+
+        thread = build_chat_thread_summary(conn, thread_id, eligible_participants)
+        messages = list_chat_messages(conn, thread_id)
+
+    return {
+        "application": application,
+        "thread": thread,
+        "messages": messages,
+    }
+
+
+@app.get("/api/chat/threads/{thread_id}")
+def chat_thread_detail(
+    thread_id: int,
+    afterMessageId: int | None = None,
+    session: SessionUser = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        thread_row = ensure_chat_thread_participant(conn, thread_id, session)
+        application = get_chat_application_summary(conn, int(thread_row["application_id"]))
+        eligible_participants = get_chat_eligible_participants(conn, int(thread_row["application_id"]))
+        thread = build_chat_thread_summary(conn, thread_id, eligible_participants)
+        messages = list_chat_messages(conn, thread_id, afterMessageId)
+    return {
+        "application": application,
+        "thread": thread,
+        "messages": messages,
+    }
+
+
+@app.post("/api/chat/threads/{thread_id}/messages", status_code=201)
+def chat_send_message(
+    thread_id: int,
+    body: ChatMessageCreateBody,
+    session: SessionUser = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        thread_row = ensure_chat_thread_participant(conn, thread_id, session)
+        ts = now_iso()
+        cursor = conn.execute(
+            """
+            INSERT INTO chat_messages (thread_id, sender_user_id, body, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (thread_id, session.userId, body.body.strip(), ts),
+        )
+        message_id = int(cursor.lastrowid)
+        conn.commit()
+
+        application = get_chat_application_summary(conn, int(thread_row["application_id"]))
+        eligible_participants = get_chat_eligible_participants(conn, int(thread_row["application_id"]))
+        thread = build_chat_thread_summary(conn, thread_id, eligible_participants)
+        message = list_chat_messages(conn, thread_id, message_id - 1)
+    return {
+        "application": application,
+        "thread": thread,
+        "message": message[0] if message else None,
+    }
+
+
+@app.post("/api/chat/threads/{thread_id}/participants")
+def chat_add_participants(
+    thread_id: int,
+    body: ChatParticipantsAddBody,
+    session: SessionUser = Depends(get_session),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    participant_ids = dedupe_preserve_order([str(user_id) for user_id in body.participantUserIds])
+    if len(participant_ids) == 0:
+        raise HTTPException(status_code=400, detail="Select at least one participant to add.")
+
+    with db_conn() as conn:
+        thread_row = ensure_chat_thread_participant(conn, thread_id, session)
+        application_id = int(thread_row["application_id"])
+        _, eligible_participants = ensure_chat_application_access(conn, application_id, session)
+        eligible_lookup = {int(item["userId"]): item for item in eligible_participants}
+
+        normalized_ids = [int(user_id) for user_id in participant_ids]
+        for user_id in normalized_ids:
+            if user_id not in eligible_lookup:
+                raise HTTPException(status_code=400, detail="One or more selected participants are not eligible for this application.")
+
+        for user_id in normalized_ids:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO chat_thread_participants (thread_id, user_id)
+                VALUES (?, ?)
+                """,
+                (thread_id, user_id),
+            )
+        conn.commit()
+
+        thread = build_chat_thread_summary(conn, thread_id, eligible_participants)
+
+    return {"thread": thread}
 
 
 @app.get("/api/applications/{application_id}/comments")
