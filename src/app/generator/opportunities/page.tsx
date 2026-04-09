@@ -66,7 +66,7 @@ export default function GeneratorOpportunities() {
           {items.map((opp) => (
             <Card
               key={opp.id}
-              onClick={() => setFocusedId(opp.id)}
+              onClick={() => setFocusedId((prev) => (prev === opp.id ? null : opp.id))}
               className={`group transition-all duration-500 border cursor-pointer flex flex-col ${
                 focusedId === opp.id
                   ? "-translate-y-3 shadow-xl border-primary/50 ring-2 ring-primary/15"
@@ -100,6 +100,13 @@ export default function GeneratorOpportunities() {
                     ))}
                   </ul>
                 )}
+                {focusedId === opp.id && (
+                  <div className="mt-3 rounded-xl border border-primary/20 bg-primary/5 p-3 transition-all duration-300">
+                    <p className="text-xs uppercase tracking-wide font-semibold text-primary mb-1">Description</p>
+                    <p className="text-sm text-slate-700 leading-6">{opp.description || "No description available."}</p>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-4 mt-6">
                   <div className="flex flex-col">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Term</span>
@@ -119,18 +126,20 @@ export default function GeneratorOpportunities() {
                 </div>
               </div>
 
-              <div className="mt-8 pt-4 border-t border-slate-100">
-                <Button
-                  className="w-full"
-                  icon="visibility"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setFocusedId(opp.id);
-                  }}
-                >
-                  View Opportunity
-                </Button>
-              </div>
+              {focusedId === opp.id && (
+                <div className="mt-8 pt-4 border-t border-slate-100 transition-all duration-300">
+                  <Button
+                    className="w-full"
+                    icon="rocket_launch"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      applyToOpportunity(opp.id);
+                    }}
+                  >
+                    Apply Now
+                  </Button>
+                </div>
+              )}
             </Card>
           ))}
         </div>
