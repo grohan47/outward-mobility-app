@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildStakeholderOptions, labelForVisibility } from "@/components/application/chatStakeholders";
 import { Badge } from "@/components/ui/Badge";
 
 type RoleVariant = "reviewer" | "admin" | "generator";
@@ -10,391 +9,377 @@ type RoleVariant = "reviewer" | "admin" | "generator";
 type SessionPayload = {
   user?: {
     email?: string;
+    userId?: number;
   };
 };
 
-type CommentRecord = {
+type ChatParticipant = {
+  userId: number;
+  fullName: string;
+  email: string;
+  kind: string;
+  contextLabels: string[];
+};
+
+type ChatMessage = {
   id: number;
-  author_email: string;
-  text: string;
-  visibility: string;
-  created_at: string;
-};
-
-type ConversationPreview = {
-  lastText: string;
-  lastAt: string;
-  count: number;
-};
-
-type ConversationItem = {
-  id: number;
-  title: string;
-  subtitle: string;
-  context: string;
-  status: string;
-  updatedAt: string;
-  href: string;
-  emptyLabel: string;
-};
-
-type ApplicationDetailLike = {
-  student_user?: {
-    full_name?: string;
+  body: string;
+  createdAt: string;
+  sender: {
+    userId: number;
+    fullName: string;
+    email: string;
   };
-  pipeline_steps?: Array<{
-    step_name?: string;
-    reviewer_email?: string;
-    reviewer_display_name?: string;
-    reviewerName?: string;
-  }>;
 };
 
-const WORKSPACE_CONFIG: Record<
-  RoleVariant,
-  {
-    title: string;
-    subtitle: string;
-    listEndpoint: string;
-    emptyTitle: string;
-    emptyBody: string;
-    openLabel: string;
-  }
-> = {
+type ChatThread = {
+  id: number;
+  participants: ChatParticipant[];
+  participantCount: number;
+  messageCount: number;
+  lastMessage: ChatMessage | null;
+};
+
+type ChatApplicationSummary = {
+  id: number;
+  opportunityTitle?: string;
+  opportunityTerm?: string | null;
+  currentStage?: string;
+  updatedAt?: string;
+  applicant?: {
+    userId: number;
+    fullName: string;
+    email: string;
+  };
+};
+
+type InboxItem = {
+  applicationId: number;
+  opportunityTitle?: string;
+  currentStage?: string;
+  updatedAt?: string;
+  applicant?: {
+    userId: number;
+    fullName: string;
+    email: string;
+  };
+  visibleThreadCount: number;
+  lastMessage?: ChatMessage | null;
+};
+
+type ApplicationDetailPayload = {
+  application: ChatApplicationSummary;
+  eligibleParticipants: ChatParticipant[];
+  threads: ChatThread[];
+  canAddExternalStakeholder: boolean;
+};
+
+type ThreadDetailPayload = {
+  application: ChatApplicationSummary;
+  eligibleParticipants: ChatParticipant[];
+  thread: ChatThread;
+  messages: ChatMessage[];
+  canAddExternalStakeholder: boolean;
+};
+
+const WORKSPACE_CONFIG: Record<RoleVariant, { title: string; subtitle: string; emptyTitle: string; emptyBody: string; openLabel: string }> = {
   reviewer: {
     title: "Messages",
-    subtitle: "Application-specific conversations with a clean, focused review inbox.",
-    listEndpoint: "/api/reviewer/inbox",
-    emptyTitle: "No active conversations",
-    emptyBody: "Applications assigned to you will appear here when there is work to review.",
+    subtitle: "Application-scoped threads with stakeholders you were added to.",
+    emptyTitle: "No chat threads yet",
+    emptyBody: "Threads will appear here after you are added to an application conversation.",
     openLabel: "Open review",
   },
   admin: {
     title: "Messages",
-    subtitle: "A quieter, Outlook-style view of conversations across all application threads.",
-    listEndpoint: "/api/admin/applications",
-    emptyTitle: "No application threads yet",
-    emptyBody: "As applications move through the system, their conversations will appear here.",
+    subtitle: "Application-based stakeholder conversations with explicit thread membership.",
+    emptyTitle: "No chat threads yet",
+    emptyBody: "Only threads you participate in will appear in this inbox.",
     openLabel: "Open application",
   },
   generator: {
     title: "Messages",
-    subtitle: "A simple inbox for comments tied to your submitted applications.",
-    listEndpoint: "/api/my/applications",
-    emptyTitle: "No application threads yet",
-    emptyBody: "Submit an application and any related conversation will show up here.",
+    subtitle: "A focused inbox of application threads you are actually part of.",
+    emptyTitle: "No chat threads yet",
+    emptyBody: "Once you are part of an application thread, it will show up here.",
     openLabel: "Open application",
   },
 };
 
-function normalizeConversation(role: RoleVariant, item: any): ConversationItem {
-  if (role === "reviewer") {
-    return {
-      id: item.id,
-      title: item.student_name || `Application #${item.id}`,
-      subtitle: item.opportunity_title || "Opportunity",
-      context: item.student_id || "Assigned review",
-      status: item.current_stage || "In review",
-      updatedAt: item.updated_at,
-      href: `/reviewer/applications/${item.id}`,
-      emptyLabel: "No chat activity yet",
-    };
-  }
-
-  if (role === "admin") {
-    return {
-      id: item.id,
-      title: item.student_user?.full_name || `Application #${item.id}`,
-      subtitle: item.opportunity?.title || "Application",
-      context: [item.student_profile?.program, item.student_profile?.student_id].filter(Boolean).join(" · ") || "Application thread",
-      status: item.workflow?.stageLabel || "Open",
-      updatedAt: item.updated_at,
-      href: `/admin/applications/${item.id}`,
-      emptyLabel: "No chat activity yet",
-    };
-  }
-
-  return {
-    id: item.id,
-    title: item.opportunity?.title || `Application #${item.id}`,
-    subtitle: item.opportunity?.term || "Submitted application",
-    context: item.workflow?.currentStakeholder || item.workflow?.stageLabel || "Application thread",
-    status: item.workflow?.finalStatus || item.workflow?.stageLabel || "Active",
-    updatedAt: item.updated_at,
-    href: `/generator/applications/${item.id}`,
-    emptyLabel: "No comments on this application yet",
-  };
-}
-
-function formatAuthor(authorEmail: string, currentUserEmail: string | null): string {
-  if (currentUserEmail && authorEmail.toLowerCase() === currentUserEmail.toLowerCase()) {
-    return "You";
-  }
-
-  const localPart = authorEmail.split("@")[0] || authorEmail;
-  return localPart
-    .split(/[._-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function formatTimestamp(value: string): string {
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-
-  return date.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function initialsFromLabel(label: string): string {
-  return label
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() || "")
-    .join("");
+  return label.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("");
+}
+
+function formatParticipantLabel(participant: ChatParticipant): string {
+  return participant.fullName || participant.email;
+}
+
+function formatParticipantSubtitle(participant: ChatParticipant): string {
+  return participant.contextLabels.length > 0 ? participant.contextLabels.join(" · ") : participant.email;
+}
+
+function formatThreadTitle(thread: ChatThread, currentUserId: number | null): string {
+  const others = thread.participants.filter((participant) => participant.userId !== currentUserId);
+  const labels = (others.length > 0 ? others : thread.participants).map(formatParticipantLabel);
+  return labels.join(", ");
+}
+
+function formatThreadContext(thread: ChatThread): string {
+  const labels = Array.from(new Set(thread.participants.flatMap((participant) => participant.contextLabels).filter(Boolean)));
+  return labels.join(" · ") || `${thread.participantCount} participants`;
+}
+
+function matchesSearch(values: Array<string | null | undefined>, query: string): boolean {
+  return values.some((value) => (value || "").toLowerCase().includes(query));
 }
 
 export function MessagesWorkspace({ role }: { role: RoleVariant }) {
   const config = WORKSPACE_CONFIG[role];
-  const [items, setItems] = useState<ConversationItem[]>([]);
-  const [previews, setPreviews] = useState<Record<number, ConversationPreview>>({});
-  const [commentsById, setCommentsById] = useState<Record<number, CommentRecord[]>>({});
-  const [detailById, setDetailById] = useState<Record<number, ApplicationDetailLike>>({});
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [threadLoading, setThreadLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [applicationDetails, setApplicationDetails] = useState<Record<number, ApplicationDetailPayload>>({});
+  const [threadMessages, setThreadMessages] = useState<Record<number, ChatMessage[]>>({});
+  const [selectedApplicationId, setSelectedApplicationId] = useState<number | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
+  const [newThreadParticipantIds, setNewThreadParticipantIds] = useState<number[]>([]);
+  const [addParticipantIds, setAddParticipantIds] = useState<number[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [applicationLoading, setApplicationLoading] = useState(false);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [addingParticipants, setAddingParticipants] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [threadKey, setThreadKey] = useState("all");
-  const [recipientKey, setRecipientKey] = useState("internal");
   const threadRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    Promise.all([
-      // Frontend -> API: GET /api/auth/me
-      fetch("/api/auth/me").then((response) => (response.ok ? response.json() : null)),
-      // Frontend -> API: GET /api/{role-specific inbox list}
-      fetch(config.listEndpoint).then((response) => response.json()),
-    ])
-      .then(([sessionPayload, listPayload]: [SessionPayload | null, any]) => {
-        const normalized = Array.isArray(listPayload?.items)
-          ? listPayload.items.map((item: any) => normalizeConversation(role, item))
-          : [];
-        setCurrentUserEmail(sessionPayload?.user?.email?.toLowerCase() || null);
-        setItems(normalized);
-        setSelectedId(normalized[0]?.id ?? null);
-      })
-      .catch(() => {
-        setItems([]);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [config.listEndpoint, role]);
+  async function loadInbox(preferredApplicationId?: number | null) {
+    const [sessionResponse, inboxResponse] = await Promise.all([fetch("/api/auth/me"), fetch("/api/chat/inbox")]);
+    const sessionPayload: SessionPayload | null = sessionResponse.ok ? await sessionResponse.json() : null;
+    const inboxPayload = await inboxResponse.json();
+    const items = Array.isArray(inboxPayload?.items) ? (inboxPayload.items as InboxItem[]) : [];
 
-  const sortedItems = useMemo(() => {
-    const copy = [...items];
-    copy.sort((left, right) => {
-      const leftTime = previews[left.id]?.lastAt || left.updatedAt;
-      const rightTime = previews[right.id]?.lastAt || right.updatedAt;
-      return new Date(rightTime).getTime() - new Date(leftTime).getTime();
-    });
-    return copy;
-  }, [items, previews]);
+    setCurrentUserEmail(sessionPayload?.user?.email?.toLowerCase() || null);
+    setCurrentUserId(sessionPayload?.user?.userId ?? null);
+    setInboxItems(items);
 
-  const filteredItems = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return sortedItems;
+    const nextApplicationId =
+      preferredApplicationId && items.some((item) => item.applicationId === preferredApplicationId)
+        ? preferredApplicationId
+        : items[0]?.applicationId ?? null;
+    setSelectedApplicationId(nextApplicationId);
+  }
 
-    return sortedItems.filter((item) =>
-      [item.title, item.subtitle, item.context, item.status].some((value) => value.toLowerCase().includes(query)),
-    );
-  }, [search, sortedItems]);
+  async function loadApplication(applicationId: number, preferredThreadId?: number | null) {
+    setApplicationLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/chat/applications/${applicationId}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.detail || "Unable to load chat application.");
 
-  const selectedConversation = useMemo(
-    () => filteredItems.find((item) => item.id === selectedId) || filteredItems[0] || null,
-    [filteredItems, selectedId],
-  );
+      const detail = payload as ApplicationDetailPayload;
+      setApplicationDetails((current) => ({ ...current, [applicationId]: detail }));
+      setNewThreadParticipantIds([]);
 
-  useEffect(() => {
-    if (!selectedConversation && filteredItems[0]) {
-      setSelectedId(filteredItems[0].id);
-      return;
+      const nextThreadId =
+        preferredThreadId && detail.threads.some((thread) => thread.id === preferredThreadId)
+          ? preferredThreadId
+          : detail.threads[0]?.id ?? null;
+      setSelectedThreadId(nextThreadId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load chat application.");
+      setSelectedThreadId(null);
+    } finally {
+      setApplicationLoading(false);
     }
-    if (selectedConversation && selectedConversation.id !== selectedId) {
-      setSelectedId(selectedConversation.id);
-    }
-  }, [filteredItems, selectedConversation, selectedId]);
+  }
 
-  useEffect(() => {
-    setThreadKey("all");
-    setRecipientKey("internal");
-  }, [selectedConversation?.id]);
-
-  useEffect(() => {
-    if (threadKey !== "all") {
-      setRecipientKey(threadKey);
-    }
-  }, [threadKey]);
-
-  useEffect(() => {
-    const previewTargets = sortedItems.slice(0, 16).filter((item) => !previews[item.id]);
-    if (previewTargets.length === 0) return;
-
-    Promise.allSettled(
-      previewTargets.map(async (item) => {
-        // Frontend -> API: GET /api/applications/:id/comments
-        const response = await fetch(`/api/applications/${item.id}/comments`);
-        const payload = await response.json();
-        const comments = Array.isArray(payload?.comments) ? (payload.comments as CommentRecord[]) : [];
-        const last = comments[comments.length - 1];
-        return {
-          id: item.id,
-          preview: last
-            ? {
-                lastText: last.text,
-                lastAt: last.created_at,
-                count: comments.length,
-              }
-            : {
-                lastText: item.emptyLabel,
-                lastAt: item.updatedAt,
-                count: 0,
-              },
-        };
-      }),
-    ).then((results) => {
-      const nextPreviews: Record<number, ConversationPreview> = {};
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          nextPreviews[result.value.id] = result.value.preview;
-        }
-      }
-      if (Object.keys(nextPreviews).length > 0) {
-        setPreviews((current) => ({ ...current, ...nextPreviews }));
-      }
-    });
-  }, [previews, sortedItems]);
-
-  useEffect(() => {
-    if (!selectedConversation) return;
-    if (commentsById[selectedConversation.id]) return;
-
+  async function loadThread(threadId: number) {
     setThreadLoading(true);
     setError(null);
+    try {
+      const response = await fetch(`/api/chat/threads/${threadId}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.detail || "Unable to load chat thread.");
 
-    // Frontend -> API: GET /api/applications/:id/comments
-    fetch(`/api/applications/${selectedConversation.id}/comments`)
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.detail || "Unable to load conversation.");
-        }
-        const comments = Array.isArray(payload?.comments) ? (payload.comments as CommentRecord[]) : [];
-        setCommentsById((current) => ({ ...current, [selectedConversation.id]: comments }));
-        const last = comments[comments.length - 1];
-        setPreviews((current) => ({
+      const detail = payload as ThreadDetailPayload;
+      setThreadMessages((current) => ({ ...current, [threadId]: detail.messages || [] }));
+      setApplicationDetails((current) => {
+        const applicationId = detail.application.id;
+        const existing = current[applicationId];
+        return {
           ...current,
-          [selectedConversation.id]: last
-            ? {
-                lastText: last.text,
-                lastAt: last.created_at,
-                count: comments.length,
-              }
-            : {
-                lastText: selectedConversation.emptyLabel,
-                lastAt: selectedConversation.updatedAt,
-                count: 0,
-              },
-        }));
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Unable to load conversation.");
-      })
-      .finally(() => {
-        setThreadLoading(false);
+          [applicationId]: {
+            application: detail.application,
+            eligibleParticipants: detail.eligibleParticipants,
+            threads: existing?.threads.map((thread) => (thread.id === detail.thread.id ? detail.thread : thread)) || [detail.thread],
+            canAddExternalStakeholder: detail.canAddExternalStakeholder,
+          },
+        };
       });
-  }, [commentsById, selectedConversation]);
+      setAddParticipantIds([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load chat thread.");
+    } finally {
+      setThreadLoading(false);
+    }
+  }
 
   useEffect(() => {
-    if (!selectedConversation) return;
-    if (detailById[selectedConversation.id]) return;
-
-    // Frontend -> API: GET /api/applications/:id
-    fetch(`/api/applications/${selectedConversation.id}`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then((payload: ApplicationDetailLike | null) => {
-        if (payload) {
-          setDetailById((current) => ({ ...current, [selectedConversation.id]: payload }));
-        }
-      })
+    loadInbox()
       .catch(() => {
-        // Keep selector functional with fallback labels even if detail hydration fails.
-      });
-  }, [detailById, selectedConversation]);
+        setInboxItems([]);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedApplicationId) {
+      setSelectedThreadId(null);
+      return;
+    }
+    void loadApplication(selectedApplicationId, selectedThreadId);
+  }, [selectedApplicationId]);
+
+  useEffect(() => {
+    if (!selectedThreadId) return;
+    if (threadMessages[selectedThreadId]) return;
+    void loadThread(selectedThreadId);
+  }, [selectedThreadId, threadMessages]);
+
+  useEffect(() => {
+    if (!selectedThreadId) return;
+    const timer = window.setInterval(() => {
+      void loadThread(selectedThreadId);
+    }, 8000);
+    return () => window.clearInterval(timer);
+  }, [selectedThreadId]);
 
   useEffect(() => {
     if (!threadRef.current) return;
     threadRef.current.scrollTop = threadRef.current.scrollHeight;
-  }, [selectedConversation, commentsById, threadKey]);
+  }, [selectedThreadId, threadMessages]);
 
-  async function handleSend() {
-    if (!selectedConversation) return;
+  const filteredInbox = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return inboxItems;
+    return inboxItems.filter((item) =>
+      matchesSearch(
+        [item.opportunityTitle, item.currentStage, item.applicant?.fullName, item.lastMessage?.body],
+        query,
+      ),
+    );
+  }, [inboxItems, search]);
 
+  const selectedApplication = selectedApplicationId ? applicationDetails[selectedApplicationId] : null;
+  const selectedThread =
+    selectedThreadId && selectedApplication
+      ? selectedApplication.threads.find((thread) => thread.id === selectedThreadId) || null
+      : null;
+  const selectedMessages = selectedThreadId ? threadMessages[selectedThreadId] || [] : [];
+
+  const availableNewThreadParticipants = useMemo(() => {
+    if (!selectedApplication) return [];
+    return selectedApplication.eligibleParticipants.filter((participant) => participant.userId !== currentUserId);
+  }, [currentUserId, selectedApplication]);
+
+  const availableAddParticipants = useMemo(() => {
+    if (!selectedApplication || !selectedThread) return [];
+    const existingIds = new Set(selectedThread.participants.map((participant) => participant.userId));
+    return selectedApplication.eligibleParticipants.filter((participant) => !existingIds.has(participant.userId));
+  }, [selectedApplication, selectedThread]);
+
+  async function handleCreateThread() {
+    if (!selectedApplicationId) return;
+    const participantIds = newThreadParticipantIds.filter(Boolean);
+    const text = message.trim();
+    if (participantIds.length === 0 || !text) {
+      setError("Select at least one stakeholder and write the first message.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/chat/applications/${selectedApplicationId}/threads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ participantUserIds: participantIds, initialMessage: text }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.detail || "Unable to create chat thread.");
+
+      const thread = payload.thread as ChatThread;
+      const messages = Array.isArray(payload.messages) ? (payload.messages as ChatMessage[]) : [];
+      setApplicationDetails((current) => {
+        const existing = current[selectedApplicationId];
+        if (!existing) return current;
+        return {
+          ...current,
+          [selectedApplicationId]: {
+            ...existing,
+            threads: [thread, ...existing.threads.filter((item) => item.id !== thread.id)],
+          },
+        };
+      });
+      setThreadMessages((current) => ({ ...current, [thread.id]: messages }));
+      setSelectedThreadId(thread.id);
+      setMessage("");
+      setNewThreadParticipantIds([]);
+      await loadInbox(selectedApplicationId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create chat thread.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleSendMessage() {
+    if (!selectedThreadId || !selectedApplicationId) return;
     const text = message.trim();
     if (!text) return;
 
     setSubmitting(true);
     setError(null);
-
     try {
-      // Frontend -> API: POST /api/applications/:id/comments
-      const response = await fetch(`/api/applications/${selectedConversation.id}/comments`, {
+      const response = await fetch(`/api/chat/threads/${selectedThreadId}/messages`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text,
-          visibility: recipientKey,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: text }),
       });
-
       const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || "Unable to send message.");
+      if (!response.ok) throw new Error(payload?.detail || "Unable to send message.");
+
+      const nextMessage = payload.message as ChatMessage | null;
+      const nextThread = payload.thread as ChatThread;
+      if (nextMessage) {
+        setThreadMessages((current) => ({
+          ...current,
+          [selectedThreadId]: [...(current[selectedThreadId] || []), nextMessage],
+        }));
       }
-
-      const nextComment = payload?.comment as CommentRecord | undefined;
-      if (!nextComment) return;
-
-      setCommentsById((current) => ({
-        ...current,
-        [selectedConversation.id]: [...(current[selectedConversation.id] || []), nextComment],
-      }));
-      setPreviews((current) => ({
-        ...current,
-        [selectedConversation.id]: {
-          lastText: nextComment.text,
-          lastAt: nextComment.created_at,
-          count: (current[selectedConversation.id]?.count || 0) + 1,
-        },
-      }));
-      setItems((current) =>
-        current.map((item) =>
-          item.id === selectedConversation.id ? { ...item, updatedAt: nextComment.created_at } : item,
-        ),
-      );
+      setApplicationDetails((current) => {
+        const existing = current[selectedApplicationId];
+        if (!existing) return current;
+        return {
+          ...current,
+          [selectedApplicationId]: {
+            ...existing,
+            threads: existing.threads.map((thread) => (thread.id === nextThread.id ? nextThread : thread)),
+          },
+        };
+      });
       setMessage("");
+      await loadInbox(selectedApplicationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to send message.");
     } finally {
@@ -402,20 +387,45 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
     }
   }
 
-  const selectedDetail = selectedConversation ? detailById[selectedConversation.id] : null;
-  const stakeholderOptions = buildStakeholderOptions({
-    studentName:
-      selectedDetail?.student_user?.full_name ||
-      (role === "generator" ? "Student" : selectedConversation?.title || "Student"),
-    pipelineSteps: selectedDetail?.pipeline_steps || [],
-  });
-  const selectedComments =
-    selectedConversation
-      ? (commentsById[selectedConversation.id] || []).filter((comment) =>
-          threadKey === "all" ? true : (comment.visibility || "internal").toLowerCase() === threadKey,
-        )
-      : [];
-  const conversationsWithMessages = Object.values(previews).filter((preview) => preview.count > 0).length;
+  async function handleAddParticipants() {
+    if (!selectedThreadId || addParticipantIds.length === 0 || !selectedApplicationId) return;
+
+    setAddingParticipants(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/chat/threads/${selectedThreadId}/participants`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ participantUserIds: addParticipantIds }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.detail || "Unable to add participants.");
+
+      const nextThread = payload.thread as ChatThread;
+      const eligibleParticipants = Array.isArray(payload.eligibleParticipants)
+        ? (payload.eligibleParticipants as ChatParticipant[])
+        : selectedApplication?.eligibleParticipants || [];
+      setApplicationDetails((current) => {
+        const existing = current[selectedApplicationId];
+        if (!existing) return current;
+        return {
+          ...current,
+          [selectedApplicationId]: {
+            ...existing,
+            eligibleParticipants,
+            threads: existing.threads.map((thread) => (thread.id === nextThread.id ? nextThread : thread)),
+            canAddExternalStakeholder: Boolean(payload.canAddExternalStakeholder),
+          },
+        };
+      });
+      setAddParticipantIds([]);
+      await loadInbox(selectedApplicationId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to add participants.");
+    } finally {
+      setAddingParticipants(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -426,18 +436,18 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
         </div>
         <div className="flex gap-3">
           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Threads</p>
-            <p className="mt-1 text-2xl font-black text-slate-900">{loading ? "—" : items.length}</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Applications</p>
+            <p className="mt-1 text-2xl font-black text-slate-900">{loading ? "—" : inboxItems.length}</p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Active Chats</p>
-            <p className="mt-1 text-2xl font-black text-slate-900">{loading ? "—" : conversationsWithMessages}</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Visible Threads</p>
+            <p className="mt-1 text-2xl font-black text-slate-900">{selectedApplication?.threads.length ?? 0}</p>
           </div>
         </div>
       </div>
 
       <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
-        <div className="grid min-h-[72vh] grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="grid min-h-[72vh] grid-cols-1 lg:grid-cols-[320px_360px_minmax(0,1fr)]">
           <aside className="border-b border-slate-200 bg-slate-50/70 lg:border-b-0 lg:border-r">
             <div className="border-b border-slate-200 px-4 py-4">
               <label className="relative block">
@@ -447,8 +457,8 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
                 <input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search conversations"
-                  className="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-10 pr-4 text-sm text-slate-700 outline-none transition-colors placeholder:text-slate-400 focus:border-slate-300"
+                  placeholder="Search applications"
+                  className="h-11 w-full rounded-2xl border border-slate-200 bg-white pl-10 pr-4 text-sm text-slate-700 outline-none"
                 />
               </label>
             </div>
@@ -458,49 +468,38 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
                 <div className="flex h-48 items-center justify-center text-sm text-slate-400">
                   <span className="material-symbols-outlined animate-spin text-xl">progress_activity</span>
                 </div>
-              ) : filteredItems.length === 0 ? (
+              ) : filteredInbox.length === 0 ? (
                 <div className="px-6 py-12 text-center">
                   <p className="text-sm font-semibold text-slate-700">{config.emptyTitle}</p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    {search ? "Try a different search term." : config.emptyBody}
-                  </p>
+                  <p className="mt-2 text-sm text-slate-500">{search ? "Try a different search term." : config.emptyBody}</p>
                 </div>
               ) : (
-                filteredItems.map((item) => {
-                  const preview = previews[item.id];
-                  const active = item.id === selectedConversation?.id;
-
+                filteredInbox.map((item) => {
+                  const active = item.applicationId === selectedApplicationId;
                   return (
                     <button
-                      key={item.id}
+                      key={item.applicationId}
                       type="button"
-                      onClick={() => setSelectedId(item.id)}
-                      className={`flex w-full items-start gap-3 border-b border-slate-200/80 px-4 py-4 text-left transition-colors ${
+                      onClick={() => setSelectedApplicationId(item.applicationId)}
+                      className={`flex w-full flex-col gap-2 border-b border-slate-200/80 px-4 py-4 text-left transition-colors ${
                         active ? "bg-white" : "hover:bg-white/80"
                       }`}
                     >
-                      <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-xs font-bold text-white">
-                        {initialsFromLabel(item.title)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="truncate text-sm font-semibold text-slate-900">{item.title}</p>
-                          <span className="shrink-0 text-[11px] text-slate-400">
-                            {formatTimestamp(preview?.lastAt || item.updatedAt)}
-                          </span>
-                        </div>
-                        <p className="mt-0.5 truncate text-sm text-slate-500">{item.subtitle}</p>
-                        <p className="mt-2 line-clamp-1 text-sm text-slate-600">
-                          {preview?.lastText || item.emptyLabel}
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="truncate text-sm font-semibold text-slate-900">
+                          {item.opportunityTitle || `Application #${item.applicationId}`}
                         </p>
-                        <div className="mt-2 flex items-center gap-2">
-                          <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                            {item.status}
-                          </span>
-                          {preview && preview.count > 0 && (
-                            <span className="text-[11px] text-slate-400">{preview.count} message{preview.count === 1 ? "" : "s"}</span>
-                          )}
-                        </div>
+                        <span className="shrink-0 text-[11px] text-slate-400">{formatTimestamp(item.lastMessage?.createdAt || item.updatedAt)}</span>
+                      </div>
+                      <p className="truncate text-sm text-slate-500">{item.applicant?.fullName || "Applicant"}</p>
+                      <p className="line-clamp-1 text-sm text-slate-600">{item.lastMessage?.body || "No thread messages yet"}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                          {item.currentStage || "Active"}
+                        </span>
+                        <span className="text-[11px] text-slate-400">
+                          {item.visibleThreadCount} thread{item.visibleThreadCount === 1 ? "" : "s"}
+                        </span>
                       </div>
                     </button>
                   );
@@ -508,52 +507,107 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
               )}
             </div>
           </aside>
-
           <section className="flex min-h-[72vh] flex-col">
-            {!selectedConversation ? (
+            {!selectedApplicationId ? (
               <div className="m-auto max-w-md px-6 text-center">
                 <p className="text-lg font-semibold text-slate-900">{config.emptyTitle}</p>
                 <p className="mt-2 text-slate-500">{config.emptyBody}</p>
               </div>
             ) : (
               <>
-                <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-3">
-                      <div className="flex size-11 items-center justify-center rounded-2xl bg-slate-900 text-sm font-bold text-white">
-                        {initialsFromLabel(selectedConversation.title)}
+                <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-lg font-bold text-slate-900">
+                        {selectedApplication?.application.opportunityTitle || `Application #${selectedApplicationId}`}
+                      </h2>
+                      <p className="truncate text-sm text-slate-500">
+                        {selectedApplication?.application.applicant?.fullName || "Applicant"}
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Badge variant="neutral">{selectedApplication?.application.currentStage || "Active"}</Badge>
+                        {selectedApplication?.application.opportunityTerm && (
+                          <Badge variant="info">{selectedApplication.application.opportunityTerm}</Badge>
+                        )}
                       </div>
-                      <div className="min-w-0">
-                        <h2 className="truncate text-lg font-bold text-slate-900">{selectedConversation.title}</h2>
-                        <p className="truncate text-sm text-slate-500">{selectedConversation.subtitle}</p>
-                      </div>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <Badge variant="neutral">{selectedConversation.context}</Badge>
-                      <Badge variant="info">{selectedConversation.status}</Badge>
-                    </div>
-                    <div className="mt-3 flex items-center gap-2 text-xs">
-                      <span className="w-10 text-slate-400">View</span>
-                      <select
-                        value={threadKey}
-                        onChange={(event) => setThreadKey(event.target.value)}
-                        className="h-9 min-w-[220px] rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 outline-none"
-                      >
-                        <option value="all">All messages</option>
-                        {stakeholderOptions.map((option) => (
-                          <option key={option.key} value={option.key}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <Link
+                      href={
+                        role === "reviewer"
+                          ? `/reviewer/applications/${selectedApplicationId}`
+                          : role === "admin"
+                            ? `/admin/applications/${selectedApplicationId}`
+                            : `/generator/applications/${selectedApplicationId}`
+                      }
+                      className="inline-flex h-10 items-center justify-center rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
+                    >
+                      {config.openLabel}
+                    </Link>
                   </div>
-                  <Link
-                    href={selectedConversation.href}
-                    className="inline-flex h-10 items-center justify-center rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
-                  >
-                    {config.openLabel}
-                  </Link>
+
+                  {selectedThread ? (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedThread.participants.map((participant) => (
+                          <span
+                            key={participant.userId}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700"
+                          >
+                            {formatParticipantLabel(participant)}
+                            {participant.contextLabels.length > 0 ? ` · ${participant.contextLabels.join(", ")}` : ""}
+                          </span>
+                        ))}
+                      </div>
+
+                      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 md:flex-row md:items-end">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">Add Participant</p>
+                          <select
+                            multiple
+                            value={addParticipantIds.map(String)}
+                            onChange={(event) =>
+                              setAddParticipantIds(Array.from(event.target.selectedOptions, (option) => Number(option.value)))
+                            }
+                            className="mt-2 min-h-24 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none"
+                          >
+                            {availableAddParticipants.map((participant) => (
+                              <option key={participant.userId} value={participant.userId}>
+                                {formatParticipantLabel(participant)} - {formatParticipantSubtitle(participant)}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="mt-2 text-[11px] text-slate-400">
+                            Any current participant can add any stakeholder defined in the opportunity workflow.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled
+                            className="inline-flex size-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-300"
+                            title="Add extra member coming later"
+                          >
+                            <span className="material-symbols-outlined text-[18px]">add</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleAddParticipants()}
+                            disabled={addingParticipants || addParticipantIds.length === 0}
+                            className="inline-flex h-10 items-center gap-2 rounded-full bg-slate-900 px-4 text-sm font-semibold text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                          >
+                            {addingParticipants ? (
+                              <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
+                            ) : (
+                              <span className="material-symbols-outlined text-[18px]">group_add</span>
+                            )}
+                            Add
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-slate-500">Pick a thread or start a new one from the stakeholder dropdown.</p>
+                  )}
                 </div>
 
                 <div ref={threadRef} className="flex-1 space-y-4 overflow-y-auto bg-slate-50/60 px-5 py-5">
@@ -561,21 +615,23 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
                     <div className="flex h-full min-h-52 items-center justify-center text-sm text-slate-400">
                       <span className="material-symbols-outlined animate-spin text-xl">progress_activity</span>
                     </div>
-                  ) : selectedComments.length === 0 ? (
+                  ) : !selectedThread ? (
                     <div className="m-auto max-w-sm rounded-[28px] border border-dashed border-slate-200 bg-white px-6 py-10 text-center">
-                      <p className="text-sm font-semibold text-slate-900">No messages in this thread yet</p>
-                      <p className="mt-2 text-sm text-slate-500">
-                        {threadKey === "all" ? "Send the first application-specific note from here." : "Start the stakeholder-specific thread from here."}
-                      </p>
+                      <p className="text-sm font-semibold text-slate-900">No thread selected</p>
+                      <p className="mt-2 text-sm text-slate-500">Create a new thread from the opportunity stakeholder list on the left.</p>
+                    </div>
+                  ) : selectedMessages.length === 0 ? (
+                    <div className="m-auto max-w-sm rounded-[28px] border border-dashed border-slate-200 bg-white px-6 py-10 text-center">
+                      <p className="text-sm font-semibold text-slate-900">No messages yet</p>
+                      <p className="mt-2 text-sm text-slate-500">Send the first message in this stakeholder thread.</p>
                     </div>
                   ) : (
-                    selectedComments.map((comment) => {
+                    selectedMessages.map((chatMessage) => {
                       const mine =
-                        currentUserEmail && comment.author_email.toLowerCase() === currentUserEmail.toLowerCase();
-                      const threadLabel = labelForVisibility(comment.visibility, stakeholderOptions);
+                        currentUserEmail && chatMessage.sender.email.toLowerCase() === currentUserEmail.toLowerCase();
 
                       return (
-                        <div key={comment.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
+                        <div key={chatMessage.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
                           <div
                             className={`max-w-[85%] rounded-[24px] px-4 py-3 text-sm leading-relaxed ${
                               mine
@@ -583,17 +639,10 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
                                 : "rounded-bl-md border border-slate-200 bg-white text-slate-700"
                             }`}
                           >
-                            {comment.text}
+                            {chatMessage.body}
                           </div>
-                          <p className="mt-1 flex items-center gap-2 px-1 text-[11px] text-slate-400">
-                            {threadKey === "all" && threadLabel && (
-                              <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-                                {threadLabel}
-                              </span>
-                            )}
-                            <span>
-                              {formatAuthor(comment.author_email, currentUserEmail)} · {formatTimestamp(comment.created_at)}
-                            </span>
+                          <p className="mt-1 px-1 text-[11px] text-slate-400">
+                            {mine ? "You" : chatMessage.sender.fullName} · {formatTimestamp(chatMessage.createdAt)}
                           </p>
                         </div>
                       );
@@ -608,53 +657,41 @@ export function MessagesWorkspace({ role }: { role: RoleVariant }) {
                     </div>
                   )}
                   <div className="rounded-[26px] border border-slate-200 bg-slate-50 p-2">
-                    <div className="flex items-center gap-2 border-b border-slate-200 px-3 pb-2">
-                      <span className="w-10 text-xs text-slate-400">To</span>
-                      <select
-                        value={recipientKey}
-                        onChange={(event) => {
-                          const nextKey = event.target.value;
-                          setRecipientKey(nextKey);
-                          if (threadKey !== "all") {
-                            setThreadKey(nextKey);
-                          }
-                        }}
-                        className="h-9 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none"
-                      >
-                        {stakeholderOptions.map((option) => (
-                          <option key={option.key} value={option.key}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
                     <textarea
                       value={message}
                       onChange={(event) => setMessage(event.target.value)}
                       rows={2}
-                      placeholder="Write a message for this application"
+                      placeholder={selectedThread ? "Write a message for this thread" : "Write the first message for the new thread"}
                       className="min-h-[3.25rem] w-full resize-none bg-transparent px-3 py-2 text-sm text-slate-700 outline-none placeholder:text-slate-400"
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && !event.shiftKey) {
                           event.preventDefault();
-                          void handleSend();
+                          if (selectedThread) {
+                            void handleSendMessage();
+                          } else {
+                            void handleCreateThread();
+                          }
                         }
                       }}
                     />
                     <div className="flex items-center justify-between px-3 pb-1 pt-2">
-                      <p className="text-[11px] text-slate-400">Press Enter to send</p>
+                      <p className="text-[11px] text-slate-400">
+                        {selectedThread
+                          ? "Any participant can add more opportunity stakeholders to this thread."
+                          : "Select opportunity-defined stakeholders, then send the first message."}
+                      </p>
                       <button
                         type="button"
-                        onClick={() => void handleSend()}
-                        disabled={submitting || !message.trim()}
+                        onClick={() => void (selectedThread ? handleSendMessage() : handleCreateThread())}
+                        disabled={submitting || !message.trim() || (!selectedThread && newThreadParticipantIds.length === 0)}
                         className="inline-flex h-10 items-center gap-2 rounded-full bg-slate-900 px-4 text-sm font-semibold text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                       >
                         {submitting ? (
                           <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
                         ) : (
-                          <span className="material-symbols-outlined text-[18px]">send</span>
+                          <span className="material-symbols-outlined text-[18px]">{selectedThread ? "send" : "chat"}</span>
                         )}
-                        Send
+                        {selectedThread ? "Send" : "Create Thread"}
                       </button>
                     </div>
                   </div>

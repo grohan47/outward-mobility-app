@@ -2436,16 +2436,17 @@ def get_visible_chat_threads_for_application(
 def get_chat_inbox_application_ids(conn: sqlite3.Connection, session: SessionUser) -> list[int]:
     rows = conn.execute(
         """
-        SELECT DISTINCT a.id, a.updated_at
-        FROM applications a
-        JOIN student_profiles sp ON sp.id = a.student_profile_id
-        LEFT JOIN opportunity_pipeline_steps s
-          ON s.opportunity_id = a.opportunity_id
-         AND LOWER(s.reviewer_email) = LOWER(?)
-        WHERE sp.user_id = ? OR s.id IS NOT NULL
-        ORDER BY a.updated_at DESC, a.id DESC
+        SELECT DISTINCT ct.application_id AS id,
+               COALESCE(MAX(cm.created_at), MAX(a.updated_at)) AS sort_ts
+        FROM chat_threads ct
+        JOIN chat_thread_participants ctp ON ctp.thread_id = ct.id
+        JOIN applications a ON a.id = ct.application_id
+        LEFT JOIN chat_messages cm ON cm.thread_id = ct.id
+        WHERE ctp.user_id = ?
+        GROUP BY ct.application_id
+        ORDER BY sort_ts DESC, ct.application_id DESC
         """,
-        (session.email, session.userId),
+        (session.userId,),
     ).fetchall()
     return [int(row["id"]) for row in rows]
 
@@ -3755,8 +3756,10 @@ def chat_thread_detail(
         messages = list_chat_messages(conn, thread_id, afterMessageId)
     return {
         "application": application,
+        "eligibleParticipants": eligible_participants,
         "thread": thread,
         "messages": messages,
+        "canAddExternalStakeholder": False,
     }
 
 
@@ -3786,6 +3789,7 @@ def chat_send_message(
         message = list_chat_messages(conn, thread_id, message_id - 1)
     return {
         "application": application,
+        "eligibleParticipants": eligible_participants,
         "thread": thread,
         "message": message[0] if message else None,
     }
@@ -3825,7 +3829,11 @@ def chat_add_participants(
 
         thread = build_chat_thread_summary(conn, thread_id, eligible_participants)
 
-    return {"thread": thread}
+    return {
+        "eligibleParticipants": eligible_participants,
+        "thread": thread,
+        "canAddExternalStakeholder": False,
+    }
 
 
 @app.get("/api/applications/{application_id}/comments")
