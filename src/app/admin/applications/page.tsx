@@ -11,6 +11,7 @@ export default function AdminApplicationsLedger() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
+    // Frontend -> API: GET /api/admin/applications
     fetch("/api/admin/applications")
       .then((r) => r.json())
       .then((d) => {
@@ -25,6 +26,7 @@ export default function AdminApplicationsLedger() {
 
     setDeletingId(applicationId);
     try {
+      // Frontend -> API: DELETE /api/applications/:id
       const res = await fetch(`/api/applications/${applicationId}`, {
         method: "DELETE",
       });
@@ -153,10 +155,10 @@ export default function AdminApplicationsLedger() {
         </div>
         <Link
           href="/admin/messages"
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm font-semibold hover:bg-amber-100"
+          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
         >
           <span className="material-symbols-outlined text-[18px]">chat</span>
-          Messaging (WIP)
+          Messages
         </Link>
       </div>
 

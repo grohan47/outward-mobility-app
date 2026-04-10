@@ -23,6 +23,7 @@ export default function GeneratorOpportunities() {
   const router = useRouter();
 
   useEffect(() => {
+    // Frontend -> API: GET /api/opportunities
     fetch("/api/opportunities")
       .then((r) => r.json())
       .then((d) => {

@@ -169,6 +169,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
 
     async function load() {
       try {
+        // Frontend -> API: GET /api/form-fields
         const fieldResponse = await fetch("/api/form-fields");
         const fieldData = await fieldResponse.json();
 
@@ -199,6 +200,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           return;
         }
 
+        // Frontend -> API: GET /api/admin/opportunities/:id
         const detailResponse = await fetch(`/api/admin/opportunities/${opportunityId}`);
         const detailData = await detailResponse.json();
         if (!detailResponse.ok) {
@@ -572,6 +574,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           useDefaultTemplate,
         };
 
+        // Frontend -> API: POST /api/admin/opportunities
         const response = await fetch("/api/admin/opportunities", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -599,6 +602,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           useDefaultTemplate,
         };
 
+        // Frontend -> API: PATCH /api/admin/opportunities/:id
         const response = await fetch(`/api/admin/opportunities/${opportunityId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },

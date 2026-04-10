@@ -26,6 +26,7 @@ export default function OGEApplicationReview() {
             setLoading(true);
             setError('');
             try {
+                // Frontend -> API: GET /api/applications/:id
                 // API GET: load full application detail for the selected application id.
                 const data = await apiGet(`/api/applications/${id}`);
                 if (mounted) {
@@ -51,6 +52,7 @@ export default function OGEApplicationReview() {
     async function submitComment() {
         setCommentLoading(true);
         try {
+            // Frontend -> API: POST /api/remarks
             await apiPost('/api/remarks', {
                 applicationId: Number(id),
                 remarkType: 'COMMENT',
@@ -59,6 +61,7 @@ export default function OGEApplicationReview() {
                 createdBy: 99, // Replace with actual reviewer user id
             });
             setCommentText('');
+            // Frontend -> API: GET /api/applications/:id
             // Reload application data to show new comment
             const refreshed = await apiGet(`/api/applications/${id}`);
             setAppData(refreshed);
@@ -72,6 +75,7 @@ export default function OGEApplicationReview() {
     async function submitDecision(decision) {
         try {
             // TEMP API MAP (buttons: Flag/Reject/Approve): POST /api/reviews/submit
+            // Frontend -> API: POST /api/reviews/submit
             // This function is where OGE approve/reject updates workflow stage.
             // API POST: submit OGE decision/review action for this application.
             const response = await apiPost('/api/reviews/submit', {
@@ -83,6 +87,7 @@ export default function OGEApplicationReview() {
                 visibilityScope: 'INTERNAL',
             });
             setActionMessage(`Decision recorded: ${decision}`);
+            // Frontend -> API: GET /api/applications/:id
             // API GET: reload latest application state after decision submission.
             // Refetch after POST to render updated stage/status from server state.
             const refreshed = await apiGet(`/api/applications/${response.application.id}`);

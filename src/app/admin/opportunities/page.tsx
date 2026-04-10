@@ -23,6 +23,7 @@ export default function AdminOpportunitiesPage() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
+    // Frontend -> API: GET /api/admin/opportunities
     fetch("/api/admin/opportunities")
       .then((r) => r.json())
       .then((d) => {
@@ -38,6 +39,7 @@ export default function AdminOpportunitiesPage() {
 
     setDeletingId(opportunityId);
     try {
+      // Frontend -> API: DELETE /api/admin/opportunities/:id
       const res = await fetch(`/api/admin/opportunities/${opportunityId}`, {
         method: "DELETE",
       });
