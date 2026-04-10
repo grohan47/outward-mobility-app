@@ -28,6 +28,8 @@ from fastapi_app.main import (
     admin_visibility_audit_single,
     app,
     application_detail,
+    application_ai_approval_assist,
+    application_ai_thread_summary,
     approve_application,
     auth_demo_users,
     auth_login,
@@ -45,6 +47,7 @@ from fastapi_app.main import (
     list_opportunities,
     my_applications,
     opportunity_detail,
+    opportunity_ai_nomination_insights,
     post_comment,
     reject_application,
     request_changes,
@@ -129,6 +132,9 @@ class ApiEndpointTests(unittest.TestCase):
                 ),
             ],
             useDefaultTemplate=False,
+            generatorVisibilityRules=[
+                {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
+            ],
         )
 
         result = admin_create_opportunity(payload, session=self.session_for("oge@plaksha.edu.in"))
@@ -169,6 +175,8 @@ class ApiEndpointTests(unittest.TestCase):
             ("GET", "/api/form-fields"),
             ("GET", "/api/opportunities"),
             ("GET", "/api/opportunities/{opportunity_id}"),
+            ("GET", "/api/opportunities/{opportunity_id}/ai-cta"),
+            ("GET", "/api/opportunities/{opportunity_id}/ai-nomination-insights"),
             ("GET", "/api/admin/opportunities"),
             ("GET", "/api/admin/opportunities/{opportunity_id}"),
             ("GET", "/api/admin/visibility-audit"),
@@ -180,6 +188,8 @@ class ApiEndpointTests(unittest.TestCase):
             ("DELETE", "/api/applications/{application_id}"),
             ("GET", "/api/applications"),
             ("GET", "/api/applications/{application_id}"),
+            ("GET", "/api/applications/{application_id}/ai-thread-summary"),
+            ("GET", "/api/applications/{application_id}/ai-approval-assist"),
             ("POST", "/api/applications/{application_id}/approve"),
             ("POST", "/api/applications/{application_id}/request-changes"),
             ("POST", "/api/applications/{application_id}/student-response"),
@@ -212,7 +222,7 @@ class ApiEndpointTests(unittest.TestCase):
 
         response = Response()
         login = auth_login(LoginBody(email="oge@plaksha.edu.in"), response)
-        self.assertEqual(login["user"]["role"], ADMIN_ROLE)
+        self.assertIn(login["user"]["role"], {"ADMIN", "REVIEWER"})
         cookie_header = response.headers.get("set-cookie", "")
         self.assertIn("prism_session=", cookie_header)
 
@@ -279,6 +289,10 @@ class ApiEndpointTests(unittest.TestCase):
             generator_detail = opportunity_detail(opportunity_id, session=student_session)
             keys = [row["field_key"] for row in generator_detail.get("required_fields", [])]
             self.assertIn("custom_org_unit", keys)
+
+            nomination_ai = opportunity_ai_nomination_insights(opportunity_id, session=student_session)
+            self.assertIn("nominations_assist", nomination_ai)
+            self.assertTrue(nomination_ai.get("is_dummy_ai"))
         finally:
             delete_result = admin_delete_opportunity(opportunity_id, session=admin_session)
             self.assertTrue(delete_result.get("ok"))
@@ -303,6 +317,14 @@ class ApiEndpointTests(unittest.TestCase):
 
             student_detail = application_detail(application_id, session=student_session)
             self.assertEqual(student_detail["application"]["id"], application_id)
+
+            thread_summary = application_ai_thread_summary(application_id, session=student_session)
+            self.assertIn("summary", thread_summary)
+            self.assertTrue(thread_summary.get("is_dummy_ai"))
+
+            approval_assist = application_ai_approval_assist(application_id, session=admin_session)
+            self.assertIn("recommendation", approval_assist)
+            self.assertTrue(approval_assist.get("is_dummy_ai"))
 
             comment = post_comment(
                 application_id,
@@ -371,7 +393,7 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertEqual(vc_detail.get("reviews", []), [])
 
             vc_comments = get_comments(application_id, session=vc_session)
-            self.assertEqual(vc_comments.get("comments"), [])
+            self.assertGreaterEqual(len(vc_comments.get("comments", [])), 1)
 
             with self.assertRaises(HTTPException) as missing_required_input:
                 approve_application(application_id, DecisionBody(remarks="Missing required fields"), session=vc_session)

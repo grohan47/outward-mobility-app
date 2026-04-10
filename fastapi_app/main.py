@@ -124,6 +124,128 @@ def extract_ctas_from_description(description: str | None) -> list[str]:
     return dedupe_preserve_order(ctas)[:4]
 
 
+def flatten_comment_points(comments: list[dict[str, Any]], limit: int = 5) -> list[str]:
+    points: list[str] = []
+    for item in comments[:limit]:
+        author = str(item.get("author_email") or "unknown")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        compact = " ".join(text.split())
+        points.append(f"{author}: {compact[:140]}")
+    return points
+
+
+def flatten_review_points(reviews: list[dict[str, Any]], limit: int = 5) -> list[str]:
+    points: list[str] = []
+    for item in reviews[:limit]:
+        decision = str(item.get("decision") or "REVIEW")
+        reviewer = str(item.get("reviewer_name") or item.get("reviewer_email") or "reviewer")
+        remarks = str(item.get("remarks") or "").strip()
+        if remarks:
+            points.append(f"{decision} by {reviewer}: {' '.join(remarks.split())[:140]}")
+        else:
+            points.append(f"{decision} by {reviewer}")
+    return points
+
+
+def build_thread_summary_payload(detail: dict[str, Any]) -> dict[str, Any]:
+    comments = detail.get("comments") or []
+    reviews = detail.get("reviews") or []
+    timeline = detail.get("timeline") or []
+    application = detail.get("application") or {}
+    opportunity = detail.get("opportunity") or {}
+
+    status_line = (
+        f"Stage: {application.get('current_stage_label') or 'Unknown'}; "
+        f"Final status: {application.get('final_status') or 'IN_PROGRESS'}."
+    )
+    evidence = dedupe_preserve_order(flatten_review_points(reviews, 4) + flatten_comment_points(comments, 4))
+    if not evidence:
+        evidence = ["No review notes or comments yet."]
+
+    return {
+        "summary": {
+            "headline": f"{opportunity.get('title', 'Application')} review thread snapshot",
+            "status": status_line,
+            "key_points": evidence[:6],
+            "activity_counts": {
+                "comments": len(comments),
+                "reviews": len(reviews),
+                "timeline_events": len(timeline),
+            },
+            "last_updated_at": application.get("updated_at"),
+        },
+        "prompt_template": (
+            "Summarize the review thread. Highlight blockers, unresolved asks, and recommended next action."
+        ),
+        "is_dummy_ai": True,
+    }
+
+
+def build_approval_assist_payload(detail: dict[str, Any]) -> dict[str, Any]:
+    application_file = detail.get("application_file") or {}
+    labels = detail.get("field_labels") if isinstance(detail.get("field_labels"), dict) else {}
+    checks: list[dict[str, Any]] = []
+    for key, value in list(application_file.items())[:8]:
+        label = str(labels.get(key, key))
+        if value is None or (isinstance(value, str) and not value.strip()):
+            checks.append({"field": key, "label": label, "status": "missing", "note": "Value is empty."})
+        else:
+            checks.append(
+                {
+                    "field": key,
+                    "label": label,
+                    "status": "present",
+                    "note": f"Captured value preview: {str(value)[:80]}",
+                }
+            )
+
+    missing_count = sum(1 for item in checks if item["status"] == "missing")
+    recommendation = "APPROVE_OR_ADVANCE" if missing_count == 0 else "REQUEST_CHANGES"
+    rationale = (
+        "All visible fields appear populated."
+        if missing_count == 0
+        else f"{missing_count} visible field(s) look incomplete; consider send-back."
+    )
+
+    return {
+        "recommendation": recommendation,
+        "rationale": rationale,
+        "quality_checks": checks,
+        "review_prompt_template": (
+            "Given the visible application file and review history, draft concise approval remarks."
+        ),
+        "is_dummy_ai": True,
+    }
+
+
+def build_nomination_insights_payload(opportunity: sqlite3.Row, required_fields: list[sqlite3.Row]) -> dict[str, Any]:
+    field_labels = [str(row["label"]) for row in required_fields]
+    title = str(opportunity["title"])
+    description = str(opportunity["description"] or "")
+    focus_areas = dedupe_preserve_order(
+        [segment.strip()[:60] for segment in re.split(r"[.\n;]+", description) if segment.strip()]
+    )[:3]
+
+    return {
+        "opportunity_id": int(opportunity["id"]),
+        "nominations_assist": {
+            "fit_signals_to_look_for": field_labels[:6] or ["Academic fit", "Statement quality", "Readiness"],
+            "screening_questions": [
+                f"Why is the candidate a fit for {title}?",
+                "What evidence supports readiness for this opportunity?",
+                "Are there any compliance or documentation gaps?",
+            ],
+            "focus_areas": focus_areas,
+        },
+        "prompt_template": (
+            "Rank nominations by fit, evidence quality, and readiness. Return top candidates with rationale."
+        ),
+        "is_dummy_ai": True,
+    }
+
+
 @contextmanager
 def db_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -2439,6 +2561,40 @@ def opportunity_ai_cta(opportunity_id: int, session: SessionUser = Depends(get_s
         if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
             raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
     return {"ctas": extract_ctas_from_description(opp["description"])}
+
+
+@app.get("/api/opportunities/{opportunity_id}/ai-nomination-insights")
+def opportunity_ai_nomination_insights(opportunity_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        opp = conn.execute("SELECT id, title, description FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        if not opp:
+            raise HTTPException(status_code=404, detail="Opportunity not found")
+        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
+            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
+        required_fields = conn.execute(
+            """
+            SELECT f.label
+            FROM opportunity_required_fields orf
+            JOIN form_field_catalog f ON f.field_key = orf.field_key
+            WHERE orf.opportunity_id = ?
+            ORDER BY orf.display_order ASC
+            """,
+            (opportunity_id,),
+        ).fetchall()
+    return build_nomination_insights_payload(opp, required_fields)
+
+
+@app.get("/api/applications/{application_id}/ai-thread-summary")
+def application_ai_thread_summary(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+    detail = application_detail(application_id, session=session)
+    return build_thread_summary_payload(detail)
+
+
+@app.get("/api/applications/{application_id}/ai-approval-assist")
+def application_ai_approval_assist(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+    detail = application_detail(application_id, session=session)
+    return build_approval_assist_payload(detail)
 
 
 @app.get("/api/admin/opportunities")
