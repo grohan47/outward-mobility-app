@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { ApplicationChatWidget } from "@/components/application/ApplicationChatWidget";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { StepProgressBar } from "@/components/application/StepProgressBar";
 import { Badge } from "@/components/ui/Badge";
@@ -16,11 +17,12 @@ type ApplicationDetailPayload = {
     submitted_data_json: string | null;
   };
   opportunity?: { title?: string; term?: string };
+  student_user?: { full_name?: string };
   workflow: { stageLabel: string; finalStatus: string | null };
   reviews: Array<{ id: number; reviewer_name?: string; reviewer_role: string; decision: string; remarks: string | null; created_at: string }>;
   comments: Array<{ id: number; author_email: string; text: string; visibility: string; created_at: string }>;
   timeline: Array<{ id: number; event_type: string; created_at: string; event_payload: { to_stage?: string } | null }>;
-  pipeline_steps: Array<{ step_order: number; step_name: string }>;
+  pipeline_steps: Array<{ step_order: number; step_name: string; reviewer_email?: string; reviewer_display_name?: string }>;
   field_labels?: Record<string, string>;
 };
 
@@ -39,6 +41,7 @@ export default function ApplicationDetailView() {
 
   async function reloadDetail() {
     try {
+      // Frontend -> API: GET /api/applications/:id
       const res = await fetch(`/api/applications/${params.id}`);
       const d = await res.json();
       setData(d);
@@ -84,6 +87,7 @@ export default function ApplicationDetailView() {
     if (!confirmed) return;
     setDeleting(true);
     try {
+      // Frontend -> API: DELETE /api/applications/:id
       const res = await fetch(`/api/applications/${data.application.id}`, {
         method: "DELETE",
       });
@@ -107,6 +111,7 @@ export default function ApplicationDetailView() {
 
     setResubmitting(true);
     try {
+      // Frontend -> API: POST /api/applications/:id/student-response
       const res = await fetch(`/api/applications/${data.application.id}/student-response`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -281,6 +286,13 @@ export default function ApplicationDetailView() {
           </Card>
         </div>
       </div>
+
+      <ApplicationChatWidget
+        applicationId={data.application.id}
+        contextLabel={`#${data.application.id} · ${data.opportunity?.title || "Application thread"}`}
+        studentName={data.student_user?.full_name || "Student"}
+        pipelineSteps={data.pipeline_steps}
+      />
     </div>
   );
 }

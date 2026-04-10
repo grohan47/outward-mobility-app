@@ -12,6 +12,7 @@ export default function MyApplications() {
   const router = useRouter();
 
   useEffect(() => {
+    // Frontend -> API: GET /api/my/applications
     fetch("/api/my/applications")
       .then((r) => r.json())
       .then((d) => {
@@ -26,6 +27,7 @@ export default function MyApplications() {
 
     setDeletingId(applicationId);
     try {
+      // Frontend -> API: DELETE /api/applications/:id
       const res = await fetch(`/api/applications/${applicationId}`, {
         method: "DELETE",
       });

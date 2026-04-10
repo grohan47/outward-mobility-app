@@ -23,6 +23,7 @@ export default function SelectWorkspacePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Frontend -> API: GET /api/auth/me
     fetch("/api/auth/me")
       .then(async (response) => {
         if (!response.ok) {
@@ -56,6 +57,7 @@ export default function SelectWorkspacePage() {
     setError(null);
 
     try {
+      // Frontend -> API: POST /api/auth/select-workspace
       const response = await fetch("/api/auth/select-workspace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

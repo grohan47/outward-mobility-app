@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { ApplicationChatWidget } from "@/components/application/ApplicationChatWidget";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -25,6 +25,7 @@ type PipelineStep = {
   step_order: number;
   step_name: string;
   reviewer_email: string;
+  reviewer_display_name?: string;
   visible_fields: string[];
   can_view_comments: number;
   required_inputs: StepRequiredInput[];
@@ -92,7 +93,9 @@ export default function ReviewerApplicationDetail() {
 
   useEffect(() => {
     Promise.all([
+      // Frontend -> API: GET /api/auth/me
       fetch("/api/auth/me").then((r) => r.json()),
+      // Frontend -> API: GET /api/applications/:id
       fetch(`/api/applications/${params.id}`).then((r) => r.json()),
     ])
       .then(([userData, detail]) => {
@@ -173,6 +176,7 @@ export default function ReviewerApplicationDetail() {
         payload.targetStepOrder = targetStepOrder;
       }
 
+      // Frontend -> API: POST /api/applications/:id/{approve|request-changes|reject}
       const res = await fetch(`/api/applications/${data.application.id}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -215,14 +219,6 @@ export default function ReviewerApplicationDetail() {
           </h1>
           <p className="text-slate-500 mt-1">{data.opportunity?.title}</p>
         </div>
-
-        <Link
-          href="/reviewer/messages"
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm font-semibold hover:bg-amber-100"
-        >
-          <span className="material-symbols-outlined text-[18px]">chat</span>
-          Messaging (WIP)
-        </Link>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
@@ -460,6 +456,14 @@ export default function ReviewerApplicationDetail() {
           )}
         </div>
       </div>
+
+      <ApplicationChatWidget
+        applicationId={data.application.id}
+        contextLabel={`#${data.application.id} · ${data.opportunity?.title || "Application thread"}`}
+        visible={canViewComments}
+        studentName={data.student_user?.full_name || "Student"}
+        pipelineSteps={data.pipeline_steps}
+      />
     </div>
   );
 }

@@ -60,6 +60,7 @@ export default function StudentLifeTaskInbox() {
             setLoading(true);
             setError('');
             try {
+                // Frontend -> API: GET /api/applications
                 // API GET: fetch all applications shown in Student Life task inbox.
                 const data = await apiGet('/api/applications');
                 if (mounted) {

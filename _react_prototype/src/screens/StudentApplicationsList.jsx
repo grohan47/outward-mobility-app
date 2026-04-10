@@ -26,9 +26,11 @@ export default function StudentApplicationsList() {
         setLoading(true);
         setError('');
         try {
+            // Frontend -> API: GET /api/applications?studentProfileId=1
             // API GET: fetch applications restricted to the current student profile.
             const list = await apiGet('/api/applications?studentProfileId=1');
             const items = list.items ?? [];
+            // Frontend -> API: GET /api/applications/:id
             // API GET: fetch per-application detail/timeline for each student application.
             // Why two GET calls: first for list rows, second for detailed timeline blocks.
             const detailPromises = items.map((item) => apiGet(`/api/applications/${item.id}`));
@@ -59,6 +61,7 @@ export default function StudentApplicationsList() {
         setActionMessage('');
         try {
             // TEMP API MAP (button: Resubmit to Student Life): POST /api/applications/:id/resubmit
+            // Frontend -> API: POST /api/applications/:id/resubmit
             // API POST: resubmit a student application back into review workflow.
             // Student pushes an app back into workflow here.
             await apiPost(`/api/applications/${applicationId}/resubmit`, { actorUserId: 1 });

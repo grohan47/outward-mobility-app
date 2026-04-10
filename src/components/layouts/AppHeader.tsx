@@ -13,6 +13,7 @@ export function AppHeader({ userName, roleDisplayName, canSwitchWorkspace = fals
   const router = useRouter();
 
   async function handleLogout() {
+    // Frontend -> API: POST /api/auth/logout
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/");
     router.refresh();
