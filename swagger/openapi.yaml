@@ -1,153 +1,819 @@
-openapi: 3.0.0
+openapi: 3.1.0
 info:
-  title: PRISM Core API
-  description: Configurable approvals workflow API for Plaksha student mobility.
-  version: 0.2.0
+  title: PRISM FastAPI
+  description: FastAPI backend for PRISM approvals platform.
+  version: 1.0.0
 servers:
-  - url: http://localhost:3000/api
-    description: Local development server
+  - url: http://localhost:3000
+    description: Next.js dev server with rewrites to FastAPI
+  - url: http://127.0.0.1:8000
+    description: FastAPI dev server
+
+components:
+  securitySchemes:
+    PrismSession:
+      type: apiKey
+      in: cookie
+      name: prism_session
+  schemas:
+    GenericObject:
+      type: object
+      additionalProperties: true
+    LoginBody:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+    WorkspaceSelectBody:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+    ApplicationCreateBody:
+      type: object
+      required: [opportunityId]
+      properties:
+        opportunityId:
+          type: integer
+        studentProfileId:
+          type: integer
+          nullable: true
+        submittedData:
+          type: object
+          nullable: true
+          additionalProperties: true
+    DecisionBody:
+      type: object
+      properties:
+        remarks:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        reviewerEmail:
+          type: string
+          nullable: true
+        requiredInputs:
+          type: object
+          nullable: true
+          additionalProperties: true
+        targetStepOrder:
+          type: integer
+          nullable: true
+    StudentResponseBody:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+    CommentCreateBody:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+        visibility:
+          type: string
+          default: internal
+        authorEmail:
+          type: string
+          nullable: true
+    AdminApplicationPatchBody:
+      type: object
+      required: [submittedData]
+      properties:
+        submittedData:
+          type: object
+          additionalProperties: true
+    WorkflowRequiredInput:
+      type: object
+      required: [label]
+      properties:
+        id:
+          type: string
+          nullable: true
+        label:
+          type: string
+        inputType:
+          type: string
+          enum: [text, number, dropdown, multiselect]
+          default: text
+        required:
+          type: boolean
+          default: true
+        options:
+          type: array
+          items:
+            type: string
+    WorkflowStepPayload:
+      type: object
+      required: [name, reviewerEmail]
+      properties:
+        name:
+          type: string
+        reviewerEmail:
+          type: string
+        reviewerName:
+          type: string
+          nullable: true
+        visibleFields:
+          type: array
+          items:
+            type: string
+        requiredInputs:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowRequiredInput'
+        slaHours:
+          type: integer
+          default: 72
+        canViewComments:
+          type: boolean
+          default: false
+    CustomFormFieldPayload:
+      type: object
+      required: [label]
+      properties:
+        key:
+          type: string
+          nullable: true
+        label:
+          type: string
+        description:
+          type: string
+          nullable: true
+        fieldHint:
+          type: string
+          nullable: true
+        inputType:
+          type: string
+          enum: [text, textarea, single_select, multiselect]
+          default: text
+        options:
+          type: array
+          items:
+            type: string
+    VisibilityRulePayload:
+      type: object
+      required: [ruleType, ruleValue]
+      properties:
+        ruleType:
+          type: string
+          enum: [EMAIL, GROUP_EMAIL]
+        ruleValue:
+          type: string
+    OpportunityCreatePayload:
+      type: object
+      required: [opportunity, formFields, workflowSteps]
+      properties:
+        opportunity:
+          type: object
+          additionalProperties: true
+        formFields:
+          type: array
+          items:
+            type: string
+        customFields:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomFormFieldPayload'
+        workflowSteps:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowStepPayload'
+        generatorVisibilityRules:
+          type: array
+          items:
+            $ref: '#/components/schemas/VisibilityRulePayload'
+        useDefaultTemplate:
+          type: boolean
+          nullable: true
+          default: false
+    OpportunityPatchBody:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        cover_image_url:
+          type: string
+          nullable: true
+        term:
+          type: string
+          nullable: true
+        destination:
+          type: string
+          nullable: true
+        deadline:
+          type: string
+          nullable: true
+        seats:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        formFields:
+          type: array
+          nullable: true
+          items:
+            type: string
+        customFields:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/CustomFormFieldPayload'
+        workflowSteps:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/WorkflowStepPayload'
+        generatorVisibilityRules:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/VisibilityRulePayload'
+        useDefaultTemplate:
+          type: boolean
+          nullable: true
 
 paths:
-  /health:
+  /api/health:
     get:
-      summary: Health check
+      summary: Health
       responses:
         '200':
-          description: OK
+          description: Successful response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  timestamp:
-                    type: string
+                $ref: '#/components/schemas/GenericObject'
 
-  /opportunities:
-    get:
-      summary: List opportunities
-      responses:
-        '200':
-          description: List of opportunities
+  /api/auth/login:
     post:
-      summary: Create opportunity
+      summary: Auth Login
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [code, title]
-              properties:
-                code: { type: string }
-                title: { type: string }
-                destination: { type: string }
-                term: { type: string }
-                deadline: { type: string }
-                seats: { type: integer }
+              $ref: '#/components/schemas/LoginBody'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/auth/select-workspace:
+    post:
+      summary: Auth Select Workspace
+      security:
+        - PrismSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceSelectBody'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/auth/logout:
+    post:
+      summary: Auth Logout
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/auth/me:
+    get:
+      summary: Auth Me
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/users/me:
+    get:
+      summary: Users Me
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/auth/demo-users:
+    get:
+      summary: Auth Demo Users
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/form-fields:
+    get:
+      summary: Form Fields
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/opportunities:
+    get:
+      summary: List Opportunities
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/opportunities/{opportunity_id}:
+    get:
+      summary: Opportunity Detail
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: opportunity_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/opportunities/{opportunity_id}/ai-cta:
+    get:
+      summary: Opportunity Ai Cta
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: opportunity_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/admin/opportunities:
+    get:
+      summary: Admin List Opportunities
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+    post:
+      summary: Admin Create Opportunity
+      security:
+        - PrismSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpportunityCreatePayload'
       responses:
         '201':
-          description: Created
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
 
-  /applications:
+  /api/admin/opportunities/{opportunity_id}:
     get:
-      summary: List all applications (can filter by studentProfileId)
+      summary: Admin Get Opportunity
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: opportunity_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+    patch:
+      summary: Admin Patch Opportunity
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: opportunity_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpportunityPatchBody'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+    delete:
+      summary: Admin Delete Opportunity
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: opportunity_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/admin/visibility-audit:
+    get:
+      summary: Admin Visibility Audit
+      security:
+        - PrismSession: []
       parameters:
         - in: query
-          name: studentProfileId
+          name: opportunity_id
+          required: false
+          schema:
+            type: integer
+            nullable: true
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/admin/opportunities/{opportunity_id}/visibility-audit:
+    get:
+      summary: Admin Visibility Audit Single
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: opportunity_id
+          required: true
           schema:
             type: integer
       responses:
         '200':
-          description: Application list
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/applications:
+    get:
+      summary: List Applications
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
     post:
-      summary: Create new application
+      summary: Create Application
+      security:
+        - PrismSession: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                studentProfileId: { type: integer }
-                opportunityId: { type: integer }
+              $ref: '#/components/schemas/ApplicationCreateBody'
       responses:
         '201':
-          description: Created
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
 
-  /applications/{id}:
+  /api/applications/{application_id}:
     get:
-      summary: Application Details
+      summary: Application Detail
+      security:
+        - PrismSession: []
       parameters:
         - in: path
-          name: id
+          name: application_id
           required: true
           schema:
             type: integer
       responses:
         '200':
-          description: Application detail payload including snapshot, timeline, and reviews
-
-  /applications/{id}/approve:
-    post:
-      summary: Advance workflow sequence
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+    delete:
+      summary: Delete Application
+      security:
+        - PrismSession: []
       parameters:
         - in: path
-          name: id
+          name: application_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/applications/{application_id}/approve:
+    post:
+      summary: Approve Application
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: application_id
           required: true
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                reviewerEmail: { type: string }
-                remarks: { type: string }
+              $ref: '#/components/schemas/DecisionBody'
       responses:
         '200':
-          description: Approved
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
 
-  /applications/{id}/request-changes:
+  /api/applications/{application_id}/request-changes:
     post:
-      summary: Flag and return to student
+      summary: Request Changes
+      security:
+        - PrismSession: []
       parameters:
         - in: path
-          name: id
+          name: application_id
           required: true
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                reviewerEmail: { type: string }
-                remarks: { type: string }
+              $ref: '#/components/schemas/DecisionBody'
       responses:
         '200':
-          description: Changes requested
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
 
-  /applications/{id}/reject:
+  /api/applications/{application_id}/student-response:
     post:
-      summary: Final rejection
+      summary: Submit Student Response
+      security:
+        - PrismSession: []
       parameters:
         - in: path
-          name: id
+          name: application_id
           required: true
           schema:
             type: integer
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                reviewerEmail: { type: string }
-                reason: { type: string }
+              $ref: '#/components/schemas/StudentResponseBody'
       responses:
         '200':
-          description: Rejected
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/applications/{application_id}/reject:
+    post:
+      summary: Reject Application
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: application_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionBody'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/applications/{application_id}/comments:
+    get:
+      summary: Get Comments
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: application_id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+    post:
+      summary: Post Comment
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: application_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreateBody'
+      responses:
+        '201':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/my/applications:
+    get:
+      summary: My Applications
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/reviewer/inbox:
+    get:
+      summary: Reviewer Inbox
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/admin/dashboard/summary:
+    get:
+      summary: Admin Summary
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/admin/applications:
+    get:
+      summary: Admin Applications
+      security:
+        - PrismSession: []
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+
+  /api/admin/applications/{application_id}:
+    patch:
+      summary: Admin Patch Application
+      security:
+        - PrismSession: []
+      parameters:
+        - in: path
+          name: application_id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminApplicationPatchBody'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
