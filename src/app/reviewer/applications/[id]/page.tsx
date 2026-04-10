@@ -460,7 +460,6 @@ export default function ReviewerApplicationDetail() {
       <ApplicationChatWidget
         applicationId={data.application.id}
         contextLabel={`#${data.application.id} · ${data.opportunity?.title || "Application thread"}`}
-        visible={canViewComments}
         studentName={data.student_user?.full_name || "Student"}
         pipelineSteps={data.pipeline_steps}
       />
