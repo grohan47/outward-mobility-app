@@ -143,6 +143,7 @@ export default function StudentApplicationForm() {
             if (!formData.university?.trim()) {
                 throw new Error('Please select a target university.');
             }
+            // Frontend -> API: POST /api/applications
             // API POST: create a new application for the current student profile.
             await apiPost('/api/applications', {
                 studentProfileId: 1,

@@ -24,6 +24,7 @@ export default function OGEMasterDashboard() {
             setLoading(true);
             setError('');
             try {
+                // Frontend -> API: GET /api/applications
                 // API GET: fetch all applications for OGE master dashboard listing.
                 const data = await apiGet('/api/applications');
                 if (!mounted) {

@@ -45,6 +45,7 @@ export default function OpportunityApplyPage() {
   const [ctaItems, setCtaItems] = useState<string[]>([]);
 
   useEffect(() => {
+    // Frontend -> API: GET /api/opportunities/:id
     fetch(`/api/opportunities/${params.id}`)
       .then((r) => r.json())
       .then((d) => {
@@ -82,6 +83,7 @@ export default function OpportunityApplyPage() {
     setError(null);
 
     try {
+      // Frontend -> API: POST /api/applications
       const res = await fetch("/api/applications", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

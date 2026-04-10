@@ -24,6 +24,7 @@ export default function LoginPage() {
   const [demoUsers, setDemoUsers] = useState<DemoUser[]>([]);
 
   useEffect(() => {
+    // Frontend -> API: GET /api/auth/demo-users
     fetch("/api/auth/demo-users")
       .then((r) => r.json())
       .then((d) => setDemoUsers(d.items || []))
@@ -41,6 +42,7 @@ export default function LoginPage() {
     setError(null);
 
     try {
+      // Frontend -> API: POST /api/auth/login
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

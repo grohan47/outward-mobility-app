@@ -25,8 +25,11 @@ export default function GeneratorDashboard() {
 
   useEffect(() => {
     Promise.all([
+      // Frontend -> API: GET /api/auth/me
       fetch("/api/auth/me").then((r) => r.json()),
+      // Frontend -> API: GET /api/opportunities
       fetch("/api/opportunities").then((r) => r.json()),
+      // Frontend -> API: GET /api/my/applications
       fetch("/api/my/applications").then((r) => r.json()),
     ])
       .then(([sessionData, oppData, appData]) => {

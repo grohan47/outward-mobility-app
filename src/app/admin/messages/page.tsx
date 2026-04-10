@@ -1,5 +1,5 @@
-import { MessagingWorkspace } from "@/components/chat/MessagingWorkspace";
+import { MessagesWorkspace } from "@/components/application/MessagesWorkspace";
 
 export default function AdminMessagesPage() {
-  return <MessagingWorkspace workspaceLabel="Admin" />;
+  return <MessagesWorkspace role="admin" />;
 }

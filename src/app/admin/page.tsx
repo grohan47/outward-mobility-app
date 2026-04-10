@@ -32,7 +32,9 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     Promise.all([
+      // Frontend -> API: GET /api/admin/dashboard/summary
       fetch("/api/admin/dashboard/summary").then((r) => r.json()),
+      // Frontend -> API: GET /api/admin/applications
       fetch("/api/admin/applications").then((r) => r.json()),
     ])
       .then(([statsData, appsData]) => {
@@ -95,9 +97,9 @@ export default function AdminDashboard() {
         <div className="flex gap-3">
           <Link
             href="/admin/messages"
-            className="px-4 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-bold text-sm rounded-xl transition-colors"
+            className="px-4 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold text-sm rounded-xl transition-colors"
           >
-            Messaging
+            Messages
           </Link>
           <Link
             href="/admin/opportunities/new"

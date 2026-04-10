@@ -59,6 +59,7 @@ export default function ProgramChairTaskInbox() {
             setLoading(true);
             setError('');
             try {
+                // Frontend -> API: GET /api/applications
                 // API GET: fetch all applications shown in Program Chair inbox.
                 const data = await apiGet('/api/applications');
                 if (mounted) {

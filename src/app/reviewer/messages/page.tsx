@@ -1,5 +1,5 @@
-import { MessagingWorkspace } from "@/components/chat/MessagingWorkspace";
+import { MessagesWorkspace } from "@/components/application/MessagesWorkspace";
 
 export default function ReviewerMessagesPage() {
-  return <MessagingWorkspace workspaceLabel="Reviewer" />;
+  return <MessagesWorkspace role="reviewer" />;
 }

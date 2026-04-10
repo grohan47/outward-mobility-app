@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { ApplicationChatWidget } from "@/components/application/ApplicationChatWidget";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -22,6 +22,8 @@ type StepRequiredInput = {
 type PipelineStep = {
   step_order: number;
   step_name: string;
+  reviewer_email?: string;
+  reviewer_display_name?: string;
   required_inputs: StepRequiredInput[];
 };
 
@@ -125,6 +127,7 @@ export default function AdminApplicationReviewPage() {
   }
 
   async function reloadDetail() {
+    // Frontend -> API: GET /api/applications/:id
     const detailRes = await fetch(`/api/applications/${params.id}`);
     const detail = await detailRes.json();
     hydrate(detail);
@@ -132,7 +135,9 @@ export default function AdminApplicationReviewPage() {
 
   useEffect(() => {
     Promise.all([
+      // Frontend -> API: GET /api/auth/me
       fetch("/api/auth/me").then((r) => r.json()),
+      // Frontend -> API: GET /api/applications/:id
       fetch(`/api/applications/${params.id}`).then((r) => r.json()),
     ])
       .then(([userData, detail]) => {
@@ -173,6 +178,7 @@ export default function AdminApplicationReviewPage() {
         submittedData[key] = parseDraftValue(value);
       }
 
+      // Frontend -> API: PATCH /api/admin/applications/:id
       const res = await fetch(`/api/admin/applications/${data.application.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -204,6 +210,7 @@ export default function AdminApplicationReviewPage() {
         payload.targetStepOrder = targetStepOrder;
       }
 
+      // Frontend -> API: POST /api/applications/:id/{approve|request-changes|reject}
       const res = await fetch(`/api/applications/${data.application.id}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -251,13 +258,6 @@ export default function AdminApplicationReviewPage() {
             {data.student_user?.full_name} • {data.opportunity?.title}
           </p>
         </div>
-        <Link
-          href="/admin/messages"
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm font-semibold hover:bg-amber-100"
-        >
-          <span className="material-symbols-outlined text-[18px]">chat</span>
-          Messaging
-        </Link>
       </div>
 
       <Card className="bg-slate-900 text-white border-slate-800">
@@ -458,6 +458,13 @@ export default function AdminApplicationReviewPage() {
           </div>
         </Card>
       </div>
+
+      <ApplicationChatWidget
+        applicationId={data.application.id}
+        contextLabel={`#${data.application.id} · ${data.opportunity?.title || "Application thread"}`}
+        studentName={data.student_user?.full_name || "Student"}
+        pipelineSteps={data.pipeline_steps}
+      />
     </div>
   );
 }

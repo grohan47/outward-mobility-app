@@ -3832,13 +3832,7 @@ def chat_add_participants(
 def get_comments(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        app_row = ensure_application_access_for_user(conn, application_id, session)
-        if session.role in REVIEWER_ROLES and session.role != ADMIN_ROLE:
-            current_step = get_current_pipeline_step(conn, app_row)
-            if not current_step:
-                raise HTTPException(status_code=400, detail="No active workflow step for this application.")
-            if not bool(current_step["can_view_comments"]):
-                return {"comments": []}
+        ensure_application_access_for_user(conn, application_id, session)
         rows = conn.execute(
             "SELECT * FROM application_comments WHERE application_id = ? ORDER BY created_at ASC",
             (application_id,),

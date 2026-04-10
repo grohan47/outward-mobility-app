@@ -30,6 +30,7 @@ export default function ReviewerInbox() {
   const router = useRouter();
 
   useEffect(() => {
+    // Frontend -> API: GET /api/reviewer/inbox
     fetch("/api/reviewer/inbox")
       .then((r) => r.json())
       .then((d) => {
@@ -89,10 +90,10 @@ export default function ReviewerInbox() {
         </div>
         <Link
           href="/reviewer/messages"
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm font-semibold hover:bg-amber-100"
+          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-50"
         >
           <span className="material-symbols-outlined text-[18px]">chat</span>
-          Messaging
+          Messages
         </Link>
       </div>
 
