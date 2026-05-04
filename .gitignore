@@ -27,3 +27,6 @@ Thumbs.db
 .vscode/
 .codex
 .gstack/
+
+#python
+__pycache__/

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 DB_PATH = Path(__file__).resolve().parent.parent / "server" / "db" / "prism.sqlite"
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 SESSION_COOKIE = "prism_session"
 PLAKSHA_DOMAIN = "@plaksha.edu.in"
 
@@ -36,6 +37,12 @@ CANONICAL_TABLES = {
     "application_reviews",
     "application_comments",
     "timeline_events",
+    # Graph workflow tables (Chunk 1)
+    "workflow_drafts",
+    "graph_versions",
+    "graph_nodes",
+    "graph_edges",
+    "application_workflow_tasks",
 }
 
 GENERATOR_ROLE = "GENERATOR"
@@ -443,7 +450,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
     required_columns: dict[str, set[str]] = {
         "opportunity_pipeline_steps": {"sla_hours", "can_view_comments"},
         "opportunity_step_required_inputs": {"options_json", "display_order"},
-        "applications": {"return_to_step_order", "return_to_stage_label"},
+        "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id"},
         "form_field_catalog": {"field_hint", "options_json"},
     }
     for table, columns in required_columns.items():
@@ -462,6 +469,18 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         if row["from"] == "field_key":
             return True
     return False
+
+
+def apply_schema_migrations(conn: sqlite3.Connection) -> None:
+    if not MIGRATIONS_DIR.exists():
+        return
+
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        execute_script(conn, path.read_text())
+
+    if "applications" in list_tables(conn) and "graph_version_id" not in table_columns(conn, "applications"):
+        conn.execute("ALTER TABLE applications ADD COLUMN graph_version_id INTEGER REFERENCES graph_versions(id)")
+    conn.commit()
 
 
 def reset_schema(conn: sqlite3.Connection) -> None:
@@ -627,6 +646,7 @@ CREATE TABLE applications (
   current_stage_label TEXT NOT NULL,
   return_to_step_order INTEGER,
   return_to_stage_label TEXT,
+  graph_version_id INTEGER REFERENCES graph_versions(id),
   final_status TEXT,
   submitted_data_json TEXT,
   submitted_at TEXT,
@@ -668,6 +688,67 @@ CREATE TABLE timeline_events (
   actor_email TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (application_id) REFERENCES applications(id)
+);
+
+CREATE TABLE workflow_drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id INTEGER REFERENCES opportunities(id),
+  status TEXT NOT NULL DEFAULT 'pending',
+  draft_output TEXT,
+  clarifying_questions TEXT,
+  admin_answers TEXT,
+  warnings TEXT,
+  confidence REAL DEFAULT 0.0,
+  publish_ready INTEGER DEFAULT 0,
+  created_by_email TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE graph_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id INTEGER NOT NULL REFERENCES opportunities(id),
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'draft',
+  published_by_email TEXT,
+  published_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE graph_nodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  graph_version_id INTEGER NOT NULL REFERENCES graph_versions(id),
+  node_key TEXT NOT NULL,
+  node_type TEXT NOT NULL,
+  display_name TEXT,
+  reviewer_email TEXT,
+  visible_sections TEXT DEFAULT '["all"]',
+  allowed_actions TEXT DEFAULT '["approve","request_changes","comment"]',
+  metadata TEXT DEFAULT '{}'
+);
+
+CREATE TABLE graph_edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  graph_version_id INTEGER NOT NULL REFERENCES graph_versions(id),
+  from_node_key TEXT NOT NULL,
+  to_node_key TEXT NOT NULL,
+  condition_json TEXT,
+  label TEXT
+);
+
+CREATE TABLE application_workflow_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  application_id INTEGER NOT NULL REFERENCES applications(id),
+  graph_version_id INTEGER NOT NULL REFERENCES graph_versions(id),
+  node_key TEXT NOT NULL,
+  assigned_reviewer_email TEXT NOT NULL,
+  assigned_at TEXT DEFAULT (datetime('now')),
+  acted_at TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  decision TEXT,
+  comment_summary TEXT,
+  return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
+  created_at TEXT DEFAULT (datetime('now'))
 );
 """,
     )
@@ -1154,6 +1235,7 @@ def seed_data(conn: sqlite3.Connection) -> None:
 def ensure_db_initialized() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with db_conn() as conn:
+        apply_schema_migrations(conn)
         if schema_needs_reset(conn):
             reset_schema(conn)
             seed_data(conn)
@@ -2519,7 +2601,9 @@ def startup_event() -> None:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     ensure_db_initialized()
-    return {"ok": True, "backend": "fastapi", "timestamp": now_iso()}
+    with db_conn() as conn:
+        tables = sorted(list_tables(conn))
+    return {"ok": True, "backend": "fastapi", "timestamp": now_iso(), "tables": tables}
 
 
 @app.post("/api/auth/login")

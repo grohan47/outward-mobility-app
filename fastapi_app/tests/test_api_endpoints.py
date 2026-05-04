@@ -6,6 +6,7 @@ from fastapi import HTTPException, Response
 from fastapi_app.main import (
     ADMIN_ROLE,
     ApplicationCreateBody,
+    CANONICAL_TABLES,
     CommentCreateBody,
     CustomFormFieldPayload,
     DecisionBody,
@@ -45,6 +46,8 @@ from fastapi_app.main import (
     get_comments,
     get_user_role,
     health,
+    list_tables,
+    table_columns,
     list_applications,
     list_opportunities,
     my_applications,
@@ -246,6 +249,24 @@ class ApiEndpointTests(unittest.TestCase):
         logout = auth_logout(logout_response)
         self.assertTrue(logout.get("ok"))
         self.assertIn("prism_session=", logout_response.headers.get("set-cookie", ""))
+
+    def test_graph_schema_foundation_is_available(self):
+        expected_graph_tables = {
+            "workflow_drafts",
+            "graph_versions",
+            "graph_nodes",
+            "graph_edges",
+            "application_workflow_tasks",
+        }
+
+        health_payload = health()
+        self.assertTrue(health_payload.get("ok"))
+        self.assertTrue(expected_graph_tables.issubset(set(health_payload.get("tables", []))))
+
+        with db_conn() as conn:
+            self.assertEqual(list_tables(conn), CANONICAL_TABLES)
+            self.assertTrue(expected_graph_tables.issubset(list_tables(conn)))
+            self.assertIn("graph_version_id", table_columns(conn, "applications"))
 
     def test_opportunity_admin_and_generator_endpoints(self):
         opportunity_id = self.create_test_opportunity("CRUD")
