@@ -246,6 +246,168 @@ def build_nomination_insights_payload(opportunity: sqlite3.Row, required_fields:
     }
 
 
+def parse_prompt_tokens(prompt: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", prompt.lower()) if token]
+
+
+def infer_term_from_prompt(prompt: str) -> str:
+    month_to_term = {
+        "jan": "Spring",
+        "feb": "Spring",
+        "mar": "Spring",
+        "apr": "Spring",
+        "may": "Summer",
+        "jun": "Summer",
+        "jul": "Summer",
+        "aug": "Fall",
+        "sep": "Fall",
+        "oct": "Fall",
+        "nov": "Winter",
+        "dec": "Winter",
+    }
+    year_match = re.search(r"(20\d{2})", prompt)
+    year = year_match.group(1) if year_match else str(datetime.now(timezone.utc).year)
+    short_month_match = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b", prompt.lower())
+    if short_month_match:
+        season = month_to_term.get(short_month_match.group(1), "Fall")
+    elif "spring" in prompt.lower():
+        season = "Spring"
+    elif "summer" in prompt.lower():
+        season = "Summer"
+    elif "winter" in prompt.lower():
+        season = "Winter"
+    else:
+        season = "Fall"
+    return f"{season} {year}"
+
+
+def build_ai_opportunity_draft(
+    conn: sqlite3.Connection,
+    prompt: str,
+    requested_visibility_rules: list[VisibilityRulePayload] | None = None,
+) -> dict[str, Any]:
+    prompt_clean = " ".join(prompt.split())
+    tokens = parse_prompt_tokens(prompt_clean)
+    ts_label = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+
+    destination = "Global Exchange"
+    if "singapore" in tokens:
+        destination = "Singapore"
+    elif "tokyo" in tokens or "japan" in tokens:
+        destination = "Japan"
+    elif "germany" in tokens or "berlin" in tokens:
+        destination = "Germany"
+    elif "usa" in tokens or "united" in tokens or "california" in tokens:
+        destination = "United States"
+
+    title_match = re.search(r"(?:for|about)\s+(.+)", prompt_clean, flags=re.IGNORECASE)
+    inferred_topic = title_match.group(1).strip() if title_match else prompt_clean[:60]
+    inferred_topic = inferred_topic[:80].strip(" .")
+    title = inferred_topic.title() if inferred_topic else "AI Generated Opportunity"
+    code_seed = slugify_input_key(title).upper()[:20] or "AI_OPP"
+    code = f"{code_seed}_{ts_label}"
+    term = infer_term_from_prompt(prompt_clean)
+    deadline = f"{datetime.now(timezone.utc).year}-12-31"
+
+    all_fields = conn.execute(
+        """
+        SELECT field_key
+        FROM form_field_catalog
+        WHERE is_active = 1
+        ORDER BY section_key ASC, label ASC
+        """
+    ).fetchall()
+    available_keys = {str(row["field_key"]) for row in all_fields}
+    base_fields = ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"]
+    if any(keyword in tokens for keyword in {"resume", "cv", "portfolio"}):
+        base_fields.append("resume_url")
+    selected_fields = [field for field in base_fields if field in available_keys]
+    if not selected_fields and available_keys:
+        selected_fields = sorted(available_keys)[:4]
+
+    custom_fields: list[dict[str, Any]] = []
+    if any(keyword in tokens for keyword in {"budget", "funding", "scholarship"}):
+        custom_fields.append(
+            {
+                "key": "custom_funding_plan",
+                "label": "Funding Plan",
+                "description": "Explain the expected budget and how expenses will be managed.",
+                "fieldHint": "Mention scholarship, self-funding, or department support.",
+                "inputType": "textarea",
+                "options": [],
+            }
+        )
+        selected_fields.append("custom_funding_plan")
+
+    if any(keyword in tokens for keyword in {"project", "research", "lab"}):
+        custom_fields.append(
+            {
+                "key": "custom_project_focus",
+                "label": "Project Focus Area",
+                "description": "Primary project/research track the student expects to work on.",
+                "fieldHint": "Pick one primary focus area.",
+                "inputType": "single_select",
+                "options": ["AI/ML", "Robotics", "Bioengineering", "Climate Tech", "Entrepreneurship"],
+            }
+        )
+        selected_fields.append("custom_project_focus")
+
+    workflow_steps = default_pipeline_template()
+    if any(keyword in tokens for keyword in {"interview", "panel"}):
+        workflow_steps.insert(
+            1,
+            {
+                "name": "Panel Interview",
+                "reviewerEmail": "program-chair@plaksha.edu.in",
+                "reviewerName": "Program Chair Panel",
+                "visibleFields": [],
+                "slaHours": 48,
+                "canViewComments": True,
+                "requiredInputs": [
+                    {
+                        "id": "panel_recommendation",
+                        "label": "Panel Recommendation",
+                        "inputType": "dropdown",
+                        "required": True,
+                        "options": ["Strong pass", "Pass", "Borderline", "Do not progress"],
+                    }
+                ],
+            },
+        )
+
+    normalized_visibility_rules = normalize_visibility_rules(requested_visibility_rules)
+    if not normalized_visibility_rules:
+        normalized_visibility_rules = [{"rule_type": "GROUP_EMAIL", "rule_value": "ug2024@plaksha.edu.in"}]
+
+    return {
+        "draft": {
+            "opportunity": {
+                "code": code,
+                "title": title,
+                "description": f"AI-generated draft from prompt: {prompt_clean}",
+                "cover_image_url": "",
+                "term": term,
+                "destination": destination,
+                "deadline": deadline,
+                "seats": 25,
+            },
+            "formFields": dedupe_preserve_order(selected_fields),
+            "customFields": custom_fields,
+            "workflowSteps": workflow_steps,
+            "generatorVisibilityRules": [
+                {"ruleType": item["rule_type"], "ruleValue": item["rule_value"]} for item in normalized_visibility_rules
+            ],
+            "useDefaultTemplate": False,
+        },
+        "review_instructions": [
+            "Review all AI-generated labels and descriptions before publishing.",
+            "Confirm reviewer emails and SLAs reflect the latest process.",
+            "Adjust visibility rules to match the intended generator audience.",
+        ],
+        "is_dummy_ai": True,
+    }
+
+
 @contextmanager
 def db_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -1116,6 +1278,10 @@ class OpportunityCreatePayload(BaseModel):
     workflowSteps: list[WorkflowStepPayload]
     generatorVisibilityRules: list["VisibilityRulePayload"] = Field(default_factory=list)
     useDefaultTemplate: bool | None = False
+
+
+class OpportunityAIGenerateBody(BaseModel):
+    prompt: str = Field(min_length=10, max_length=4000)
 
 
 class VisibilityRulePayload(BaseModel):
@@ -2678,6 +2844,16 @@ def admin_visibility_audit_single(
             raise HTTPException(status_code=404, detail="Opportunity not found")
         item = build_visibility_audit_for_opportunity(conn, opp)
     return {"item": item}
+
+
+@app.post("/api/admin/opportunities/ai-generate")
+def admin_generate_opportunity_with_ai(
+    body: OpportunityAIGenerateBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        return build_ai_opportunity_draft(conn, body.prompt)
 
 
 @app.post("/api/admin/opportunities", status_code=201)

@@ -1,2 +1,7 @@
 fastapi
 uvicorn
+pytest
+apscheduler[asyncio]
+# AI provider — install ONE before Chunk 5:
+# pip install anthropic     (if using Claude)
+# pip install google-genai  (if using Gemini)

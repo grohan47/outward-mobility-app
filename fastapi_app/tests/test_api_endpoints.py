@@ -11,6 +11,7 @@ from fastapi_app.main import (
     DecisionBody,
     LoginBody,
     OpportunityCreatePayload,
+    OpportunityAIGenerateBody,
     OpportunityPatchBody,
     SessionUser,
     StudentResponseBody,
@@ -18,6 +19,7 @@ from fastapi_app.main import (
     WorkflowStepPayload,
     admin_applications,
     admin_create_opportunity,
+    admin_generate_opportunity_with_ai,
     admin_delete_opportunity,
     admin_get_opportunity,
     admin_list_opportunities,
@@ -181,6 +183,7 @@ class ApiEndpointTests(unittest.TestCase):
             ("GET", "/api/admin/opportunities/{opportunity_id}"),
             ("GET", "/api/admin/visibility-audit"),
             ("GET", "/api/admin/opportunities/{opportunity_id}/visibility-audit"),
+            ("POST", "/api/admin/opportunities/ai-generate"),
             ("POST", "/api/admin/opportunities"),
             ("PATCH", "/api/admin/opportunities/{opportunity_id}"),
             ("DELETE", "/api/admin/opportunities/{opportunity_id}"),
@@ -300,6 +303,23 @@ class ApiEndpointTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as deleted_lookup:
             admin_get_opportunity(opportunity_id, session=admin_session)
         self.assertEqual(deleted_lookup.exception.status_code, 404)
+
+    def test_admin_ai_opportunity_generation(self):
+        admin_session = self.session_for("oge@plaksha.edu.in")
+        payload = OpportunityAIGenerateBody(
+            prompt="Create an AI and Robotics summer opportunity in Singapore with interview round and scholarship support."
+        )
+        response = admin_generate_opportunity_with_ai(payload, session=admin_session)
+
+        self.assertTrue(response.get("is_dummy_ai"))
+        self.assertIn("draft", response)
+        draft = response["draft"]
+        self.assertIn("opportunity", draft)
+        self.assertIn("workflowSteps", draft)
+        self.assertIn("formFields", draft)
+        self.assertGreaterEqual(len(draft["workflowSteps"]), 4)
+        self.assertIn("custom_funding_plan", draft["formFields"])
+        self.assertTrue(any(step["name"] == "Panel Interview" for step in draft["workflowSteps"]))
 
     def test_application_lifecycle_and_access_controls(self):
         opportunity_id = self.create_test_opportunity("APP")

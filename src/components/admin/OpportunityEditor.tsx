@@ -57,6 +57,31 @@ type OpportunityEditorProps = {
   opportunityId?: string;
 };
 
+type AIGeneratedDraft = {
+  opportunity: {
+    code?: string;
+    title?: string;
+    description?: string;
+    cover_image_url?: string;
+    term?: string;
+    destination?: string;
+    deadline?: string;
+    seats?: number;
+  };
+  formFields: string[];
+  customFields: Array<{
+    key?: string;
+    label?: string;
+    description?: string;
+    fieldHint?: string;
+    inputType?: CustomFieldDraft["inputType"];
+    options?: string[];
+  }>;
+  workflowSteps: any[];
+  generatorVisibilityRules?: GeneratorVisibilityRule[];
+  useDefaultTemplate?: boolean;
+};
+
 function blankStep(index: number): WorkflowStep {
   return {
     name: `Review Step ${index}`,
@@ -144,7 +169,10 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
   const [step, setStep] = useState<1 | 2>(1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
 
   const [availableFields, setAvailableFields] = useState<CatalogField[]>([]);
   const [defaultPipeline, setDefaultPipeline] = useState<WorkflowStep[]>([]);
@@ -476,6 +504,102 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
     }
   }
 
+  function hydrateFromAiDraft(draft: AIGeneratedDraft) {
+    setOppData((prev) => ({
+      ...prev,
+      code: String(draft.opportunity?.code || prev.code),
+      title: String(draft.opportunity?.title || prev.title),
+      description: String(draft.opportunity?.description || prev.description),
+      cover_image_url: String(draft.opportunity?.cover_image_url || prev.cover_image_url),
+      term: String(draft.opportunity?.term || prev.term),
+      destination: String(draft.opportunity?.destination || prev.destination),
+      deadline: String(draft.opportunity?.deadline || prev.deadline),
+      seats: Number(draft.opportunity?.seats || prev.seats || 0),
+      status: "published",
+    }));
+
+    const normalizedCustomFields: CustomFieldDraft[] = (draft.customFields || []).map((field, index) => ({
+      field_key: makeCustomFieldKey(field.key || field.label || `ai_custom_${index + 1}`),
+      label: String(field.label || ""),
+      description: String(field.description || ""),
+      fieldHint: String(field.fieldHint || field.description || ""),
+      inputType:
+        field.inputType && ["text", "textarea", "single_select", "multiselect"].includes(field.inputType)
+          ? field.inputType
+          : "text",
+      optionsText: Array.isArray(field.options) ? field.options.join(", ") : "",
+    }));
+    setCustomFields(normalizedCustomFields);
+
+    const customKeys = normalizedCustomFields.map((field) => field.field_key);
+    const selected = Array.isArray(draft.formFields) ? draft.formFields : [];
+    setSelectedFields(dedupeFields([...selected, ...customKeys]));
+
+    const aiSteps: WorkflowStep[] = (draft.workflowSteps || []).map((item: any, idx: number) => ({
+      name: String(item.name || `Step ${idx + 1}`),
+      reviewerEmail: String(item.reviewerEmail || ""),
+      reviewerName: String(item.reviewerName || ""),
+      visibleFields: Array.isArray(item.visibleFields) ? item.visibleFields : [],
+      requiredInputs: (item.requiredInputs || []).map((input: any, inputIdx: number) =>
+        parseRequiredInput(input, idx + 1, inputIdx + 1)
+      ),
+      slaHours: Number(item.slaHours || 72),
+      canViewComments: Boolean(item.canViewComments),
+    }));
+    if (aiSteps.length > 0) {
+      setWorkflowSteps(aiSteps);
+    }
+
+    if (Array.isArray(draft.generatorVisibilityRules) && draft.generatorVisibilityRules.length > 0) {
+      setGeneratorVisibilityRules(draft.generatorVisibilityRules);
+    }
+    setUseDefaultTemplate(Boolean(draft.useDefaultTemplate));
+    setStep(1);
+  }
+
+  function dedupeFields(values: string[]): string[] {
+    const seen = new Set<string>();
+    return values.filter((value) => {
+      const key = value.trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  async function generateDraftFromAi() {
+    setError(null);
+    setAiNotice(null);
+    if (!aiPrompt.trim()) {
+      setError("Enter a prompt for AI opportunity generation.");
+      return;
+    }
+
+    setAiGenerating(true);
+    try {
+      const response = await fetch("/api/admin/opportunities/ai-generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: aiPrompt.trim() }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body?.detail || "Failed to generate AI opportunity draft.");
+      }
+
+      const draft = body?.draft as AIGeneratedDraft | undefined;
+      if (!draft) {
+        throw new Error("AI response did not include a draft payload.");
+      }
+      hydrateFromAiDraft(draft);
+      setAiNotice("AI draft loaded. Review all fields and make manual edits before publishing.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to generate AI opportunity draft.");
+    } finally {
+      setAiGenerating(false);
+    }
+  }
+
   function normalizePipelineForSubmit(pipeline: WorkflowStep[]): WorkflowStep[] {
     return pipeline.map((ws, index) => ({
       ...ws,
@@ -667,6 +791,34 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           Step 1 captures applicant fields. Step 2 configures reviewers for this opportunity.
         </p>
       </div>
+
+      {mode === "create" && (
+        <Card className="mb-6 border-dashed border-primary/40 bg-primary/5 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">✨ AI Opportunity Maker (Dummy)</h2>
+              <p className="text-sm text-slate-600 mt-1">
+                Describe the opportunity in natural language. AI will draft opportunity details, form fields, and a review pipeline for admin review.
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3">
+            <textarea
+              rows={3}
+              className="w-full border rounded-lg p-2 text-sm"
+              placeholder="Example: Create a Fall 2026 exchange opportunity for AI + Robotics in Singapore with interview and scholarship checks."
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+            />
+            <div className="flex items-center gap-3">
+              <Button type="button" onClick={generateDraftFromAi} disabled={aiGenerating}>
+                {aiGenerating ? "Generating..." : "Generate Opportunity Draft"}
+              </Button>
+              {aiNotice && <span className="text-xs text-emerald-700">{aiNotice}</span>}
+            </div>
+          </div>
+        </Card>
+      )}
 
       <div className="flex gap-4 mb-8">
         <div className={`flex-1 h-2 rounded-full ${step >= 1 ? "bg-primary" : "bg-slate-200"}`} />
