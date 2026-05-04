@@ -62,20 +62,21 @@ class GraphExecutionService:
     VALID_DECISIONS = {APPROVE, REQUEST_CHANGES}
 
     def instantiate(self, db: sqlite3.Connection, application_id: int, graph_version_id: int) -> list[int]:
-        application = self._get_application(db, application_id)
-        start_node = db.execute(
-            """
-            SELECT *
-            FROM graph_nodes
-            WHERE graph_version_id = ? AND node_type = 'start'
-            LIMIT 1
-            """,
-            (graph_version_id,),
-        ).fetchone()
-        if not start_node:
-            raise ValueError("Graph version has no start node")
+        with db:
+            application = self._get_application(db, application_id)
+            start_node = db.execute(
+                """
+                SELECT *
+                FROM graph_nodes
+                WHERE graph_version_id = ? AND node_type = 'start'
+                LIMIT 1
+                """,
+                (graph_version_id,),
+            ).fetchone()
+            if not start_node:
+                raise ValueError("Graph version has no start node")
 
-        return self._advance_from_node(db, application, graph_version_id, start_node["node_key"])
+            return self._advance_from_node(db, application, graph_version_id, start_node["node_key"])
 
     def transition(
         self,
@@ -89,65 +90,66 @@ class GraphExecutionService:
         if normalized_decision not in self.VALID_DECISIONS:
             raise ValueError(f"Unsupported graph task decision: {decision}")
 
-        task = self._get_task(db, task_id)
-        if task["status"] != "active":
-            raise ValueError("Task is no longer active")
-        if task["assigned_reviewer_email"].lower() != actor_email.strip().lower():
-            raise ValueError("Actor is not assigned to this task")
+        with db:
+            task = self._get_task(db, task_id)
+            if task["status"] != "active":
+                raise ValueError("Task is no longer active")
+            if task["assigned_reviewer_email"].lower() != actor_email.strip().lower():
+                raise ValueError("Actor is not assigned to this task")
 
-        application = self._get_application(db, int(task["application_id"]))
-        ts = _now_iso()
+            application = self._get_application(db, int(task["application_id"]))
+            ts = _now_iso()
 
-        if normalized_decision == REQUEST_CHANGES:
+            if normalized_decision == REQUEST_CHANGES:
+                db.execute(
+                    """
+                    UPDATE application_workflow_tasks
+                    SET status = 'returned',
+                        acted_at = ?,
+                        decision = ?,
+                        comment_summary = ?,
+                        return_to_task_id = NULL
+                    WHERE id = ?
+                    """,
+                    (ts, normalized_decision, comment, task_id),
+                )
+                db.execute(
+                    """
+                    UPDATE applications
+                    SET current_stage_label = 'Student Rework',
+                        final_status = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (ts, int(task["application_id"])),
+                )
+                return TransitionResult(success=True, application_status="STUDENT_REWORK")
+
             db.execute(
                 """
                 UPDATE application_workflow_tasks
-                SET status = 'returned',
+                SET status = 'completed',
                     acted_at = ?,
                     decision = ?,
-                    comment_summary = ?,
-                    return_to_task_id = ?
+                    comment_summary = ?
                 WHERE id = ?
                 """,
-                (ts, normalized_decision, comment, task_id, task_id),
+                (ts, normalized_decision, comment, task_id),
             )
-            db.execute(
-                """
-                UPDATE applications
-                SET current_stage_label = 'Student Rework',
-                    final_status = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (ts, int(task["application_id"])),
+            next_task_ids = self._advance_from_node(
+                db,
+                application,
+                int(task["graph_version_id"]),
+                str(task["node_key"]),
+                completed_task_id=task_id,
             )
-            return TransitionResult(success=True, application_status="STUDENT_REWORK")
 
-        db.execute(
-            """
-            UPDATE application_workflow_tasks
-            SET status = 'completed',
-                acted_at = ?,
-                decision = ?,
-                comment_summary = ?
-            WHERE id = ?
-            """,
-            (ts, normalized_decision, comment, task_id),
-        )
-        next_task_ids = self._advance_from_node(
-            db,
-            application,
-            int(task["graph_version_id"]),
-            str(task["node_key"]),
-            completed_task_id=task_id,
-        )
-
-        updated = self._get_application(db, int(task["application_id"]))
-        return TransitionResult(
-            success=True,
-            next_task_ids=next_task_ids,
-            application_status=updated["final_status"],
-        )
+            updated = self._get_application(db, int(task["application_id"]))
+            return TransitionResult(
+                success=True,
+                next_task_ids=next_task_ids,
+                application_status=updated["final_status"],
+            )
 
     def get_inbox(self, db: sqlite3.Connection, reviewer_email: str) -> list[TaskRow]:
         rows = db.execute(
@@ -316,23 +318,22 @@ class GraphExecutionService:
         join_node_key: str,
     ) -> bool:
         incoming = self._incoming_sources(db, graph_version_id, join_node_key)
-        for source_key in incoming:
-            row = db.execute(
-                """
-                SELECT 1
-                FROM application_workflow_tasks
-                WHERE application_id = ?
-                  AND graph_version_id = ?
-                  AND node_key = ?
-                  AND status = 'completed'
-                  AND decision = 'approve'
-                LIMIT 1
-                """,
-                (application_id, graph_version_id, source_key),
-            ).fetchone()
-            if not row:
-                return False
-        return True
+        if not incoming:
+            return False
+        placeholders = ",".join("?" for _ in incoming)
+        row = db.execute(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM application_workflow_tasks
+            WHERE application_id = ?
+              AND graph_version_id = ?
+              AND node_key IN ({placeholders})
+              AND status = 'completed'
+              AND decision = 'approve'
+            """,
+            (application_id, graph_version_id, *incoming),
+        ).fetchone()
+        return bool(row) and int(row["cnt"]) == len(incoming)
 
     def _skip_join_siblings(
         self,
@@ -392,10 +393,23 @@ class GraphExecutionService:
             """,
             (graph_version_id, node_key),
         ).fetchall()
-        for edge in downstream:
-            if self._task_exists(db, application_id, graph_version_id, str(edge["to_node_key"])):
-                return True
-        return False
+        if not downstream:
+            return False
+        node_keys = [str(e["to_node_key"]) for e in downstream]
+        placeholders = ",".join("?" for _ in node_keys)
+        row = db.execute(
+            f"""
+            SELECT 1
+            FROM application_workflow_tasks
+            WHERE application_id = ?
+              AND graph_version_id = ?
+              AND node_key IN ({placeholders})
+              AND status IN ('active', 'completed', 'returned')
+            LIMIT 1
+            """,
+            (application_id, graph_version_id, *node_keys),
+        ).fetchone()
+        return bool(row)
 
     def _task_exists(
         self,
@@ -411,7 +425,7 @@ class GraphExecutionService:
             WHERE application_id = ?
               AND graph_version_id = ?
               AND node_key = ?
-              AND status IN ('active', 'completed', 'returned')
+              AND status IN ('active', 'completed')
             LIMIT 1
             """,
             (application_id, graph_version_id, node_key),

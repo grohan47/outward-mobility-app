@@ -750,6 +750,17 @@ CREATE TABLE application_workflow_tasks (
   return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE INDEX idx_awt_status_email
+  ON application_workflow_tasks(status, assigned_reviewer_email);
+CREATE INDEX idx_awt_app_version_node
+  ON application_workflow_tasks(application_id, graph_version_id, node_key);
+CREATE INDEX idx_ge_from
+  ON graph_edges(graph_version_id, from_node_key);
+CREATE INDEX idx_ge_to
+  ON graph_edges(graph_version_id, to_node_key);
+CREATE INDEX idx_gn_version_key
+  ON graph_nodes(graph_version_id, node_key);
 """,
     )
     conn.execute("PRAGMA foreign_keys = ON")
@@ -2603,7 +2614,7 @@ def health() -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         tables = sorted(list_tables(conn))
-    return {"ok": True, "backend": "fastapi", "timestamp": now_iso(), "tables": tables}
+    return {"ok": True, "backend": "fastapi", "timestamp": now_iso(), "_tables": tables}
 
 
 @app.post("/api/auth/login")

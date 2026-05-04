@@ -61,3 +61,15 @@ CREATE TABLE IF NOT EXISTS application_workflow_tasks (
   return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Indexes required by plan D16 for task-first inbox and graph traversal queries.
+CREATE INDEX IF NOT EXISTS idx_awt_status_email
+  ON application_workflow_tasks(status, assigned_reviewer_email);
+CREATE INDEX IF NOT EXISTS idx_awt_app_version_node
+  ON application_workflow_tasks(application_id, graph_version_id, node_key);
+CREATE INDEX IF NOT EXISTS idx_ge_from
+  ON graph_edges(graph_version_id, from_node_key);
+CREATE INDEX IF NOT EXISTS idx_ge_to
+  ON graph_edges(graph_version_id, to_node_key);
+CREATE INDEX IF NOT EXISTS idx_gn_version_key
+  ON graph_nodes(graph_version_id, node_key);

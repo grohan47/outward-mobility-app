@@ -228,8 +228,92 @@ class GraphExecutionServiceTests(unittest.TestCase):
         task = self._task(task_id)
         self.assertEqual(task["status"], "returned")
         self.assertEqual(task["decision"], "request_changes")
-        self.assertEqual(task["return_to_task_id"], task_id)
+        self.assertIsNone(task["return_to_task_id"])
         self.assertEqual(self._application()["current_stage_label"], "Student Rework")
+
+
+    def test_join_any_skips_sibling_and_advances_once(self):
+        self._insert_node("start", "start")
+        self._insert_node("reviewer_a", "reviewer", "a@plaksha.edu.in")
+        self._insert_node("reviewer_b", "reviewer", "b@plaksha.edu.in")
+        self._insert_node("join", "join_any")
+        self._insert_node("final_reviewer", "reviewer", "final@plaksha.edu.in")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "reviewer_a")
+        self._insert_edge("start", "reviewer_b")
+        self._insert_edge("reviewer_a", "join")
+        self._insert_edge("reviewer_b", "join")
+        self._insert_edge("join", "final_reviewer")
+        self._insert_edge("final_reviewer", "end")
+        task_a, task_b = self.service.instantiate(self.conn, 1, self.graph_version_id)
+
+        result = self.service.transition(self.conn, task_a, "approve", "a@plaksha.edu.in")
+
+        # join_any: reviewer_b sibling is skipped; exactly one downstream task created
+        self.assertEqual(len(result.next_task_ids), 1)
+        self.assertEqual(self._task(task_b)["status"], "skipped")
+        final_task = self._task(result.next_task_ids[0])
+        self.assertEqual(final_task["node_key"], "final_reviewer")
+
+    def test_join_any_skipped_task_is_rejected_on_transition(self):
+        self._insert_node("start", "start")
+        self._insert_node("reviewer_a", "reviewer", "a@plaksha.edu.in")
+        self._insert_node("reviewer_b", "reviewer", "b@plaksha.edu.in")
+        self._insert_node("join", "join_any")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "reviewer_a")
+        self._insert_edge("start", "reviewer_b")
+        self._insert_edge("reviewer_a", "join")
+        self._insert_edge("reviewer_b", "join")
+        self._insert_edge("join", "end")
+        task_a, task_b = self.service.instantiate(self.conn, 1, self.graph_version_id)
+        self.service.transition(self.conn, task_a, "approve", "a@plaksha.edu.in")
+
+        with self.assertRaisesRegex(ValueError, "no longer active"):
+            self.service.transition(self.conn, task_b, "approve", "b@plaksha.edu.in")
+
+    def test_conditional_false_path_creates_no_task(self):
+        # Application submitted WITHOUT funding_requested — scholarship branch should be skipped.
+        # setUp seeds with funding_requested=True; override for this test with a fresh graph.
+        self.conn.execute(
+            "UPDATE applications SET submitted_data_json = ? WHERE id = 1",
+            (json.dumps({"funding_requested": False}),),
+        )
+        self._insert_node("start", "start")
+        self._insert_node("funding_gate", "conditional")
+        self._insert_node("scholarship_review", "reviewer", "scholarships@plaksha.edu.in")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "funding_gate")
+        self._insert_edge(
+            "funding_gate",
+            "scholarship_review",
+            {"op": "equals", "field": "funding_requested", "value": True},
+        )
+        self._insert_edge("scholarship_review", "end")
+
+        task_ids = self.service.instantiate(self.conn, 1, self.graph_version_id)
+
+        self.assertEqual(task_ids, [])
+
+    def test_conditional_absent_field_creates_no_task(self):
+        # Application submitted without the field at all — condition should evaluate to False.
+        self.conn.execute(
+            "UPDATE applications SET submitted_data_json = ? WHERE id = 1",
+            (json.dumps({}),),
+        )
+        self._insert_node("start", "start")
+        self._insert_node("gate", "conditional")
+        self._insert_node("review", "reviewer", "oge@plaksha.edu.in")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "gate")
+        self._insert_edge(
+            "gate", "review", {"op": "equals", "field": "missing_field", "value": True}
+        )
+        self._insert_edge("review", "end")
+
+        task_ids = self.service.instantiate(self.conn, 1, self.graph_version_id)
+
+        self.assertEqual(task_ids, [])
 
 
 if __name__ == "__main__":

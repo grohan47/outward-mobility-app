@@ -261,7 +261,7 @@ class ApiEndpointTests(unittest.TestCase):
 
         health_payload = health()
         self.assertTrue(health_payload.get("ok"))
-        self.assertTrue(expected_graph_tables.issubset(set(health_payload.get("tables", []))))
+        self.assertTrue(expected_graph_tables.issubset(set(health_payload.get("_tables", []))))
 
         with db_conn() as conn:
             self.assertEqual(list_tables(conn), CANONICAL_TABLES)
