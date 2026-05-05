@@ -39,7 +39,18 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
         "display_name": "string or null",
         "reviewer_email": "string or null",
         "visible_sections": ["all"],
-        "allowed_actions": ["approve", "request_changes", "comment"]
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "required_inputs": [
+            {
+              "input_key": "string",
+              "label": "string",
+              "input_type": "text | number | select | checkbox",
+              "options": [],
+              "required": true
+            }
+          ]
+        }
       }
     ],
     "edges": [

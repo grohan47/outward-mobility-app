@@ -85,6 +85,7 @@ class GraphExecutionService:
         decision: str,
         actor_email: str,
         comment: str | None = None,
+        reviewer_data: dict[str, Any] | None = None,
     ) -> TransitionResult:
         normalized_decision = decision.strip().lower()
         if normalized_decision not in self.VALID_DECISIONS:
@@ -98,7 +99,13 @@ class GraphExecutionService:
                 raise ValueError("Actor is not assigned to this task")
 
             application = self._get_application(db, int(task["application_id"]))
+            node = self._get_node(db, int(task["graph_version_id"]), str(task["node_key"]))
             ts = _now_iso()
+
+            if normalized_decision == APPROVE:
+                missing = self._missing_required_inputs(node, reviewer_data)
+                if missing:
+                    raise ValueError(f"Missing required reviewer inputs: {', '.join(missing)}")
 
             if normalized_decision == REQUEST_CHANGES:
                 db.execute(
@@ -108,10 +115,11 @@ class GraphExecutionService:
                         acted_at = ?,
                         decision = ?,
                         comment_summary = ?,
+                        reviewer_data_json = ?,
                         return_to_task_id = NULL
                     WHERE id = ?
                     """,
-                    (ts, normalized_decision, comment, task_id),
+                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
                 )
                 db.execute(
                     """
@@ -131,10 +139,11 @@ class GraphExecutionService:
                 SET status = 'completed',
                     acted_at = ?,
                     decision = ?,
-                    comment_summary = ?
+                    comment_summary = ?,
+                    reviewer_data_json = ?
                 WHERE id = ?
                 """,
-                (ts, normalized_decision, comment, task_id),
+                (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
             )
             next_task_ids = self._advance_from_node(
                 db,
@@ -481,6 +490,22 @@ class GraphExecutionService:
         if op == "lte":
             return actual_number <= expected_number
         return False
+
+    def _missing_required_inputs(self, node: sqlite3.Row, reviewer_data: dict[str, Any] | None) -> list[str]:
+        raw_meta = node["metadata"] or "{}"
+        try:
+            meta = json.loads(raw_meta)
+        except json.JSONDecodeError:
+            return []
+        required_inputs = meta.get("required_inputs", [])
+        if not required_inputs or not isinstance(required_inputs, list):
+            return []
+        data = reviewer_data or {}
+        return [
+            inp["input_key"]
+            for inp in required_inputs
+            if isinstance(inp, dict) and inp.get("required", True) and inp.get("input_key") not in data
+        ]
 
     def _get_application(self, db: sqlite3.Connection, application_id: int) -> sqlite3.Row:
         row = db.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()

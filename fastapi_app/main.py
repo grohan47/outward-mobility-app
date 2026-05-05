@@ -452,6 +452,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         "opportunity_step_required_inputs": {"options_json", "display_order"},
         "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id"},
         "form_field_catalog": {"field_hint", "options_json"},
+        "application_workflow_tasks": {"reviewer_data_json"},
     }
     for table, columns in required_columns.items():
         if not columns.issubset(table_columns(conn, table)):
@@ -480,6 +481,8 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
 
     if "applications" in list_tables(conn) and "graph_version_id" not in table_columns(conn, "applications"):
         conn.execute("ALTER TABLE applications ADD COLUMN graph_version_id INTEGER REFERENCES graph_versions(id)")
+    if "application_workflow_tasks" in list_tables(conn) and "reviewer_data_json" not in table_columns(conn, "application_workflow_tasks"):
+        conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
     conn.commit()
 
 
@@ -748,6 +751,7 @@ CREATE TABLE application_workflow_tasks (
   decision TEXT,
   comment_summary TEXT,
   return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
+  reviewer_data_json TEXT DEFAULT '{}',
   created_at TEXT DEFAULT (datetime('now'))
 );
 

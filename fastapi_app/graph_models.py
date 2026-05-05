@@ -5,6 +5,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class NodeRequiredInput(BaseModel):
+    input_key: str
+    label: str
+    input_type: Literal["text", "number", "select", "checkbox"] = "text"
+    options: list[str] = Field(default_factory=list)
+    required: bool = True
+
+
+class NodeMetadata(BaseModel):
+    required_inputs: list[NodeRequiredInput] = Field(default_factory=list)
+
+    model_config = {"extra": "allow"}
+
+
 class GraphNodeModel(BaseModel):
     node_key: str
     node_type: Literal["start", "reviewer", "join_all", "join_any", "conditional", "end"]
@@ -12,7 +26,7 @@ class GraphNodeModel(BaseModel):
     reviewer_email: str | None = None
     visible_sections: list[str] = Field(default_factory=lambda: ["all"])
     allowed_actions: list[str] = Field(default_factory=lambda: ["approve", "request_changes", "comment"])
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: NodeMetadata = Field(default_factory=NodeMetadata)
 
 
 class GraphEdgeModel(BaseModel):

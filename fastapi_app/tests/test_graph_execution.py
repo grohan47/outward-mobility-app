@@ -315,6 +315,119 @@ class GraphExecutionServiceTests(unittest.TestCase):
 
         self.assertEqual(task_ids, [])
 
+    # --- required inputs ---
+
+    def _insert_node_with_metadata(
+        self,
+        key: str,
+        node_type: str,
+        reviewer_email: str | None = None,
+        metadata: dict | None = None,
+    ):
+        self.conn.execute(
+            """
+            INSERT INTO graph_nodes
+            (graph_version_id, node_key, node_type, display_name, reviewer_email,
+             allowed_actions, visible_sections, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.graph_version_id,
+                key,
+                node_type,
+                key.replace("_", " ").title(),
+                reviewer_email,
+                json.dumps(["approve", "request_changes", "comment"]),
+                json.dumps(["all"]),
+                json.dumps(metadata or {}),
+            ),
+        )
+
+    def test_approve_with_no_required_inputs_succeeds(self):
+        self._insert_node_with_metadata("start", "start")
+        self._insert_node_with_metadata("oge", "reviewer", "oge@plaksha.edu.in", metadata={})
+        self._insert_node_with_metadata("end", "end")
+        self._insert_edge("start", "oge")
+        self._insert_edge("oge", "end")
+
+        (task_id,) = self.service.instantiate(self.conn, 1, self.graph_version_id)
+        result = self.service.transition(self.conn, task_id, "approve", "oge@plaksha.edu.in")
+
+        self.assertTrue(result.success)
+
+    def test_approve_with_all_required_inputs_provided_succeeds(self):
+        metadata = {
+            "required_inputs": [
+                {"input_key": "gpa_check", "label": "GPA confirmed", "input_type": "checkbox", "required": True}
+            ]
+        }
+        self._insert_node_with_metadata("start", "start")
+        self._insert_node_with_metadata("oge", "reviewer", "oge@plaksha.edu.in", metadata=metadata)
+        self._insert_node_with_metadata("end", "end")
+        self._insert_edge("start", "oge")
+        self._insert_edge("oge", "end")
+
+        (task_id,) = self.service.instantiate(self.conn, 1, self.graph_version_id)
+        result = self.service.transition(
+            self.conn, task_id, "approve", "oge@plaksha.edu.in",
+            reviewer_data={"gpa_check": True},
+        )
+
+        self.assertTrue(result.success)
+        task = self._task(task_id)
+        stored = json.loads(task["reviewer_data_json"])
+        self.assertEqual(stored["gpa_check"], True)
+
+    def test_approve_missing_required_input_raises(self):
+        metadata = {
+            "required_inputs": [
+                {"input_key": "gpa_check", "label": "GPA confirmed", "input_type": "checkbox", "required": True},
+                {"input_key": "remarks", "label": "Remarks", "input_type": "text", "required": False},
+            ]
+        }
+        self._insert_node_with_metadata("start", "start")
+        self._insert_node_with_metadata("oge", "reviewer", "oge@plaksha.edu.in", metadata=metadata)
+        self._insert_node_with_metadata("end", "end")
+        self._insert_edge("start", "oge")
+        self._insert_edge("oge", "end")
+
+        (task_id,) = self.service.instantiate(self.conn, 1, self.graph_version_id)
+        with self.assertRaisesRegex(ValueError, "gpa_check"):
+            self.service.transition(
+                self.conn, task_id, "approve", "oge@plaksha.edu.in",
+                reviewer_data={"remarks": "Looks good"},
+            )
+
+    def test_approve_missing_optional_input_succeeds(self):
+        metadata = {
+            "required_inputs": [
+                {"input_key": "remarks", "label": "Remarks", "input_type": "text", "required": False}
+            ]
+        }
+        self._insert_node_with_metadata("start", "start")
+        self._insert_node_with_metadata("oge", "reviewer", "oge@plaksha.edu.in", metadata=metadata)
+        self._insert_node_with_metadata("end", "end")
+        self._insert_edge("start", "oge")
+        self._insert_edge("oge", "end")
+
+        (task_id,) = self.service.instantiate(self.conn, 1, self.graph_version_id)
+        result = self.service.transition(self.conn, task_id, "approve", "oge@plaksha.edu.in")
+
+        self.assertTrue(result.success)
+
+    def test_request_changes_stores_reviewer_data(self):
+        self._seed_linear_graph()
+        (task_id,) = self.service.instantiate(self.conn, 1, self.graph_version_id)
+        result = self.service.transition(
+            self.conn, task_id, "request_changes", "oge@plaksha.edu.in",
+            reviewer_data={"feedback": "Needs more documents"},
+        )
+
+        self.assertTrue(result.success)
+        task = self._task(task_id)
+        stored = json.loads(task["reviewer_data_json"])
+        self.assertEqual(stored["feedback"], "Needs more documents")
+
 
 if __name__ == "__main__":
     unittest.main()
