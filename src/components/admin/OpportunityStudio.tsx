@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import AIReviewPanel from "./AIReviewPanel";
 import StudioGraph from "./StudioGraph";
 import StudioInspector from "./StudioInspector";
 import type {
@@ -153,7 +152,7 @@ export default function OpportunityStudio({
   activeApplications,
 }: OpportunityStudioProps) {
   const router = useRouter();
-  const [studioMode, setStudioMode] = useState<"ai" | "manual">(mode === "create" ? "ai" : "manual");
+  const [studioStep, setStudioStep] = useState<"setup" | "pipeline">(mode === "create" ? "setup" : "pipeline");
   const [mobileTab, setMobileTab] = useState<"details" | "graph" | "inspector">("graph");
   const [opportunity, setOpportunity] = useState<OpportunityData>(initialOpportunity || blankOpportunity);
   const [selectedFields, setSelectedFields] = useState<string[]>(initialSelectedFields);
@@ -172,7 +171,6 @@ export default function OpportunityStudio({
   const [aiGenerating, setAiGenerating] = useState(false);
   const [draftOutput, setDraftOutput] = useState<DraftOutput | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [expandedAISection, setExpandedAISection] = useState<"summary" | "questions" | "warnings" | "confidence" | null>(null);
   const [answering, setAnswering] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -375,8 +373,7 @@ export default function OpportunityStudio({
         seats: Number(draft.opportunity.seats || prev.seats || 0),
       }));
       commitGraph(draft.graph.nodes, draft.graph.edges);
-      setExpandedAISection(draft.clarifying_questions.length > 0 ? "questions" : "summary");
-      setNotice(Date.now() - started > 5000 ? "Draft ready. PRISM took a little longer than usual." : "Draft ready for review.");
+      setNotice(Date.now() - started > 5000 ? "PRISM filled a draft. It took a little longer than usual." : "PRISM filled the draft. Review details, then continue to the pipeline.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to generate draft.");
     } finally {
@@ -386,8 +383,7 @@ export default function OpportunityStudio({
 
   async function submitAnswers() {
     setAnswering(true);
-    setNotice("Answers recorded in this draft.");
-    setExpandedAISection("summary");
+    setNotice("Answers recorded. Ask PRISM to fill again if you want it to revise the draft.");
     setAnswering(false);
   }
 
@@ -502,25 +498,53 @@ export default function OpportunityStudio({
         <div className="flex min-h-[64px] flex-wrap items-center gap-3 px-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="text-sm font-black text-slate-900">PRISM</span>
-            <input
-              className="min-w-[180px] flex-1 border-b border-transparent bg-transparent text-lg font-semibold text-slate-900 outline-none hover:border-slate-300 focus:border-primary"
-              value={opportunity.title}
-              onChange={(event) => setOpportunity({ ...opportunity, title: event.target.value })}
-              placeholder="Untitled opportunity"
-            />
+            {studioStep === "setup" ? (
+              <p className="min-w-[180px] flex-1 truncate text-lg font-semibold text-slate-900">{opportunity.title || "New opportunity"}</p>
+            ) : (
+              <input
+                className="min-w-[180px] flex-1 border-b border-transparent bg-transparent text-lg font-semibold text-slate-900 outline-none hover:border-slate-300 focus:border-primary"
+                value={opportunity.title}
+                onChange={(event) => setOpportunity({ ...opportunity, title: event.target.value })}
+                placeholder="Untitled opportunity"
+              />
+            )}
             <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{mode === "create" ? "Draft" : opportunity.status}</span>
-            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{studioMode === "ai" ? "AI" : "Manual"}</span>
+            <div className="hidden items-center gap-1 rounded-lg bg-slate-100 p-1 md:flex">
+              <button
+                type="button"
+                onClick={() => setStudioStep("setup")}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "setup" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+              >
+                1 Details
+              </button>
+              <button
+                type="button"
+                onClick={() => setStudioStep("pipeline")}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "pipeline" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+              >
+                2 Pipeline
+              </button>
+            </div>
           </div>
           <button type="button" onClick={saveDraftOnly} disabled={saving} className="min-h-[40px] rounded-lg px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">
             {saving ? "Saving..." : "Save Draft"}
           </button>
-          <button type="button" onClick={validateForPublish} disabled={validating} className="min-h-[40px] rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-            {validating ? "Validating..." : publishReady ? "Validated" : "Validate"}
-          </button>
-          <button type="button" onClick={() => void publishWorkflow()} disabled={publishing} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm disabled:opacity-50">
-            {publishing ? <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span> : <span className="material-symbols-outlined text-[18px]">publish</span>}
-            Publish Workflow
-          </button>
+          {studioStep === "pipeline" ? (
+            <>
+              <button type="button" onClick={validateForPublish} disabled={validating} className="min-h-[40px] rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                {validating ? "Validating..." : publishReady ? "Validated" : "Validate"}
+              </button>
+              <button type="button" onClick={() => void publishWorkflow()} disabled={publishing} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm disabled:opacity-50">
+                {publishing ? <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span> : <span className="material-symbols-outlined text-[18px]">publish</span>}
+                Publish Workflow
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={() => setStudioStep("pipeline")} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm">
+              Build Pipeline
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </button>
+          )}
         </div>
         {(error || notice) && (
           <div className={`border-t px-4 py-2 text-sm ${error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
@@ -529,31 +553,8 @@ export default function OpportunityStudio({
         )}
       </header>
 
-      {studioMode === "ai" && !draftOutput && mode === "create" && (
-        <div className="border-b border-slate-200 bg-white px-4 py-4">
-          <div className="mx-auto max-w-4xl">
-            <textarea
-              rows={3}
-              className="w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:border-primary"
-              value={aiPrompt}
-              onChange={(event) => setAiPrompt(event.target.value)}
-              placeholder="Paste the messy OGA email or policy note. PRISM will extract the opportunity and approval workflow."
-            />
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <p className="text-sm text-slate-500">{aiGenerating ? "Analyzing opportunity..." : "Start with AI, then tune the graph directly."}</p>
-              <button type="button" onClick={generateDraft} disabled={aiGenerating} className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white disabled:opacity-50">
-                {aiGenerating && <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>}
-                Generate Workflow
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="hidden flex-1 lg:grid lg:grid-cols-[220px_1fr_280px]">
-        <LeftRail
-          studioMode={studioMode}
-          setStudioMode={setStudioMode}
+      {studioStep === "setup" ? (
+        <SetupScreen
           opportunity={opportunity}
           setOpportunity={setOpportunity}
           selectedFields={selectedFields}
@@ -563,116 +564,110 @@ export default function OpportunityStudio({
           setCustomFields={setCustomFields}
           visibilityRules={visibilityRules}
           setVisibilityRules={setVisibilityRules}
-          validationWarnings={validationWarnings}
-          openQuestions={openQuestions.length}
-          publishReady={publishReady}
+          aiPrompt={aiPrompt}
+          setAiPrompt={setAiPrompt}
+          aiGenerating={aiGenerating}
+          draftOutput={draftOutput}
+          answers={answers}
+          answering={answering}
+          openQuestions={openQuestions}
+          onGenerateDraft={generateDraft}
+          onAnswerChange={(question, answer) => setAnswers((prev) => ({ ...prev, [question]: answer }))}
+          onSubmitAnswers={submitAnswers}
+          onContinue={() => setStudioStep("pipeline")}
         />
-        <main className="flex min-w-0 flex-col">
-          <AIReviewPanel
-            draft={draftOutput}
-            answers={answers}
-            mode={studioMode}
-            expandedSection={expandedAISection}
-            answering={answering}
-            onExpand={setExpandedAISection}
-            onAnswerChange={(question, answer) => setAnswers((prev) => ({ ...prev, [question]: answer }))}
-            onSubmitAnswers={submitAnswers}
-          />
-          <StudioGraph
-            nodes={graphNodes}
-            edges={graphEdges}
-            selectedNodeKey={selectedNodeKey}
-            selectedEdgeKey={selectedEdgeKey}
-            validationWarnings={validationWarnings}
-            onSelectNode={setSelectedNodeKey}
-            onSelectEdge={setSelectedEdgeKey}
-            onAddReviewer={addReviewer}
-            onAddParallel={addParallelGroup}
-            onAddCondition={addCondition}
-            onUndo={undo}
-            onRedo={redo}
-          />
-        </main>
-        <StudioInspector
-          node={selectedNode}
-          edge={selectedEdge}
-          availableFields={selectableFields}
-          validationWarnings={validationWarnings}
-          onClose={() => {
-            setSelectedNodeKey(null);
-            setSelectedEdgeKey(null);
-          }}
-          onUpdateNode={updateNode}
-          onUpdateEdge={updateEdge}
-          onRemoveNode={removeNode}
-        />
-      </div>
-
-      <div className="flex flex-1 flex-col lg:hidden">
-        {mobileTab === "details" && (
-          <LeftRail
-            studioMode={studioMode}
-            setStudioMode={setStudioMode}
+      ) : (
+        <div className="hidden flex-1 lg:grid lg:grid-cols-[220px_1fr_280px]">
+          <PipelineRail
             opportunity={opportunity}
-            setOpportunity={setOpportunity}
-            selectedFields={selectedFields}
-            setSelectedFields={setSelectedFields}
-            selectableFields={selectableFields}
-            customFields={customFields}
-            setCustomFields={setCustomFields}
-            visibilityRules={visibilityRules}
-            setVisibilityRules={setVisibilityRules}
             validationWarnings={validationWarnings}
             openQuestions={openQuestions.length}
             publishReady={publishReady}
-            mobile
+            onBack={() => setStudioStep("setup")}
           />
-        )}
-        {mobileTab === "graph" && (
-          <StudioGraph
-            mobile
-            nodes={graphNodes}
-            edges={graphEdges}
-            selectedNodeKey={selectedNodeKey}
-            selectedEdgeKey={selectedEdgeKey}
-            validationWarnings={validationWarnings}
-            onSelectNode={(key) => {
-              setSelectedNodeKey(key);
-              if (key) setMobileTab("inspector");
-            }}
-            onSelectEdge={setSelectedEdgeKey}
-            onAddReviewer={addReviewer}
-            onAddParallel={addParallelGroup}
-            onAddCondition={addCondition}
-            onUndo={undo}
-            onRedo={redo}
-          />
-        )}
-        {mobileTab === "inspector" && (
+          <main className="flex min-w-0 flex-col">
+            <StudioGraph
+              nodes={graphNodes}
+              edges={graphEdges}
+              selectedNodeKey={selectedNodeKey}
+              selectedEdgeKey={selectedEdgeKey}
+              validationWarnings={validationWarnings}
+              onSelectNode={setSelectedNodeKey}
+              onSelectEdge={setSelectedEdgeKey}
+              onAddReviewer={addReviewer}
+              onAddParallel={addParallelGroup}
+              onAddCondition={addCondition}
+              onUndo={undo}
+              onRedo={redo}
+            />
+          </main>
           <StudioInspector
             node={selectedNode}
             edge={selectedEdge}
             availableFields={selectableFields}
             validationWarnings={validationWarnings}
-            onClose={() => setMobileTab("graph")}
+            onClose={() => {
+              setSelectedNodeKey(null);
+              setSelectedEdgeKey(null);
+            }}
             onUpdateNode={updateNode}
             onUpdateEdge={updateEdge}
             onRemoveNode={removeNode}
           />
-        )}
-        <nav className="mt-auto grid grid-cols-3 border-t border-slate-200 bg-white">
-          {(["details", "graph", "inspector"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => setMobileTab(tab)}
-              className={`min-h-[56px] text-sm font-semibold capitalize ${mobileTab === tab ? "text-primary-dark" : "text-slate-500"}`}
-            >
-              {tab}
+        </div>
+      )}
+
+      {studioStep === "pipeline" && (
+        <div className="flex flex-1 flex-col lg:hidden">
+          {mobileTab === "graph" && (
+            <StudioGraph
+              mobile
+              nodes={graphNodes}
+              edges={graphEdges}
+              selectedNodeKey={selectedNodeKey}
+              selectedEdgeKey={selectedEdgeKey}
+              validationWarnings={validationWarnings}
+              onSelectNode={(key) => {
+                setSelectedNodeKey(key);
+                if (key) setMobileTab("inspector");
+              }}
+              onSelectEdge={setSelectedEdgeKey}
+              onAddReviewer={addReviewer}
+              onAddParallel={addParallelGroup}
+              onAddCondition={addCondition}
+              onUndo={undo}
+              onRedo={redo}
+            />
+          )}
+          {mobileTab === "inspector" && (
+            <StudioInspector
+              node={selectedNode}
+              edge={selectedEdge}
+              availableFields={selectableFields}
+              validationWarnings={validationWarnings}
+              onClose={() => setMobileTab("graph")}
+              onUpdateNode={updateNode}
+              onUpdateEdge={updateEdge}
+              onRemoveNode={removeNode}
+            />
+          )}
+          <nav className="mt-auto grid grid-cols-3 border-t border-slate-200 bg-white">
+            <button type="button" onClick={() => setStudioStep("setup")} className="min-h-[56px] text-sm font-semibold text-slate-500">
+              Details
             </button>
-          ))}
-        </nav>
-      </div>
+            {(["graph", "inspector"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setMobileTab(tab)}
+                className={`min-h-[56px] text-sm font-semibold capitalize ${mobileTab === tab ? "text-primary-dark" : "text-slate-500"}`}
+              >
+                {tab}
+              </button>
+            ))}
+          </nav>
+        </div>
+      )}
 
       {showImpactModal && (
         <ImpactModal
@@ -696,9 +691,7 @@ export default function OpportunityStudio({
   );
 }
 
-function LeftRail({
-  studioMode,
-  setStudioMode,
+function SetupScreen({
   opportunity,
   setOpportunity,
   selectedFields,
@@ -708,15 +701,20 @@ function LeftRail({
   setCustomFields,
   visibilityRules,
   setVisibilityRules,
-  validationWarnings,
+  aiPrompt,
+  setAiPrompt,
+  aiGenerating,
+  draftOutput,
+  answers,
+  answering,
   openQuestions,
-  publishReady,
-  mobile = false,
+  onGenerateDraft,
+  onAnswerChange,
+  onSubmitAnswers,
+  onContinue,
 }: {
-  studioMode: "ai" | "manual";
-  setStudioMode: (mode: "ai" | "manual") => void;
   opportunity: OpportunityData;
-  setOpportunity: (value: OpportunityData) => void;
+  setOpportunity: React.Dispatch<React.SetStateAction<OpportunityData>>;
   selectedFields: string[];
   setSelectedFields: React.Dispatch<React.SetStateAction<string[]>>;
   selectableFields: CatalogField[];
@@ -724,98 +722,276 @@ function LeftRail({
   setCustomFields: React.Dispatch<React.SetStateAction<CustomFieldDraft[]>>;
   visibilityRules: GeneratorVisibilityRule[];
   setVisibilityRules: React.Dispatch<React.SetStateAction<GeneratorVisibilityRule[]>>;
+  aiPrompt: string;
+  setAiPrompt: (value: string) => void;
+  aiGenerating: boolean;
+  draftOutput: DraftOutput | null;
+  answers: Record<string, string>;
+  answering: boolean;
+  openQuestions: string[];
+  onGenerateDraft: () => void;
+  onAnswerChange: (question: string, answer: string) => void;
+  onSubmitAnswers: () => void;
+  onContinue: () => void;
+}) {
+  return (
+    <main className="flex-1 overflow-y-auto bg-slate-50">
+      <div className="mx-auto grid max-w-7xl gap-3 p-3 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-4 border-b border-slate-100 pb-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Details</p>
+              <h2 className="mt-1 font-display text-xl font-semibold text-slate-900">Opportunity setup</h2>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <CompactInput label="Title" value={opportunity.title} onChange={(value) => setOpportunity((prev) => ({ ...prev, title: value }))} />
+            <CompactInput label="Code" value={opportunity.code} onChange={(value) => setOpportunity((prev) => ({ ...prev, code: value }))} />
+            <CompactInput label="Destination" value={opportunity.destination} onChange={(value) => setOpportunity((prev) => ({ ...prev, destination: value }))} />
+            <CompactInput label="Term" value={opportunity.term} onChange={(value) => setOpportunity((prev) => ({ ...prev, term: value }))} />
+            <CompactInput label="Deadline" type="date" value={opportunity.deadline} onChange={(value) => setOpportunity((prev) => ({ ...prev, deadline: value }))} />
+            <CompactInput label="Seats" type="number" value={String(opportunity.seats || "")} onChange={(value) => setOpportunity((prev) => ({ ...prev, seats: Number(value) || 0 }))} />
+          </div>
+
+          <div className="mt-4">
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Description</span>
+              <textarea
+                rows={3}
+                className="w-full resize-none rounded-lg border border-slate-200 p-3 text-sm leading-6 text-slate-700 outline-none focus:border-primary"
+                value={opportunity.description}
+                onChange={(event) => setOpportunity((prev) => ({ ...prev, description: event.target.value }))}
+                placeholder="Program summary, eligibility notes, funding context, and application expectations"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <RailSection title={`Applicant Fields (${selectedFields.length})`}>
+              <div className="flex max-h-[112px] flex-wrap gap-2 overflow-y-auto pr-1">
+                {selectableFields.map((field) => {
+                  const checked = selectedFields.includes(field.field_key);
+                  return (
+                    <button
+                      key={field.field_key}
+                      type="button"
+                      onClick={() => setSelectedFields((prev) => (checked ? prev.filter((key) => key !== field.field_key) : [...prev, field.field_key]))}
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                        checked ? "border-primary bg-primary text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+                      }`}
+                    >
+                      {field.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const fieldKey = `custom_${Date.now()}`;
+                  setCustomFields((prev) => [...prev, { field_key: fieldKey, label: "Custom Field", description: "", fieldHint: "", inputType: "text", optionsText: "" }]);
+                  setSelectedFields((prev) => [...prev, fieldKey]);
+                }}
+                className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark"
+              >
+                <span className="material-symbols-outlined text-[18px]">add</span>
+                Add Field
+              </button>
+            </RailSection>
+
+            <RailSection title="Eligibility">
+              <div className="space-y-2">
+                {visibilityRules.map((rule, index) => (
+                  <div key={`${rule.ruleType}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+                    <select
+                      className="min-h-[40px] rounded-lg border border-slate-200 bg-white p-2 text-sm"
+                      value={rule.ruleType}
+                      onChange={(event) =>
+                        setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleType: event.target.value as GeneratorVisibilityRule["ruleType"] } : item)))
+                      }
+                    >
+                      <option value="GROUP_EMAIL">Group</option>
+                      <option value="EMAIL">Email</option>
+                    </select>
+                    <input
+                      className="min-h-[40px] rounded-lg border border-slate-200 p-2 text-sm"
+                      value={rule.ruleValue}
+                      onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
+                      placeholder="ug2024@plaksha.edu.in"
+                    />
+                  </div>
+                ))}
+              </div>
+              <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleType: "EMAIL", ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
+                <span className="material-symbols-outlined text-[18px]">add</span>
+                Add Rule
+              </button>
+            </RailSection>
+          </div>
+        </section>
+
+        <AIAssistantPanel
+          aiPrompt={aiPrompt}
+          setAiPrompt={setAiPrompt}
+          aiGenerating={aiGenerating}
+          draftOutput={draftOutput}
+          answers={answers}
+          answering={answering}
+          openQuestions={openQuestions}
+          onGenerateDraft={onGenerateDraft}
+          onAnswerChange={onAnswerChange}
+          onSubmitAnswers={onSubmitAnswers}
+        />
+      </div>
+    </main>
+  );
+}
+
+function AIAssistantPanel({
+  aiPrompt,
+  setAiPrompt,
+  aiGenerating,
+  draftOutput,
+  answers,
+  answering,
+  openQuestions,
+  onGenerateDraft,
+  onAnswerChange,
+  onSubmitAnswers,
+}: {
+  aiPrompt: string;
+  setAiPrompt: (value: string) => void;
+  aiGenerating: boolean;
+  draftOutput: DraftOutput | null;
+  answers: Record<string, string>;
+  answering: boolean;
+  openQuestions: string[];
+  onGenerateDraft: () => void;
+  onAnswerChange: (question: string, answer: string) => void;
+  onSubmitAnswers: () => void;
+}) {
+  const allQuestionsAnswered = (draftOutput?.clarifying_questions || []).length > 0 && openQuestions.length === 0;
+
+  return (
+    <aside className="rounded-xl border border-slate-200 bg-white shadow-sm lg:sticky lg:top-4 lg:self-start">
+      <div className="border-b border-slate-100 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined rounded-full bg-primary/10 p-2 text-[20px] text-primary-dark">auto_awesome</span>
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">PRISM assistant</h2>
+            <p className="text-xs text-slate-500">Paste a brief, ask for missing details, or revise the draft.</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3 p-3">
+        {draftOutput && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-semibold text-emerald-800">Draft filled</p>
+              <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-emerald-700">{Math.round((draftOutput.confidence || 0) * 100)}%</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-emerald-800">
+              {draftOutput.graph.nodes.filter((node) => node.node_type === "reviewer").length} reviewer node
+              {draftOutput.graph.nodes.filter((node) => node.node_type === "reviewer").length === 1 ? "" : "s"} prepared.
+            </p>
+          </div>
+        )}
+
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <p className="mb-2 text-sm font-medium text-slate-700">What should PRISM help fill?</p>
+          <textarea
+            rows={5}
+            className="w-full resize-none rounded-lg border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-700 outline-none focus:border-primary"
+            value={aiPrompt}
+            onChange={(event) => setAiPrompt(event.target.value)}
+            placeholder="Paste the opportunity email, or ask: Fill in the missing basics and propose a reviewer pipeline."
+          />
+          <button
+            type="button"
+            onClick={onGenerateDraft}
+            disabled={aiGenerating}
+            className="mt-3 inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white disabled:opacity-50"
+          >
+            {aiGenerating ? <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span> : <span className="material-symbols-outlined text-[18px]">auto_fix_high</span>}
+            {aiGenerating ? "PRISM is filling..." : draftOutput ? "Ask PRISM to revise" : "Ask PRISM to fill this in"}
+          </button>
+        </div>
+
+        {draftOutput?.clarifying_questions && draftOutput.clarifying_questions.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Questions</p>
+              <span className={`rounded-full px-2 py-1 text-xs font-semibold ${openQuestions.length === 0 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                {openQuestions.length === 0 ? "All answered" : `${openQuestions.length} open`}
+              </span>
+            </div>
+            {draftOutput.clarifying_questions.slice(0, 2).map((question) => (
+              <label key={question} className="block rounded-lg border border-slate-200 bg-white p-3">
+                <span className="block text-sm leading-5 text-slate-700">PRISM: {question}</span>
+                <input
+                  className="mt-3 w-full border-0 border-b border-slate-300 bg-transparent px-0 py-2 text-sm outline-none focus:border-primary"
+                  value={answers[question] || ""}
+                  onChange={(event) => onAnswerChange(question, event.target.value)}
+                  placeholder="Your answer"
+                />
+              </label>
+            ))}
+            {draftOutput.clarifying_questions.length > 2 && <p className="text-xs text-slate-500">{draftOutput.clarifying_questions.length - 2} more questions hidden until these are answered.</p>}
+            <button
+              type="button"
+              onClick={onSubmitAnswers}
+              disabled={!allQuestionsAnswered || answering}
+              className="inline-flex min-h-[40px] w-full items-center justify-center rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 disabled:opacity-50"
+            >
+              {answering ? "Recording..." : "Record answers"}
+            </button>
+          </div>
+        )}
+
+        {draftOutput?.warnings && draftOutput.warnings.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-amber-800">Warnings</p>
+            <div className="space-y-1">
+              {draftOutput.warnings.slice(0, 3).map((warning) => (
+                <p key={warning} className="text-sm leading-5 text-amber-900">{warning}</p>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function PipelineRail({
+  opportunity,
+  validationWarnings,
+  openQuestions,
+  publishReady,
+  onBack,
+}: {
+  opportunity: OpportunityData;
   validationWarnings: string[];
   openQuestions: number;
   publishReady: boolean;
-  mobile?: boolean;
+  onBack: () => void;
 }) {
   return (
-    <aside className={`${mobile ? "" : "border-r"} overflow-y-auto border-slate-200 bg-white p-4`}>
-      <div className="mb-5 flex rounded-lg bg-slate-100 p-1">
-        {(["ai", "manual"] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => setStudioMode(mode)}
-            className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium ${studioMode === mode ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
-          >
-            {mode === "ai" ? "AI Generated" : "Manual"}
-          </button>
-        ))}
-      </div>
+    <aside className="overflow-y-auto border-r border-slate-200 bg-white p-4">
+      <button type="button" onClick={onBack} className="mb-5 inline-flex min-h-[40px] items-center gap-2 rounded-lg px-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">
+        <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+        Details
+      </button>
 
-      <RailSection title="Metadata">
-        <CompactInput label="Code" value={opportunity.code} onChange={(value) => setOpportunity({ ...opportunity, code: value })} />
-        <CompactInput label="Destination" value={opportunity.destination} onChange={(value) => setOpportunity({ ...opportunity, destination: value })} />
-        <CompactInput label="Term" value={opportunity.term} onChange={(value) => setOpportunity({ ...opportunity, term: value })} />
-        <CompactInput label="Deadline" type="date" value={opportunity.deadline} onChange={(value) => setOpportunity({ ...opportunity, deadline: value })} />
-        <CompactInput label="Seats" type="number" value={String(opportunity.seats || "")} onChange={(value) => setOpportunity({ ...opportunity, seats: Number(value) || 0 })} />
-        <label className="block">
-          <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Description</span>
-          <textarea
-            rows={3}
-            className="w-full rounded-lg border border-slate-200 p-2 text-sm"
-            value={opportunity.description}
-            onChange={(event) => setOpportunity({ ...opportunity, description: event.target.value })}
-          />
-        </label>
-      </RailSection>
-
-      <RailSection title="Fields">
-        <div className="flex flex-wrap gap-2">
-          {selectableFields.slice(0, 12).map((field) => {
-            const checked = selectedFields.includes(field.field_key);
-            return (
-              <button
-                key={field.field_key}
-                type="button"
-                onClick={() => setSelectedFields((prev) => (checked ? prev.filter((key) => key !== field.field_key) : [...prev, field.field_key]))}
-                className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
-                  checked ? "border-primary bg-primary text-white" : "border-slate-300 bg-white text-slate-600"
-                }`}
-              >
-                {field.label}
-              </button>
-            );
-          })}
+      <RailSection title="Setup">
+        <div className="space-y-2 text-sm">
+          <p className="font-semibold leading-5 text-slate-800">{opportunity.title || "Untitled opportunity"}</p>
+          <p className="text-slate-500">{opportunity.destination || "No destination"}</p>
+          <p className="text-slate-500">{opportunity.term || "No term"}</p>
+          <p className="text-slate-500">{opportunity.deadline || "No deadline"}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            const fieldKey = `custom_${Date.now()}`;
-            setCustomFields([...customFields, { field_key: fieldKey, label: "Custom Field", description: "", fieldHint: "", inputType: "text", optionsText: "" }]);
-            setSelectedFields((prev) => [...prev, fieldKey]);
-          }}
-          className="mt-3 text-xs font-semibold text-primary-dark"
-        >
-          + Add Field
-        </button>
-      </RailSection>
-
-      <RailSection title="Eligibility">
-        {visibilityRules.map((rule, index) => (
-          <div key={`${rule.ruleType}-${index}`} className="mb-2 grid grid-cols-[84px_1fr] gap-2">
-            <select
-              className="rounded-lg border border-slate-200 bg-white p-2 text-xs"
-              value={rule.ruleType}
-              onChange={(event) =>
-                setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleType: event.target.value as GeneratorVisibilityRule["ruleType"] } : item)))
-              }
-            >
-              <option value="GROUP_EMAIL">Group</option>
-              <option value="EMAIL">Email</option>
-            </select>
-            <input
-              className="rounded-lg border border-slate-200 p-2 text-xs"
-              value={rule.ruleValue}
-              onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
-              placeholder="ug2024@plaksha.edu.in"
-            />
-          </div>
-        ))}
-        <button type="button" onClick={() => setVisibilityRules([...visibilityRules, { ruleType: "EMAIL", ruleValue: "" }])} className="text-xs font-semibold text-primary-dark">
-          + Add Rule
-        </button>
       </RailSection>
 
       <RailSection title="Warnings">
@@ -833,9 +1009,9 @@ function LeftRail({
 
 function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mb-6">
-      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</h3>
-      <div className="space-y-3">{children}</div>
+    <section className="mb-4">
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</h3>
+      <div className="space-y-2">{children}</div>
     </section>
   );
 }
