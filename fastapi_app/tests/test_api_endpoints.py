@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ from fastapi_app.main import (
     ADMIN_ROLE,
     ApplicationCreateBody,
     CANONICAL_TABLES,
+    ClarificationAnswerBody,
     CommentCreateBody,
     CustomFormFieldPayload,
     DecisionBody,
@@ -16,16 +18,21 @@ from fastapi_app.main import (
     OpportunityPatchBody,
     SessionUser,
     StudentResponseBody,
+    TaskDecideBody,
     WorkflowRequiredInput,
     WorkflowStepPayload,
     admin_applications,
+    admin_answer_workflow_draft_clarification,
     admin_create_opportunity,
     admin_generate_opportunity_with_ai,
     admin_delete_opportunity,
     admin_get_opportunity,
+    admin_get_opportunity_graph,
+    admin_get_workflow_draft,
     admin_list_opportunities,
     admin_patch_application,
     admin_patch_opportunity,
+    admin_publish_workflow_draft,
     admin_summary,
     admin_visibility_audit,
     admin_visibility_audit_single,
@@ -56,11 +63,15 @@ from fastapi_app.main import (
     post_comment,
     reject_application,
     request_changes,
+    reviewer_decide_task,
     reviewer_inbox,
     submit_student_response,
     users_me,
     AdminApplicationPatchBody,
 )
+from fastapi_app.graph_execution import GraphExecutionService
+from fastapi_app.graph_publishing import GraphPublishingService
+from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, GraphNodeModel, GraphEdgeModel
 
 
 class ApiEndpointTests(unittest.TestCase):
@@ -204,6 +215,11 @@ class ApiEndpointTests(unittest.TestCase):
             ("POST", "/api/applications/{application_id}/comments"),
             ("GET", "/api/my/applications"),
             ("GET", "/api/reviewer/inbox"),
+            ("POST", "/api/reviewer/tasks/{task_id}/decide"),
+            ("GET", "/api/admin/workflow-drafts/{draft_id}"),
+            ("POST", "/api/admin/workflow-drafts/{draft_id}/answer"),
+            ("POST", "/api/admin/workflow-drafts/{draft_id}/publish"),
+            ("GET", "/api/admin/opportunities/{opportunity_id}/graph"),
             ("GET", "/api/admin/dashboard/summary"),
             ("GET", "/api/admin/applications"),
             ("PATCH", "/api/admin/applications/{application_id}"),
@@ -326,21 +342,21 @@ class ApiEndpointTests(unittest.TestCase):
         self.assertEqual(deleted_lookup.exception.status_code, 404)
 
     def test_admin_ai_opportunity_generation(self):
+        # Without a real AI provider, the service returns a deterministic fallback draft.
         admin_session = self.session_for("oge@plaksha.edu.in")
         payload = OpportunityAIGenerateBody(
             prompt="Create an AI and Robotics summer opportunity in Singapore with interview round and scholarship support."
         )
         response = admin_generate_opportunity_with_ai(payload, session=admin_session)
 
-        self.assertTrue(response.get("is_dummy_ai"))
+        self.assertIn("draft_id", response)
         self.assertIn("draft", response)
         draft = response["draft"]
-        self.assertIn("opportunity", draft)
-        self.assertIn("workflowSteps", draft)
-        self.assertIn("formFields", draft)
-        self.assertGreaterEqual(len(draft["workflowSteps"]), 4)
-        self.assertIn("custom_funding_plan", draft["formFields"])
-        self.assertTrue(any(step["name"] == "Panel Interview" for step in draft["workflowSteps"]))
+        self.assertIn("id", draft)
+        self.assertIn("draft_output", draft)
+        self.assertIn("publish_ready", draft)
+        # Fallback draft is never publish_ready (is_fallback=True).
+        self.assertEqual(draft["publish_ready"], 0)
 
     def test_application_lifecycle_and_access_controls(self):
         opportunity_id = self.create_test_opportunity("APP")
@@ -473,6 +489,389 @@ class ApiEndpointTests(unittest.TestCase):
             self.assertTrue(deleted_by_admin.get("ok"))
         finally:
             self.safe_delete_opportunity(opportunity_id)
+
+
+class GraphPublishingRouteTests(unittest.TestCase):
+    """Integration tests for the 8 Chunk 6 graph routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        ensure_db_initialized()
+
+    def session_for(self, email: str) -> SessionUser:
+        with db_conn() as conn:
+            row = get_user_role(conn, email.strip().lower())
+        self.assertIsNotNone(row, f"Missing test user for {email}")
+        return SessionUser(
+            email=row["email"],
+            name=row["full_name"],
+            role=row["role_code"],
+            roleDisplayName=row["role_display_name"],
+            userId=int(row["id"]),
+        )
+
+    def _seed_publish_ready_draft(self) -> int:
+        """Insert a publish_ready=1 draft directly, bypassing the AI call."""
+        output = AIWorkflowDraftOutput(
+            opportunity=__import__("fastapi_app.graph_models", fromlist=["OpportunityDraftModel"]).OpportunityDraftModel(
+                title="Test Graph Opportunity",
+                description="Automated test opportunity for graph publishing.",
+                host_institution="Test University",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="review",
+                        node_type="reviewer",
+                        display_name="OGE Review",
+                        reviewer_email="oge@plaksha.edu.in",
+                    ),
+                    GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="review"),
+                    GraphEdgeModel(from_node_key="review", to_node_key="end"),
+                ],
+            ),
+            clarifying_questions=[],
+            confidence=0.9,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'ready', ?, '[]', '{}', '[]', 0.9, 1, ?, ?, ?)
+                """,
+                (output.model_dump_json(), "oge@plaksha.edu.in", ts, ts),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+            return draft_id
+
+    # --- ai-generate ---
+
+    def test_ai_generate_returns_draft_id(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_generate_opportunity_with_ai(
+            OpportunityAIGenerateBody(prompt="Singapore AI exchange for CS students, funded, summer 2026."),
+            session=admin,
+        )
+        self.assertIn("draft_id", resp)
+        self.assertIn("draft", resp)
+        self.assertIsInstance(resp["draft_id"], int)
+        self.assertEqual(resp["draft"]["publish_ready"], 0)  # fallback in test env
+
+    # --- GET workflow-drafts/{id} ---
+
+    def test_get_draft_returns_row(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_get_workflow_draft(draft_id, session=admin)
+        self.assertIn("draft", resp)
+        self.assertEqual(resp["draft"]["id"], draft_id)
+        self.assertEqual(resp["draft"]["publish_ready"], 1)
+
+    def test_get_draft_404_for_missing(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+        with self.assertRaises(HTTPException) as ctx:
+            admin_get_workflow_draft(999999, session=admin)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    # --- POST workflow-drafts/{id}/answer ---
+
+    def test_answer_clarification_merges_answers(self):
+        # Seed a draft with one open clarification question.
+        output = AIWorkflowDraftOutput(
+            opportunity=__import__("fastapi_app.graph_models", fromlist=["OpportunityDraftModel"]).OpportunityDraftModel(
+                title="Clarification Test Opportunity",
+                description="Needs clarification.",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start"),
+                    GraphNodeModel(node_key="review", node_type="reviewer", reviewer_email="oge@plaksha.edu.in"),
+                    GraphNodeModel(node_key="end", node_type="end"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="review"),
+                    GraphEdgeModel(from_node_key="review", to_node_key="end"),
+                ],
+            ),
+            clarifying_questions=["Who is the final authority?"],
+            confidence=0.6,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'pending', ?, ?, '{}', '[]', 0.6, 0, ?, ?, ?)
+                """,
+                (
+                    output.model_dump_json(),
+                    json.dumps(output.clarifying_questions),
+                    "oge@plaksha.edu.in",
+                    ts,
+                    ts,
+                ),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_answer_workflow_draft_clarification(
+            draft_id,
+            ClarificationAnswerBody(answers={"Who is the final authority?": "Dean of Students"}),
+            session=admin,
+        )
+        self.assertIn("draft", resp)
+        draft = resp["draft"]
+        self.assertEqual(draft["publish_ready"], 1)
+        answers = json.loads(draft["admin_answers"])
+        self.assertEqual(answers["Who is the final authority?"], "Dean of Students")
+
+    def test_answer_clarification_404_for_missing(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+        with self.assertRaises(HTTPException) as ctx:
+            admin_answer_workflow_draft_clarification(
+                999999,
+                ClarificationAnswerBody(answers={"q": "a"}),
+                session=admin,
+            )
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    # --- POST workflow-drafts/{id}/publish ---
+
+    def test_publish_creates_graph_version_and_opportunity(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_publish_workflow_draft(draft_id, session=admin)
+        self.assertIn("graph_version_id", resp)
+        gv_id = resp["graph_version_id"]
+
+        with db_conn() as conn:
+            gv = conn.execute("SELECT * FROM graph_versions WHERE id = ?", (gv_id,)).fetchone()
+            nodes = conn.execute("SELECT * FROM graph_nodes WHERE graph_version_id = ?", (gv_id,)).fetchall()
+            edges = conn.execute("SELECT * FROM graph_edges WHERE graph_version_id = ?", (gv_id,)).fetchall()
+            draft = conn.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+
+        self.assertEqual(gv["status"], "active")
+        self.assertEqual(len(nodes), 3)  # start, review, end
+        self.assertEqual(len(edges), 2)
+        self.assertEqual(draft["status"], "published")
+        self.assertIsNotNone(draft["opportunity_id"])
+
+    def test_publish_rejected_for_fallback_draft(self):
+        # ai-generate in test env produces a fallback draft (publish_ready=0).
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_generate_opportunity_with_ai(
+            OpportunityAIGenerateBody(prompt="Singapore AI exchange for CS students."),
+            session=admin,
+        )
+        draft_id = resp["draft_id"]
+        with self.assertRaises(HTTPException) as ctx:
+            admin_publish_workflow_draft(draft_id, session=admin)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    # --- GET admin/opportunities/{id}/graph ---
+
+    def test_get_opportunity_graph_returns_nodes_and_edges(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        pub = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = pub["graph_version_id"]
+
+        with db_conn() as conn:
+            opp_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?", (gv_id,)
+            ).fetchone()["opportunity_id"]
+
+        resp = admin_get_opportunity_graph(opp_id, session=admin)
+        self.assertIsNotNone(resp["graph_version"])
+        self.assertEqual(len(resp["nodes"]), 3)
+        self.assertEqual(len(resp["edges"]), 2)
+
+    def test_get_graph_returns_empty_for_no_active_version(self):
+        # Create a legacy opportunity with no graph version.
+        ts = datetime.now(timezone.utc).strftime("%H%M%S%f")
+        with db_conn() as conn:
+            cursor = conn.execute(
+                "INSERT INTO opportunities (code, title, status, created_at, updated_at) VALUES (?, ?, 'published', ?, ?)",
+                (f"NOGRAPH_{ts}", "No Graph Opportunity", datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
+            )
+            opp_id = int(cursor.lastrowid)
+            conn.commit()
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_get_opportunity_graph(opp_id, session=admin)
+        self.assertIsNone(resp["graph_version"])
+        self.assertEqual(resp["nodes"], [])
+
+    # --- POST reviewer/tasks/{id}/decide ---
+
+    def test_reviewer_decide_approve_advances_graph(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        pub = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = pub["graph_version_id"]
+
+        with db_conn() as conn:
+            opp_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?", (gv_id,)
+            ).fetchone()["opportunity_id"]
+            conn.execute(
+                "INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', ?, ?)",
+                (opp_id, "rohan@plaksha.edu.in", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+        student = self.session_for("rohan@plaksha.edu.in")
+        body = ApplicationCreateBody(
+            opportunityId=opp_id,
+            submittedData={"full_name": "Rohan", "email": "rohan@plaksha.edu.in"},
+        )
+        app_resp = create_application(body, session=student)
+        application_id = int(app_resp["application"]["id"])
+
+        with db_conn() as conn:
+            task = conn.execute(
+                "SELECT id FROM application_workflow_tasks WHERE application_id = ? AND status = 'active'",
+                (application_id,),
+            ).fetchone()
+        self.assertIsNotNone(task)
+        task_id = int(task["id"])
+
+        reviewer = self.session_for("oge@plaksha.edu.in")
+        result = reviewer_decide_task(
+            task_id,
+            TaskDecideBody(decision="approve", comment="Looks good"),
+            session=reviewer,
+        )
+        self.assertTrue(result["success"])
+
+        with db_conn() as conn:
+            app_row = conn.execute("SELECT final_status FROM applications WHERE id = ?", (application_id,)).fetchone()
+        self.assertEqual(app_row["final_status"], "APPROVED")
+
+    def test_reviewer_decide_wrong_actor_rejected(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        pub = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = pub["graph_version_id"]
+
+        with db_conn() as conn:
+            opp_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?", (gv_id,)
+            ).fetchone()["opportunity_id"]
+            conn.execute(
+                "INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', ?, ?)",
+                (opp_id, "rohan@plaksha.edu.in", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+        student = self.session_for("rohan@plaksha.edu.in")
+        body = ApplicationCreateBody(
+            opportunityId=opp_id,
+            submittedData={"full_name": "Rohan", "email": "rohan@plaksha.edu.in"},
+        )
+        app_resp = create_application(body, session=student)
+        application_id = int(app_resp["application"]["id"])
+
+        with db_conn() as conn:
+            task = conn.execute(
+                "SELECT id FROM application_workflow_tasks WHERE application_id = ? AND status = 'active'",
+                (application_id,),
+            ).fetchone()
+        task_id = int(task["id"])
+
+        # vc@plaksha.edu.in is not the assigned reviewer (oge is).
+        wrong_reviewer = self.session_for("vc@plaksha.edu.in")
+        with self.assertRaises(HTTPException) as ctx:
+            reviewer_decide_task(
+                task_id,
+                TaskDecideBody(decision="approve"),
+                session=wrong_reviewer,
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    # --- reviewer inbox includes graph tasks ---
+
+    def test_reviewer_inbox_includes_graph_tasks(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        pub = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = pub["graph_version_id"]
+
+        with db_conn() as conn:
+            opp_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?", (gv_id,)
+            ).fetchone()["opportunity_id"]
+            conn.execute(
+                "INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', ?, ?)",
+                (opp_id, "rohan@plaksha.edu.in", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+        student = self.session_for("rohan@plaksha.edu.in")
+        create_application(
+            ApplicationCreateBody(
+                opportunityId=opp_id,
+                submittedData={"full_name": "Rohan", "email": "rohan@plaksha.edu.in"},
+            ),
+            session=student,
+        )
+
+        inbox = reviewer_inbox(session=self.session_for("oge@plaksha.edu.in"))
+        graph_items = [i for i in inbox["items"] if i.get("source") == "graph"]
+        self.assertGreater(len(graph_items), 0)
+
+    # --- graph application submit ---
+
+    def test_graph_application_submit_instantiates_tasks(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        pub = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = pub["graph_version_id"]
+
+        with db_conn() as conn:
+            opp_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?", (gv_id,)
+            ).fetchone()["opportunity_id"]
+            conn.execute(
+                "INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', ?, ?)",
+                (opp_id, "rohan@plaksha.edu.in", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+        student = self.session_for("rohan@plaksha.edu.in")
+        resp = create_application(
+            ApplicationCreateBody(
+                opportunityId=opp_id,
+                submittedData={"full_name": "Rohan"},
+            ),
+            session=student,
+        )
+        application_id = int(resp["application"]["id"])
+
+        with db_conn() as conn:
+            tasks = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ?",
+                (application_id,),
+            ).fetchall()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["status"], "active")
+        self.assertEqual(tasks[0]["node_key"], "review")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,10 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from fastapi_app.ai_workflow import AIWorkflowDraftService
+from fastapi_app.graph_execution import GraphExecutionService
+from fastapi_app.graph_publishing import GraphPublishingService
+
 DB_PATH = Path(__file__).resolve().parent.parent / "server" / "db" / "prism.sqlite"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 SESSION_COOKIE = "prism_session"
@@ -1379,6 +1383,16 @@ class OpportunityCreatePayload(BaseModel):
 
 class OpportunityAIGenerateBody(BaseModel):
     prompt: str = Field(min_length=10, max_length=4000)
+
+
+class ClarificationAnswerBody(BaseModel):
+    answers: dict[str, Any]
+
+
+class TaskDecideBody(BaseModel):
+    decision: str
+    comment: str | None = None
+    reviewer_data: dict[str, Any] | None = None
 
 
 class VisibilityRulePayload(BaseModel):
@@ -2952,7 +2966,85 @@ def admin_generate_opportunity_with_ai(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        return build_ai_opportunity_draft(conn, body.prompt)
+        draft = AIWorkflowDraftService().generate_draft(conn, session.email, body.prompt)
+    return {"draft_id": draft["id"], "draft": draft}
+
+
+@app.get("/api/admin/workflow-drafts/{draft_id}")
+def admin_get_workflow_draft(
+    draft_id: int,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return {"draft": dict(row)}
+
+
+@app.post("/api/admin/workflow-drafts/{draft_id}/answer")
+def admin_answer_workflow_draft_clarification(
+    draft_id: int,
+    body: ClarificationAnswerBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        try:
+            updated = AIWorkflowDraftService().answer_clarification(conn, draft_id, body.answers)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+    return {"draft": updated}
+
+
+@app.post("/api/admin/workflow-drafts/{draft_id}/publish")
+def admin_publish_workflow_draft(
+    draft_id: int,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        try:
+            graph_version_id = GraphPublishingService().publish(conn, draft_id, session.email)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return {"graph_version_id": graph_version_id}
+
+
+@app.post("/api/reviewer/tasks/{task_id}/decide")
+def reviewer_decide_task(
+    task_id: int,
+    body: TaskDecideBody,
+    session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        try:
+            result = GraphExecutionService().transition(
+                conn,
+                task_id,
+                body.decision,
+                session.email,
+                comment=body.comment,
+                reviewer_data=body.reviewer_data,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return result.model_dump()
+
+
+@app.get("/api/admin/opportunities/{opportunity_id}/graph")
+def admin_get_opportunity_graph(
+    opportunity_id: int,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        opp = conn.execute("SELECT id FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        if not opp:
+            raise HTTPException(status_code=404, detail="Opportunity not found")
+        return GraphPublishingService().get_graph(conn, opportunity_id)
 
 
 @app.post("/api/admin/opportunities", status_code=201)
@@ -3184,17 +3276,31 @@ def create_application(body: ApplicationCreateBody, session: SessionUser = Depen
         if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, body.opportunityId):
             raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
 
-        first_step = conn.execute(
+        # Check whether this opportunity has an active graph version.
+        active_graph = conn.execute(
             """
-            SELECT * FROM opportunity_pipeline_steps
-            WHERE opportunity_id = ?
-            ORDER BY step_order ASC
+            SELECT id FROM graph_versions
+            WHERE opportunity_id = ? AND status = 'active'
+            ORDER BY version DESC
             LIMIT 1
             """,
             (body.opportunityId,),
         ).fetchone()
-        if not first_step:
-            raise HTTPException(status_code=400, detail="Opportunity has no configured workflow")
+
+        # For legacy opportunities (no graph), require at least one pipeline step.
+        first_step = None
+        if not active_graph:
+            first_step = conn.execute(
+                """
+                SELECT * FROM opportunity_pipeline_steps
+                WHERE opportunity_id = ?
+                ORDER BY step_order ASC
+                LIMIT 1
+                """,
+                (body.opportunityId,),
+            ).fetchone()
+            if not first_step:
+                raise HTTPException(status_code=400, detail="Opportunity has no configured workflow")
 
         ts = now_iso()
         submitted_data = body.submittedData or {}
@@ -3226,24 +3332,44 @@ def create_application(body: ApplicationCreateBody, session: SessionUser = Depen
                 detail=f"Missing required application fields: {', '.join(missing_fields)}",
             )
 
-        cursor = conn.execute(
-            """
-            INSERT INTO applications
-            (student_profile_id, opportunity_id, current_step_order, current_stage_label, final_status, submitted_data_json, submitted_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
-            """,
-            (
-                profile_id,
-                body.opportunityId,
-                first_step["step_order"],
-                first_step["step_name"],
-                json.dumps(submitted_data),
-                ts,
-                ts,
-                ts,
-            ),
-        )
-        application_id = int(cursor.lastrowid)
+        if active_graph:
+            graph_version_id = int(active_graph["id"])
+            cursor = conn.execute(
+                """
+                INSERT INTO applications
+                (student_profile_id, opportunity_id, current_step_order, current_stage_label,
+                 graph_version_id, final_status, submitted_data_json, submitted_at, created_at, updated_at)
+                VALUES (?, ?, 0, 'Submitted', ?, NULL, ?, ?, ?, ?)
+                """,
+                (profile_id, body.opportunityId, graph_version_id, json.dumps(submitted_data), ts, ts, ts),
+            )
+            application_id = int(cursor.lastrowid)
+            try:
+                GraphExecutionService().instantiate(conn, application_id, graph_version_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            stage_label = "Graph Workflow"
+        else:
+            cursor = conn.execute(
+                """
+                INSERT INTO applications
+                (student_profile_id, opportunity_id, current_step_order, current_stage_label,
+                 final_status, submitted_data_json, submitted_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    body.opportunityId,
+                    first_step["step_order"],
+                    first_step["step_name"],
+                    json.dumps(submitted_data),
+                    ts,
+                    ts,
+                    ts,
+                ),
+            )
+            application_id = int(cursor.lastrowid)
+            stage_label = first_step["step_name"]
 
         conn.execute(
             """
@@ -3252,7 +3378,7 @@ def create_application(body: ApplicationCreateBody, session: SessionUser = Depen
             """,
             (
                 application_id,
-                json.dumps({"current_stage": first_step["step_name"]}),
+                json.dumps({"current_stage": stage_label}),
                 session.email,
                 ts,
             ),
@@ -3738,7 +3864,11 @@ def my_applications(session: SessionUser = Depends(require_roles(STUDENT_ROLE)))
 def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES))) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        rows = conn.execute(
+        # Graph-backed tasks (graph workflow opportunities).
+        graph_tasks = GraphExecutionService().get_inbox(conn, session.email)
+
+        # Legacy pipeline tasks (ordered-step opportunities without a graph version).
+        legacy_rows = conn.execute(
             """
             SELECT a.*, o.title AS opportunity_title, sp.student_id, u.full_name AS student_name,
                    s.reviewer_email, s.sla_hours
@@ -3750,6 +3880,7 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
               ON s.opportunity_id = a.opportunity_id
              AND s.step_order = a.current_step_order
             WHERE a.final_status IS NULL
+              AND a.graph_version_id IS NULL
               AND LOWER(s.reviewer_email) = LOWER(?)
             ORDER BY a.updated_at DESC
             """,
@@ -3761,9 +3892,27 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
             (session.email,),
         ).fetchone()["c"]
 
-    items = []
+    items: list[dict[str, Any]] = []
     due_soon = 0
-    for row in rows:
+
+    for task in graph_tasks:
+        items.append(
+            {
+                "id": task.application_id,
+                "task_id": task.task_id,
+                "student_name": task.student_name,
+                "opportunity_title": task.opportunity_title,
+                "current_stage": task.display_name,
+                "node_key": task.node_key,
+                "allowed_actions": task.allowed_actions,
+                "visible_sections": task.visible_sections,
+                "updated_at": task.assigned_at,
+                "sla_deadline": None,
+                "source": "graph",
+            }
+        )
+
+    for row in legacy_rows:
         updated_at = parse_iso(row["updated_at"])
         sla_deadline = None
         if updated_at:
@@ -3782,6 +3931,7 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
                 "current_stage": row["current_stage_label"],
                 "updated_at": row["updated_at"],
                 "sla_deadline": sla_deadline,
+                "source": "legacy",
             }
         )
 

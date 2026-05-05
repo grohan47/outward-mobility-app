@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from datetime import datetime, timezone
+from typing import Any
+
+from fastapi_app.graph_models import AIWorkflowDraftOutput
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", text.strip().lower()).strip("_") or "opp"
+
+
+class GraphPublishingService:
+    """
+    Publishes a validated workflow_draft into an active graph version.
+
+    Publish boundary:
+      draft.publish_ready must be 1 (set by AIWorkflowDraftService).
+      Any draft that has validation errors, open clarifying questions,
+      or is_fallback=True will be rejected here.
+
+    On publish:
+      1. If draft.opportunity_id is NULL, create an opportunity row from
+         draft_output.opportunity and link it.
+      2. Increment the version counter for that opportunity.
+      3. Write graph_versions (status='active'), graph_nodes, graph_edges.
+      4. Mark draft status='published'.
+      5. Return graph_version_id.
+    """
+
+    def publish(self, db: sqlite3.Connection, draft_id: int, admin_email: str) -> int:
+        draft = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        if not draft:
+            raise ValueError(f"Draft {draft_id} not found")
+        if not draft["publish_ready"]:
+            raise ValueError("Draft is not publish_ready — resolve validation errors and open questions first")
+
+        raw = draft["draft_output"]
+        if not raw:
+            raise ValueError("Draft has no output to publish")
+        parsed = AIWorkflowDraftOutput.model_validate_json(raw)
+
+        with db:
+            opportunity_id = draft["opportunity_id"]
+            if not opportunity_id:
+                opportunity_id = self._create_opportunity(db, parsed, admin_email)
+                db.execute(
+                    "UPDATE workflow_drafts SET opportunity_id = ? WHERE id = ?",
+                    (opportunity_id, draft_id),
+                )
+
+            version = self._next_version(db, opportunity_id)
+            ts = _now_iso()
+
+            cursor = db.execute(
+                """
+                INSERT INTO graph_versions
+                  (opportunity_id, version, status, published_by_email, published_at, created_at)
+                VALUES (?, ?, 'active', ?, ?, ?)
+                """,
+                (opportunity_id, version, admin_email, ts, ts),
+            )
+            graph_version_id = int(cursor.lastrowid)
+
+            for node in parsed.graph.nodes:
+                db.execute(
+                    """
+                    INSERT INTO graph_nodes
+                      (graph_version_id, node_key, node_type, display_name, reviewer_email,
+                       visible_sections, allowed_actions, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        graph_version_id,
+                        node.node_key,
+                        node.node_type,
+                        node.display_name,
+                        node.reviewer_email,
+                        json.dumps(node.visible_sections),
+                        json.dumps(node.allowed_actions),
+                        node.metadata.model_dump_json(),
+                    ),
+                )
+
+            for edge in parsed.graph.edges:
+                db.execute(
+                    """
+                    INSERT INTO graph_edges
+                      (graph_version_id, from_node_key, to_node_key, condition_json, label)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        graph_version_id,
+                        edge.from_node_key,
+                        edge.to_node_key,
+                        json.dumps(edge.condition_json) if edge.condition_json else None,
+                        edge.label,
+                    ),
+                )
+
+            db.execute(
+                "UPDATE workflow_drafts SET status = 'published', updated_at = ? WHERE id = ?",
+                (ts, draft_id),
+            )
+
+        return graph_version_id
+
+    def _create_opportunity(
+        self, db: sqlite3.Connection, parsed: AIWorkflowDraftOutput, admin_email: str
+    ) -> int:
+        opp = parsed.opportunity
+        ts = _now_iso()
+        ts_label = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        code_seed = _slugify(opp.title).upper()[:20] or "AI_OPP"
+        code = f"{code_seed}_{ts_label}"
+
+        cursor = db.execute(
+            """
+            INSERT INTO opportunities
+              (code, title, description, term, destination, deadline, seats, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+            """,
+            (
+                code,
+                opp.title,
+                opp.description,
+                "TBD",
+                opp.host_institution or "Global",
+                f"{datetime.now(timezone.utc).year}-12-31",
+                10,
+                ts,
+                ts,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def _next_version(self, db: sqlite3.Connection, opportunity_id: int) -> int:
+        row = db.execute(
+            "SELECT MAX(version) AS max_v FROM graph_versions WHERE opportunity_id = ?",
+            (opportunity_id,),
+        ).fetchone()
+        return (row["max_v"] or 0) + 1
+
+    def get_graph(self, db: sqlite3.Connection, opportunity_id: int) -> dict[str, Any]:
+        """Return the active graph version with its nodes and edges."""
+        version = db.execute(
+            """
+            SELECT * FROM graph_versions
+            WHERE opportunity_id = ? AND status = 'active'
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (opportunity_id,),
+        ).fetchone()
+        if not version:
+            return {"graph_version": None, "nodes": [], "edges": []}
+
+        nodes = db.execute(
+            "SELECT * FROM graph_nodes WHERE graph_version_id = ? ORDER BY id ASC",
+            (int(version["id"]),),
+        ).fetchall()
+        edges = db.execute(
+            "SELECT * FROM graph_edges WHERE graph_version_id = ? ORDER BY id ASC",
+            (int(version["id"]),),
+        ).fetchall()
+
+        return {
+            "graph_version": dict(version),
+            "nodes": [dict(n) for n in nodes],
+            "edges": [dict(e) for e in edges],
+        }
