@@ -22,8 +22,12 @@ from fastapi_app.main import (
     WorkflowRequiredInput,
     WorkflowDraftManualBody,
     WorkflowStepPayload,
+    SLABreachAcknowledgeBody,
+    SLAPolicyBody,
+    SLATestReminderBody,
     admin_applications,
     admin_answer_workflow_draft_clarification,
+    admin_list_sla_policies,
     admin_create_opportunity,
     admin_create_manual_workflow_draft,
     admin_generate_opportunity_with_ai,
@@ -35,7 +39,10 @@ from fastapi_app.main import (
     admin_patch_application,
     admin_patch_opportunity,
     admin_publish_workflow_draft,
+    admin_send_sla_test_reminder,
+    admin_sla_dashboard,
     admin_summary,
+    admin_upsert_sla_policy,
     admin_visibility_audit,
     admin_visibility_audit_single,
     app,
@@ -66,7 +73,9 @@ from fastapi_app.main import (
     reject_application,
     request_changes,
     reviewer_decide_task,
+    reviewer_acknowledge_sla_breach,
     reviewer_inbox,
+    reviewer_tasks_with_sla,
     submit_student_response,
     users_me,
     AdminApplicationPatchBody,
@@ -218,11 +227,17 @@ class ApiEndpointTests(unittest.TestCase):
             ("POST", "/api/applications/{application_id}/comments"),
             ("GET", "/api/my/applications"),
             ("GET", "/api/reviewer/inbox"),
+            ("GET", "/api/reviewer/tasks"),
             ("POST", "/api/reviewer/tasks/{task_id}/decide"),
+            ("POST", "/api/reviewer/sla-breaches/{task_id}/acknowledge"),
             ("GET", "/api/admin/workflow-drafts/{draft_id}"),
             ("POST", "/api/admin/workflow-drafts/{draft_id}/answer"),
             ("POST", "/api/admin/workflow-drafts/{draft_id}/publish"),
             ("GET", "/api/admin/opportunities/{opportunity_id}/graph"),
+            ("GET", "/api/admin/sla-policies"),
+            ("POST", "/api/admin/sla-policies"),
+            ("GET", "/api/admin/sla-dashboard"),
+            ("POST", "/api/admin/sla-reminders/send-test"),
             ("GET", "/api/admin/dashboard/summary"),
             ("GET", "/api/admin/applications"),
             ("PATCH", "/api/admin/applications/{application_id}"),
@@ -276,6 +291,9 @@ class ApiEndpointTests(unittest.TestCase):
             "graph_nodes",
             "graph_edges",
             "application_workflow_tasks",
+            "sla_policies",
+            "sla_reminders_sent",
+            "sla_breaches",
         }
 
         health_payload = health()
@@ -872,6 +890,86 @@ class GraphPublishingRouteTests(unittest.TestCase):
         inbox = reviewer_inbox(session=self.session_for("oge@plaksha.edu.in"))
         graph_items = [i for i in inbox["items"] if i.get("source") == "graph"]
         self.assertGreater(len(graph_items), 0)
+
+    def test_sla_policy_dashboard_reviewer_tasks_and_acknowledge(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        pub = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = pub["graph_version_id"]
+
+        with db_conn() as conn:
+            graph_node = conn.execute(
+                "SELECT * FROM graph_nodes WHERE graph_version_id = ? AND node_key = 'review'",
+                (gv_id,),
+            ).fetchone()
+            opp_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?", (gv_id,)
+            ).fetchone()["opportunity_id"]
+            conn.execute(
+                "INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', ?, ?)",
+                (opp_id, "rohan@plaksha.edu.in", datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+
+        policy = admin_upsert_sla_policy(
+            SLAPolicyBody(
+                graphNodeId=int(graph_node["id"]),
+                slaDays=1,
+                reminderDays=[1],
+                escalationEmail="dean@plaksha.edu.in",
+            ),
+            session=admin,
+        )
+        self.assertEqual(policy["sla_days"], 1)
+        self.assertTrue(
+            any(item["id"] == policy["id"] for item in admin_list_sla_policies(session=admin)["policies"])
+        )
+
+        student = self.session_for("rohan@plaksha.edu.in")
+        resp = create_application(
+            ApplicationCreateBody(
+                opportunityId=opp_id,
+                submittedData={"full_name": "Rohan", "email": "rohan@plaksha.edu.in"},
+            ),
+            session=student,
+        )
+        application_id = int(resp["application"]["id"])
+
+        with db_conn() as conn:
+            task = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ?",
+                (application_id,),
+            ).fetchone()
+            conn.execute(
+                "UPDATE application_workflow_tasks SET assigned_at = ? WHERE id = ?",
+                ("2020-01-01T00:00:00+00:00", int(task["id"])),
+            )
+            conn.commit()
+            task_id = int(task["id"])
+
+        dashboard = admin_sla_dashboard(session=admin)
+        self.assertGreaterEqual(dashboard["breached"], 1)
+        self.assertTrue(any(item["task_id"] == task_id for item in dashboard["breached_tasks"]))
+
+        tasks = reviewer_tasks_with_sla(session=self.session_for("oge@plaksha.edu.in"))["tasks"]
+        task_payload = next(item for item in tasks if item["task_id"] == task_id)
+        self.assertEqual(task_payload["status"], "breached")
+        self.assertEqual(task_payload["sla_days"], 1)
+
+        ack = reviewer_acknowledge_sla_breach(
+            task_id,
+            SLABreachAcknowledgeBody(notes="I am handling this today."),
+            session=self.session_for("oge@plaksha.edu.in"),
+        )
+        self.assertTrue(ack["acknowledged"])
+
+    def test_sla_test_reminder_dry_run(self):
+        result = admin_send_sla_test_reminder(
+            SLATestReminderBody(toEmail="oge@plaksha.edu.in"),
+            session=self.session_for("oge@plaksha.edu.in"),
+        )
+        self.assertTrue(result["sent"])
+        self.assertIn("timestamp", result)
 
     # --- graph application submit ---
 

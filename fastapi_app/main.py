@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -18,6 +19,12 @@ from fastapi_app.graph_execution import GraphExecutionService
 from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, OpportunityDraftModel
 from fastapi_app.graph_publishing import GraphPublishingService
 from fastapi_app.graph_validation import GraphPolicyValidator
+from fastapi_app.sla_management import SLAEmailSender, SLAManagementService, sla_check_job
+
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+except ImportError:  # pragma: no cover - dependency is optional in stripped envs
+    BackgroundScheduler = None  # type: ignore[assignment]
 
 DB_PATH = Path(__file__).resolve().parent.parent / "server" / "db" / "prism.sqlite"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
@@ -49,6 +56,10 @@ CANONICAL_TABLES = {
     "graph_nodes",
     "graph_edges",
     "application_workflow_tasks",
+    # SLA management tables (Chunk F)
+    "sla_policies",
+    "sla_reminders_sent",
+    "sla_breaches",
 }
 
 GENERATOR_ROLE = "GENERATOR"
@@ -58,6 +69,7 @@ REVIEWER_ROLES = {REVIEWER_ROLE}
 # Backward naming alias for student-centric code paths.
 STUDENT_ROLE = GENERATOR_ROLE
 REQUIRED_INPUT_TYPES = {"text", "number", "dropdown", "multiselect"}
+SLA_SCHEDULER = None
 CUSTOM_FIELD_INPUT_TYPES = {"text", "textarea", "single_select", "multiselect"}
 
 
@@ -765,6 +777,44 @@ CREATE INDEX idx_awt_status_email
   ON application_workflow_tasks(status, assigned_reviewer_email);
 CREATE INDEX idx_awt_app_version_node
   ON application_workflow_tasks(application_id, graph_version_id, node_key);
+
+CREATE TABLE sla_policies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  graph_node_id INTEGER NOT NULL REFERENCES graph_nodes(id),
+  sla_days INTEGER NOT NULL,
+  reminder_days TEXT NOT NULL,
+  escalation_email TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(graph_node_id)
+);
+
+CREATE TABLE sla_reminders_sent (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES application_workflow_tasks(id),
+  reminder_type TEXT NOT NULL,
+  sent_at TEXT NOT NULL,
+  sent_to_email TEXT NOT NULL,
+  UNIQUE(task_id, reminder_type, sent_to_email)
+);
+
+CREATE TABLE sla_breaches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL REFERENCES application_workflow_tasks(id),
+  breached_at TEXT NOT NULL,
+  escalation_sent_to TEXT,
+  acknowledged_by_email TEXT,
+  acknowledged_at TEXT,
+  resolution_notes TEXT,
+  UNIQUE(task_id)
+);
+
+CREATE INDEX idx_sla_policies_node
+  ON sla_policies(graph_node_id);
+CREATE INDEX idx_sla_reminders_task
+  ON sla_reminders_sent(task_id);
+CREATE INDEX idx_sla_breaches_task
+  ON sla_breaches(task_id);
 CREATE INDEX idx_ge_from
   ON graph_edges(graph_version_id, from_node_key);
 CREATE INDEX idx_ge_to
@@ -1405,6 +1455,21 @@ class TaskDecideBody(BaseModel):
     decision: str
     comment: str | None = None
     reviewer_data: dict[str, Any] | None = None
+
+
+class SLAPolicyBody(BaseModel):
+    graphNodeId: int
+    slaDays: int = Field(ge=1)
+    reminderDays: list[int] = Field(default_factory=lambda: [1])
+    escalationEmail: str | None = None
+
+
+class SLATestReminderBody(BaseModel):
+    toEmail: str | None = None
+
+
+class SLABreachAcknowledgeBody(BaseModel):
+    notes: str | None = None
 
 
 class VisibilityRulePayload(BaseModel):
@@ -2637,6 +2702,35 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event() -> None:
     ensure_db_initialized()
+    start_sla_scheduler()
+
+
+@app.on_event("shutdown")
+def shutdown_event() -> None:
+    global SLA_SCHEDULER
+    if SLA_SCHEDULER:
+        SLA_SCHEDULER.shutdown(wait=False)
+        SLA_SCHEDULER = None
+
+
+def start_sla_scheduler() -> None:
+    global SLA_SCHEDULER
+    if os.environ.get("PRISM_DISABLE_SLA_SCHEDULER") == "1":
+        return
+    if BackgroundScheduler is None or SLA_SCHEDULER is not None:
+        return
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(
+        lambda: sla_check_job(DB_PATH),
+        "interval",
+        hours=1,
+        id="prism_sla_check",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.start()
+    SLA_SCHEDULER = scheduler
 
 
 @app.get("/api/health")
@@ -3931,6 +4025,10 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
     with db_conn() as conn:
         # Graph-backed tasks (graph workflow opportunities).
         graph_tasks = GraphExecutionService().get_inbox(conn, session.email)
+        graph_sla = {
+            item["task_id"]: item
+            for item in SLAManagementService().reviewer_tasks(conn, session.email)
+        }
 
         # Legacy pipeline tasks (ordered-step opportunities without a graph version).
         legacy_rows = conn.execute(
@@ -3961,6 +4059,9 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
     due_soon = 0
 
     for task in graph_tasks:
+        sla = graph_sla.get(task.task_id, {})
+        if sla.get("status") == "approaching":
+            due_soon += 1
         items.append(
             {
                 "id": task.application_id,
@@ -3972,7 +4073,11 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
                 "allowed_actions": task.allowed_actions,
                 "visible_sections": task.visible_sections,
                 "updated_at": task.assigned_at,
-                "sla_deadline": None,
+                "sla_deadline": sla.get("deadline_at"),
+                "sla_days": sla.get("sla_days"),
+                "days_remaining": sla.get("days_remaining"),
+                "hours_remaining": sla.get("hours_remaining"),
+                "sla_status": sla.get("status", "on_time"),
                 "source": "graph",
             }
         )
@@ -4008,6 +4113,77 @@ def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)
             "processed": processed,
         },
     }
+
+
+@app.post("/api/admin/sla-policies")
+def admin_upsert_sla_policy(
+    body: SLAPolicyBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        try:
+            policy = SLAManagementService().upsert_policy(
+                conn,
+                graph_node_id=body.graphNodeId,
+                sla_days=body.slaDays,
+                reminder_days=body.reminderDays,
+                escalation_email=body.escalationEmail,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    return policy
+
+
+@app.get("/api/admin/sla-policies")
+def admin_list_sla_policies(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        policies = SLAManagementService().list_policies(conn)
+    return {"policies": policies}
+
+
+@app.get("/api/admin/sla-dashboard")
+def admin_sla_dashboard(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        return SLAManagementService().dashboard(conn)
+
+
+@app.get("/api/reviewer/tasks")
+def reviewer_tasks_with_sla(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES))) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        tasks = SLAManagementService().reviewer_tasks(conn, session.email)
+    return {"tasks": tasks}
+
+
+@app.post("/api/admin/sla-reminders/send-test")
+def admin_send_sla_test_reminder(
+    body: SLATestReminderBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    to_email = body.toEmail or session.email
+    result = SLAEmailSender().send(
+        to_email,
+        "PRISM SLA reminder test",
+        "This is a PRISM SLA reminder configuration test.",
+    )
+    return result
+
+
+@app.post("/api/reviewer/sla-breaches/{task_id}/acknowledge")
+def reviewer_acknowledge_sla_breach(
+    task_id: int,
+    body: SLABreachAcknowledgeBody,
+    session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        try:
+            return SLAManagementService().acknowledge_breach(conn, task_id, session.email, body.notes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/admin/dashboard/summary")

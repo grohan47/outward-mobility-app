@@ -9,12 +9,18 @@ import Link from "next/link";
 
 type InboxItem = {
   id: number;
+  task_id?: number;
   student_name: string;
-  student_id: string;
+  student_id?: string;
   opportunity_title: string;
   current_stage: string;
   updated_at: string;
   sla_deadline: string | null;
+  sla_days?: number;
+  days_remaining?: number;
+  hours_remaining?: number;
+  sla_status?: "on_time" | "approaching" | "breached";
+  source?: string;
 };
 
 type InboxStats = {
@@ -72,12 +78,8 @@ export default function ReviewerInbox() {
     },
     {
       key: "deadline",
-      header: "SLA Deadline",
-      cell: (item: InboxItem) => (
-        <span className="text-sm font-bold text-amber-600">
-          {item.sla_deadline ? new Date(item.sla_deadline).toLocaleDateString() : "N/A"}
-        </span>
-      ),
+      header: "SLA",
+      cell: (item: InboxItem) => <SLAStatus item={item} />,
     },
   ];
 
@@ -128,12 +130,44 @@ export default function ReviewerInbox() {
           <Table
             data={pendingItems}
             columns={columns}
-            keyExtractor={(it: InboxItem) => it.id}
+            keyExtractor={(it: InboxItem) => `${it.source || "legacy"}-${it.task_id || it.id}`}
             onRowClick={(item: InboxItem) => router.push(`/reviewer/applications/${item.id}`)}
             emptyMessage="Your inbox is clear. No applications waiting for review."
           />
         )}
       </div>
+    </div>
+  );
+}
+
+function SLAStatus({ item }: { item: InboxItem }) {
+  const status = item.sla_status || (item.sla_deadline ? "approaching" : "on_time");
+  const styles = {
+    on_time: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    approaching: "bg-amber-50 text-amber-700 border-amber-200",
+    breached: "bg-red-50 text-red-700 border-red-200",
+  };
+  const label =
+    status === "breached"
+      ? "Breached"
+      : typeof item.days_remaining === "number"
+        ? item.days_remaining <= 0
+          ? `${Math.max(item.hours_remaining || 0, 0)}h left`
+          : `${item.days_remaining}d left`
+        : item.sla_deadline
+          ? new Date(item.sla_deadline).toLocaleDateString()
+          : "No SLA";
+
+  return (
+    <div className="flex flex-col gap-1">
+      <span className={`inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-xs font-bold ${styles[status]}`}>
+        {label}
+      </span>
+      {item.sla_deadline && (
+        <span className="text-[11px] font-medium text-slate-400">
+          Due {new Date(item.sla_deadline).toLocaleDateString()}
+        </span>
+      )}
     </div>
   );
 }
