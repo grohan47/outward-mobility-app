@@ -42,8 +42,14 @@ class GraphModel(BaseModel):
 
 
 class OpportunityDraftModel(BaseModel):
+    code: str | None = None
     title: str
     description: str
+    cover_image_url: str | None = None
+    term: str | None = None
+    destination: str | None = None
+    deadline: str | None = None
+    seats: int | None = None
     host_institution: str | None = None
     program_type: str | None = None
     eligibility_criteria: str | None = None

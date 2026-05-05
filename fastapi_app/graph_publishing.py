@@ -118,7 +118,7 @@ class GraphPublishingService:
         opp = parsed.opportunity
         ts = _now_iso()
         ts_label = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-        code_seed = _slugify(opp.title).upper()[:20] or "AI_OPP"
+        code_seed = _slugify(opp.code or opp.title).upper()[:20] or "AI_OPP"
         code = f"{code_seed}_{ts_label}"
 
         cursor = db.execute(
@@ -131,10 +131,10 @@ class GraphPublishingService:
                 code,
                 opp.title,
                 opp.description,
-                "TBD",
-                opp.host_institution or "Global",
-                f"{datetime.now(timezone.utc).year}-12-31",
-                10,
+                opp.term or "TBD",
+                opp.destination or opp.host_institution or "Global",
+                opp.deadline or f"{datetime.now(timezone.utc).year}-12-31",
+                opp.seats or 10,
                 ts,
                 ts,
             ),

@@ -20,10 +20,12 @@ from fastapi_app.main import (
     StudentResponseBody,
     TaskDecideBody,
     WorkflowRequiredInput,
+    WorkflowDraftManualBody,
     WorkflowStepPayload,
     admin_applications,
     admin_answer_workflow_draft_clarification,
     admin_create_opportunity,
+    admin_create_manual_workflow_draft,
     admin_generate_opportunity_with_ai,
     admin_delete_opportunity,
     admin_get_opportunity,
@@ -198,6 +200,7 @@ class ApiEndpointTests(unittest.TestCase):
             ("GET", "/api/admin/visibility-audit"),
             ("GET", "/api/admin/opportunities/{opportunity_id}/visibility-audit"),
             ("POST", "/api/admin/opportunities/ai-generate"),
+            ("POST", "/api/admin/workflow-drafts/manual"),
             ("POST", "/api/admin/opportunities"),
             ("PATCH", "/api/admin/opportunities/{opportunity_id}"),
             ("DELETE", "/api/admin/opportunities/{opportunity_id}"),
@@ -583,6 +586,40 @@ class GraphPublishingRouteTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             admin_get_workflow_draft(999999, session=admin)
         self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_manual_workflow_draft_can_be_saved_ready(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_create_manual_workflow_draft(
+            WorkflowDraftManualBody(
+                opportunity={
+                    "title": "Manual Studio Opportunity",
+                    "description": "Created from Opportunity Studio.",
+                    "destination": "Singapore",
+                    "term": "Fall 2026",
+                    "deadline": "2026-12-31",
+                    "seats": 4,
+                },
+                graph=GraphModel(
+                    nodes=[
+                        GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                        GraphNodeModel(
+                            node_key="review",
+                            node_type="reviewer",
+                            display_name="OGE Review",
+                            reviewer_email="oge@plaksha.edu.in",
+                        ),
+                        GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                    ],
+                    edges=[
+                        GraphEdgeModel(from_node_key="start", to_node_key="review"),
+                        GraphEdgeModel(from_node_key="review", to_node_key="end"),
+                    ],
+                ),
+            ),
+            session=admin,
+        )
+        self.assertIn("draft_id", resp)
+        self.assertEqual(resp["draft"]["publish_ready"], 1)
 
     # --- POST workflow-drafts/{id}/answer ---
 

@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from fastapi_app.ai_workflow import AIWorkflowDraftService
 from fastapi_app.graph_execution import GraphExecutionService
+from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, OpportunityDraftModel
 from fastapi_app.graph_publishing import GraphPublishingService
+from fastapi_app.graph_validation import GraphPolicyValidator
 
 DB_PATH = Path(__file__).resolve().parent.parent / "server" / "db" / "prism.sqlite"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
@@ -1387,6 +1389,16 @@ class OpportunityAIGenerateBody(BaseModel):
 
 class ClarificationAnswerBody(BaseModel):
     answers: dict[str, Any]
+
+
+class WorkflowDraftManualBody(BaseModel):
+    opportunityId: int | None = None
+    opportunity: dict[str, Any]
+    graph: GraphModel
+    clarifyingQuestions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    isFallback: bool = False
 
 
 class TaskDecideBody(BaseModel):
@@ -2968,6 +2980,59 @@ def admin_generate_opportunity_with_ai(
     with db_conn() as conn:
         draft = AIWorkflowDraftService().generate_draft(conn, session.email, body.prompt)
     return {"draft_id": draft["id"], "draft": draft}
+
+
+@app.post("/api/admin/workflow-drafts/manual", status_code=201)
+def admin_create_manual_workflow_draft(
+    body: WorkflowDraftManualBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    parsed = AIWorkflowDraftOutput(
+        opportunity=OpportunityDraftModel(**body.opportunity),
+        graph=body.graph,
+        clarifying_questions=body.clarifyingQuestions,
+        confidence=body.confidence,
+        warnings=body.warnings,
+        is_fallback=body.isFallback,
+    )
+    validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
+    merged_warnings = list(dict.fromkeys([*parsed.warnings, *validation_errors]))
+    publish_ready = 1 if not validation_errors and not parsed.clarifying_questions and not parsed.is_fallback else 0
+    status = "ready" if publish_ready else "pending"
+    ts = now_iso()
+
+    with db_conn() as conn:
+        if body.opportunityId is not None:
+            opp = conn.execute("SELECT id FROM opportunities WHERE id = ?", (body.opportunityId,)).fetchone()
+            if not opp:
+                raise HTTPException(status_code=404, detail="Opportunity not found")
+        cursor = conn.execute(
+            """
+            INSERT INTO workflow_drafts
+              (opportunity_id, status, draft_output, clarifying_questions,
+               admin_answers, warnings, confidence, publish_ready,
+               created_by_email, created_at, updated_at)
+            VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                body.opportunityId,
+                status,
+                parsed.model_copy(update={"warnings": merged_warnings}).model_dump_json(),
+                json.dumps(parsed.clarifying_questions),
+                json.dumps(merged_warnings),
+                parsed.confidence,
+                publish_ready,
+                session.email,
+                ts,
+                ts,
+            ),
+        )
+        draft_id = int(cursor.lastrowid)
+        conn.commit()
+        row = conn.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+
+    return {"draft_id": draft_id, "draft": dict(row)}
 
 
 @app.get("/api/admin/workflow-drafts/{draft_id}")

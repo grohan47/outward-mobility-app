@@ -117,7 +117,7 @@ export default function AdminOpportunitiesPage() {
                   href={`/admin/opportunities/${opp.id}`}
                   className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 text-xs font-bold hover:bg-slate-50 transition-colors"
                 >
-                  Edit Form & Pipeline
+                  Edit Workflow
                 </Link>
                 <button
                   type="button"

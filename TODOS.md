@@ -79,3 +79,35 @@
 **Effort:** M human team -> S with CC+gstack
 
 **Depends on / blocked by:** `workflow_drafts`, draft graph versioning, clarification persistence, and admin publish flow must be implemented first.
+
+## P2: Create DESIGN.md — token library and component vocabulary
+
+**What:** Create a `DESIGN.md` at the repo root documenting the PRISM design system: color tokens (with Tailwind class mappings), spacing scale, typography scale, component vocabulary (node cards, SLA chips, inspector layout, mode switcher, AI panel), and icon usage conventions.
+
+**Why:** The Opportunity Studio introduced ~15 new design tokens (node colors, SLA chip states, graph canvas background, inspector patterns). Without a documented design system, Lane F and future UI screens will diverge visually and require costly reconciliation.
+
+**Pros:** Ensures Lane F's SLA dashboard, admin breach UI, and reviewer task cards follow the same visual vocabulary as the Opportunity Studio. Makes `/design-review` and `/plan-design-review` faster on future chunks.
+
+**Cons:** Takes time away from feature work; design systems can become stale if not maintained.
+
+**Context:** Flagged in `/plan-design-review` for Chunk 7 (2026-05-05). No DESIGN.md currently exists. The token spec is documented inline in the Chunk 7 design section of the CEO plan — this TODO is to extract it into a canonical reference file.
+
+**Effort:** S human team -> XS with CC+gstack
+
+**Depends on / blocked by:** Chunk 7 implementation must be complete so the actual rendered tokens can be confirmed against the spec.
+
+## P2: React Flow keyboard navigation accessibility audit
+
+**What:** After Chunk 7 ships, audit the React Flow graph canvas keyboard navigation: Tab/arrow key navigation between nodes, Enter to select, Escape to deselect, Ctrl+Z/Y undo/redo, and screen reader announcements for node state changes.
+
+**Why:** React Flow's default keyboard behavior doesn't meet WCAG 2.1 AA for keyboard-only and screen-reader users out of the box. Custom node types (ReviewerNode, ForkMergeNode) need explicit `aria-label` and `role` attributes. The spec is written, but implementation gaps only show in real browser testing.
+
+**Pros:** Makes the Opportunity Studio accessible to admin users who rely on keyboard navigation. Required for institutional/university software purchasing.
+
+**Cons:** React Flow a11y customization is non-trivial; may require wrapping node event handlers.
+
+**Context:** Flagged in `/plan-design-review` for Chunk 7 (2026-05-05). Keyboard nav spec is written in the Chunk 7 design section. Audit should use VoiceOver (macOS) or NVDA (Windows) and the standard keyboard nav test checklist.
+
+**Effort:** S human team -> S with CC+gstack
+
+**Depends on / blocked by:** Chunk 7 React Flow implementation must be complete.
