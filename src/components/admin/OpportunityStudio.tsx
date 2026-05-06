@@ -11,6 +11,7 @@ import type {
   GeneratorVisibilityRule,
   ImpactApplication,
   OpportunityData,
+  OpportunityDetailField,
   StudioGraphEdge,
   StudioGraphNode,
   WorkflowStep,
@@ -22,6 +23,7 @@ type OpportunityStudioProps = {
   availableFields: CatalogField[];
   defaultPipeline: WorkflowStep[];
   initialOpportunity: OpportunityData;
+  initialDetailFields: OpportunityDetailField[];
   initialSelectedFields: string[];
   initialCustomFields: CustomFieldDraft[];
   initialGeneratorVisibilityRules: GeneratorVisibilityRule[];
@@ -40,7 +42,60 @@ const blankOpportunity: OpportunityData = {
   deadline: "",
   seats: 0,
   status: "published",
+  ai_summary_bullets: [],
 };
+
+function summarySourceText(opportunity: OpportunityData, detailFields: OpportunityDetailField[]) {
+  return JSON.stringify({
+    title: opportunity.title,
+    description: opportunity.description,
+    details: detailFields.map((field) => ({ label: field.label, value: field.value, visible: field.is_student_visible })),
+  });
+}
+
+function generateSummaryBullets(opportunity: OpportunityData, detailFields: OpportunityDetailField[]) {
+  const deadline = detailFields.find((field) => /deadline/i.test(`${field.field_key} ${field.label}`))?.value;
+  const destination = detailFields.find((field) => /destination|host/i.test(`${field.field_key} ${field.label}`))?.value;
+  const term = detailFields.find((field) => /term|semester|cycle/i.test(`${field.field_key} ${field.label}`))?.value;
+  const seats = detailFields.find((field) => /seat|capacity/i.test(`${field.field_key} ${field.label}`))?.value;
+  const bullets = [
+    destination ? `${opportunity.title || "This opportunity"} is linked to ${destination}.` : "",
+    deadline ? `Applications are due by ${deadline}.` : "",
+    term ? `Program term: ${term}.` : "",
+    seats ? `${seats} seat${Number(seats) === 1 ? "" : "s"} available.` : "",
+    detailFields.find((field) => /funding|scholarship/i.test(field.label))?.value
+      ? `Funding: ${detailFields.find((field) => /funding|scholarship/i.test(field.label))?.value}.`
+      : "",
+  ].filter(Boolean);
+  if (bullets.length > 0) return bullets.slice(0, 5);
+  return opportunity.description
+    .split(/[.\n]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function detailFieldFromDraft(key: string, label: string, value: unknown, valueType: OpportunityDetailField["value_type"] = "text"): OpportunityDetailField | null {
+  if (value === null || value === undefined || value === "") return null;
+  return {
+    field_key: key,
+    label,
+    value: String(value),
+    value_type: valueType,
+    display_order: 0,
+    is_student_visible: true,
+  };
+}
+
+function mergeDetailFields(current: OpportunityDetailField[], incoming: OpportunityDetailField[]) {
+  const byKey = new Map(current.map((field) => [field.field_key, field]));
+  incoming.forEach((field) => {
+    byKey.set(field.field_key, { ...field, display_order: byKey.size + 1 });
+  });
+  return Array.from(byKey.values()).map((field, index) => ({ ...field, display_order: index + 1 }));
+}
+
+type StudioStep = "details" | "form" | "pipeline";
 
 function validPlakshaEmail(email: string): boolean {
   return email.trim().toLowerCase().endsWith("@plaksha.edu.in");
@@ -144,6 +199,7 @@ export default function OpportunityStudio({
   availableFields,
   defaultPipeline,
   initialOpportunity,
+  initialDetailFields,
   initialSelectedFields,
   initialCustomFields,
   initialGeneratorVisibilityRules,
@@ -152,9 +208,11 @@ export default function OpportunityStudio({
   activeApplications,
 }: OpportunityStudioProps) {
   const router = useRouter();
-  const [studioStep, setStudioStep] = useState<"setup" | "pipeline">(mode === "create" ? "setup" : "pipeline");
+  const [studioStep, setStudioStep] = useState<StudioStep>(mode === "create" ? "details" : "pipeline");
   const [mobileTab, setMobileTab] = useState<"details" | "graph" | "inspector">("graph");
   const [opportunity, setOpportunity] = useState<OpportunityData>(initialOpportunity || blankOpportunity);
+  const [detailFields, setDetailFields] = useState<OpportunityDetailField[]>(initialDetailFields);
+  const [summarySourceSnapshot, setSummarySourceSnapshot] = useState(() => summarySourceText(initialOpportunity || blankOpportunity, initialDetailFields));
   const [selectedFields, setSelectedFields] = useState<string[]>(initialSelectedFields);
   const [customFields, setCustomFields] = useState<CustomFieldDraft[]>(initialCustomFields);
   const [visibilityRules, setVisibilityRules] = useState<GeneratorVisibilityRule[]>(
@@ -199,6 +257,10 @@ export default function OpportunityStudio({
     }
     return Array.from(map.values());
   }, [availableFields, customFields]);
+  const selectedApplicationFields = useMemo(
+    () => selectableFields.filter((field) => selectedFields.includes(field.field_key)),
+    [selectableFields, selectedFields]
+  );
 
   const selectedNode = graphNodes.find((node) => node.node_key === selectedNodeKey) || null;
   const selectedEdge = selectedEdgeKey
@@ -362,16 +424,23 @@ export default function OpportunityStudio({
       if (!response.ok) throw new Error(body?.detail || "AI generation failed.");
       const draft = normalizeDraftRow(body.draft);
       setDraftOutput(draft);
+      const draftDetails = [
+        ...(draft.opportunity.detail_fields || []),
+        detailFieldFromDraft("destination", "Destination", draft.opportunity.destination || draft.opportunity.host_institution),
+        detailFieldFromDraft("term", "Term", draft.opportunity.term || draft.opportunity.program_type),
+        detailFieldFromDraft("application_deadline", "Application Deadline", draft.opportunity.deadline, "date"),
+        detailFieldFromDraft("seats", "Seats", draft.opportunity.seats, "number"),
+      ].filter(Boolean) as OpportunityDetailField[];
       setOpportunity((prev) => ({
         ...prev,
         code: draft.opportunity.code || prev.code,
         title: draft.opportunity.title || prev.title,
         description: draft.opportunity.description || prev.description,
-        term: draft.opportunity.term || draft.opportunity.program_type || prev.term,
-        destination: draft.opportunity.destination || draft.opportunity.host_institution || prev.destination,
-        deadline: draft.opportunity.deadline || prev.deadline,
-        seats: Number(draft.opportunity.seats || prev.seats || 0),
+        ai_summary_bullets: draft.opportunity.ai_summary_bullets?.length ? draft.opportunity.ai_summary_bullets : prev.ai_summary_bullets,
       }));
+      if (draftDetails.length > 0) {
+        setDetailFields((prev) => mergeDetailFields(prev, draftDetails));
+      }
       commitGraph(draft.graph.nodes, draft.graph.edges);
       setNotice(Date.now() - started > 5000 ? "PRISM filled a draft. It took a little longer than usual." : "PRISM filled the draft. Review details, then continue to the pipeline.");
     } catch (err) {
@@ -438,6 +507,9 @@ export default function OpportunityStudio({
       if (!publishResponse.ok) throw new Error(publishBody?.detail || "Unable to publish workflow.");
       const refreshed = await fetch(`/api/admin/workflow-drafts/${draftId}`).then((response) => response.json());
       const targetOpportunityId = refreshed?.draft?.opportunity_id || opportunityId;
+      if (targetOpportunityId) {
+        await persistOpportunityConfiguration(targetOpportunityId);
+      }
       setSuccessOverlay(true);
       setTimeout(() => {
         router.push(targetOpportunityId ? `/admin/opportunities/${targetOpportunityId}` : "/admin/opportunities");
@@ -461,13 +533,15 @@ export default function OpportunityStudio({
           code: opportunity.code || undefined,
           title: opportunity.title || "Untitled Opportunity",
           description: opportunity.description || "No description provided.",
-          cover_image_url: opportunity.cover_image_url || undefined,
-          term: opportunity.term || undefined,
-          destination: opportunity.destination || undefined,
-          deadline: opportunity.deadline || undefined,
-          seats: Number(opportunity.seats || 0) || undefined,
-          host_institution: opportunity.destination || undefined,
-          program_type: opportunity.term || undefined,
+          detail_fields: detailFields.map((field, index) => ({
+            field_key: field.field_key || `detail_${index + 1}`,
+            label: field.label,
+            value: field.value,
+            value_type: field.value_type || "text",
+            display_order: index + 1,
+            is_student_visible: field.is_student_visible,
+          })),
+          ai_summary_bullets: opportunity.ai_summary_bullets || [],
           visibility: "plaksha_only",
         },
         graph: { nodes: graphNodes, edges: graphEdges },
@@ -479,6 +553,38 @@ export default function OpportunityStudio({
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body?.detail || "Unable to save workflow draft.");
+    return body;
+  }
+
+  async function persistOpportunityConfiguration(opportunityIdToSave: string | number) {
+    const response = await fetch(`/api/admin/opportunities/${opportunityIdToSave}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        formFields: selectedFields,
+        customFields: customFields.map((field) => ({
+          key: field.field_key,
+          label: field.label,
+          description: field.description,
+          fieldHint: field.fieldHint,
+          inputType: field.inputType,
+          options: field.optionsText.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean),
+          persistForFuture: field.persistForFuture !== false,
+        })),
+        generatorVisibilityRules: visibilityRules,
+        detailFields: detailFields.map((field, index) => ({
+          key: field.field_key,
+          label: field.label,
+          value: field.value,
+          valueType: field.value_type,
+          displayOrder: index + 1,
+          isStudentVisible: field.is_student_visible,
+        })),
+        aiSummaryBullets: opportunity.ai_summary_bullets || [],
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body?.detail || "Unable to persist opportunity configuration.");
     return body;
   }
 
@@ -498,7 +604,7 @@ export default function OpportunityStudio({
         <div className="flex min-h-[64px] flex-wrap items-center gap-3 px-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="text-sm font-black text-slate-900">PRISM</span>
-            {studioStep === "setup" ? (
+            {studioStep === "details" ? (
               <p className="min-w-[180px] flex-1 truncate text-lg font-semibold text-slate-900">{opportunity.title || "New opportunity"}</p>
             ) : (
               <input
@@ -512,17 +618,24 @@ export default function OpportunityStudio({
             <div className="hidden items-center gap-1 rounded-lg bg-slate-100 p-1 md:flex">
               <button
                 type="button"
-                onClick={() => setStudioStep("setup")}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "setup" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+                onClick={() => setStudioStep("details")}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "details" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
               >
                 1 Details
+              </button>
+              <button
+                type="button"
+                onClick={() => setStudioStep("form")}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "form" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+              >
+                2 Application Form
               </button>
               <button
                 type="button"
                 onClick={() => setStudioStep("pipeline")}
                 className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "pipeline" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
               >
-                2 Pipeline
+                3 Pipeline
               </button>
             </div>
           </div>
@@ -540,8 +653,8 @@ export default function OpportunityStudio({
               </button>
             </>
           ) : (
-            <button type="button" onClick={() => setStudioStep("pipeline")} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm">
-              Build Pipeline
+            <button type="button" onClick={() => setStudioStep(studioStep === "details" ? "form" : "pipeline")} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm">
+              {studioStep === "details" ? "Application Form" : "Build Pipeline"}
               <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
             </button>
           )}
@@ -553,17 +666,18 @@ export default function OpportunityStudio({
         )}
       </header>
 
-      {studioStep === "setup" ? (
+      {studioStep === "details" ? (
         <SetupScreen
           opportunity={opportunity}
           setOpportunity={setOpportunity}
-          selectedFields={selectedFields}
-          setSelectedFields={setSelectedFields}
-          selectableFields={selectableFields}
-          customFields={customFields}
-          setCustomFields={setCustomFields}
-          visibilityRules={visibilityRules}
-          setVisibilityRules={setVisibilityRules}
+          detailFields={detailFields}
+          setDetailFields={setDetailFields}
+          summaryIsStale={(opportunity.ai_summary_bullets || []).length > 0 && summarySourceSnapshot !== summarySourceText(opportunity, detailFields)}
+          onGenerateSummary={() => {
+            const next = generateSummaryBullets(opportunity, detailFields);
+            setOpportunity((prev) => ({ ...prev, ai_summary_bullets: next }));
+            setSummarySourceSnapshot(summarySourceText(opportunity, detailFields));
+          }}
           aiPrompt={aiPrompt}
           setAiPrompt={setAiPrompt}
           aiGenerating={aiGenerating}
@@ -574,6 +688,18 @@ export default function OpportunityStudio({
           onGenerateDraft={generateDraft}
           onAnswerChange={(question, answer) => setAnswers((prev) => ({ ...prev, [question]: answer }))}
           onSubmitAnswers={submitAnswers}
+          onContinue={() => setStudioStep("form")}
+        />
+      ) : studioStep === "form" ? (
+        <ApplicationFormScreen
+          selectedFields={selectedFields}
+          setSelectedFields={setSelectedFields}
+          selectableFields={selectableFields}
+          customFields={customFields}
+          setCustomFields={setCustomFields}
+          visibilityRules={visibilityRules}
+          setVisibilityRules={setVisibilityRules}
+          onBack={() => setStudioStep("details")}
           onContinue={() => setStudioStep("pipeline")}
         />
       ) : (
@@ -583,7 +709,7 @@ export default function OpportunityStudio({
             validationWarnings={validationWarnings}
             openQuestions={openQuestions.length}
             publishReady={publishReady}
-            onBack={() => setStudioStep("setup")}
+            onBack={() => setStudioStep("form")}
           />
           <main className="flex min-w-0 flex-col">
             <StudioGraph
@@ -604,7 +730,7 @@ export default function OpportunityStudio({
           <StudioInspector
             node={selectedNode}
             edge={selectedEdge}
-            availableFields={selectableFields}
+            availableFields={selectedApplicationFields}
             validationWarnings={validationWarnings}
             onClose={() => {
               setSelectedNodeKey(null);
@@ -643,7 +769,7 @@ export default function OpportunityStudio({
             <StudioInspector
               node={selectedNode}
               edge={selectedEdge}
-              availableFields={selectableFields}
+              availableFields={selectedApplicationFields}
               validationWarnings={validationWarnings}
               onClose={() => setMobileTab("graph")}
               onUpdateNode={updateNode}
@@ -652,8 +778,8 @@ export default function OpportunityStudio({
             />
           )}
           <nav className="mt-auto grid grid-cols-3 border-t border-slate-200 bg-white">
-            <button type="button" onClick={() => setStudioStep("setup")} className="min-h-[56px] text-sm font-semibold text-slate-500">
-              Details
+            <button type="button" onClick={() => setStudioStep("form")} className="min-h-[56px] text-sm font-semibold text-slate-500">
+              Form
             </button>
             {(["graph", "inspector"] as const).map((tab) => (
               <button
@@ -694,13 +820,10 @@ export default function OpportunityStudio({
 function SetupScreen({
   opportunity,
   setOpportunity,
-  selectedFields,
-  setSelectedFields,
-  selectableFields,
-  customFields,
-  setCustomFields,
-  visibilityRules,
-  setVisibilityRules,
+  detailFields,
+  setDetailFields,
+  summaryIsStale,
+  onGenerateSummary,
   aiPrompt,
   setAiPrompt,
   aiGenerating,
@@ -715,13 +838,10 @@ function SetupScreen({
 }: {
   opportunity: OpportunityData;
   setOpportunity: React.Dispatch<React.SetStateAction<OpportunityData>>;
-  selectedFields: string[];
-  setSelectedFields: React.Dispatch<React.SetStateAction<string[]>>;
-  selectableFields: CatalogField[];
-  customFields: CustomFieldDraft[];
-  setCustomFields: React.Dispatch<React.SetStateAction<CustomFieldDraft[]>>;
-  visibilityRules: GeneratorVisibilityRule[];
-  setVisibilityRules: React.Dispatch<React.SetStateAction<GeneratorVisibilityRule[]>>;
+  detailFields: OpportunityDetailField[];
+  setDetailFields: React.Dispatch<React.SetStateAction<OpportunityDetailField[]>>;
+  summaryIsStale: boolean;
+  onGenerateSummary: () => void;
   aiPrompt: string;
   setAiPrompt: (value: string) => void;
   aiGenerating: boolean;
@@ -745,13 +865,16 @@ function SetupScreen({
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
             <CompactInput label="Title" value={opportunity.title} onChange={(value) => setOpportunity((prev) => ({ ...prev, title: value }))} />
-            <CompactInput label="Code" value={opportunity.code} onChange={(value) => setOpportunity((prev) => ({ ...prev, code: value }))} />
-            <CompactInput label="Destination" value={opportunity.destination} onChange={(value) => setOpportunity((prev) => ({ ...prev, destination: value }))} />
-            <CompactInput label="Term" value={opportunity.term} onChange={(value) => setOpportunity((prev) => ({ ...prev, term: value }))} />
-            <CompactInput label="Deadline" type="date" value={opportunity.deadline} onChange={(value) => setOpportunity((prev) => ({ ...prev, deadline: value }))} />
-            <CompactInput label="Seats" type="number" value={String(opportunity.seats || "")} onChange={(value) => setOpportunity((prev) => ({ ...prev, seats: Number(value) || 0 }))} />
+            <label className="block">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Code</span>
+              <input
+                className="min-h-[40px] w-full rounded-lg border border-slate-200 bg-slate-50 p-2 text-sm font-semibold text-slate-500"
+                value={opportunity.code || "Auto-generated on save"}
+                readOnly
+              />
+            </label>
           </div>
 
           <div className="mt-4">
@@ -767,66 +890,133 @@ function SetupScreen({
             </label>
           </div>
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <RailSection title={`Applicant Fields (${selectedFields.length})`}>
-              <div className="flex max-h-[112px] flex-wrap gap-2 overflow-y-auto pr-1">
-                {selectableFields.map((field) => {
-                  const checked = selectedFields.includes(field.field_key);
-                  return (
-                    <button
-                      key={field.field_key}
-                      type="button"
-                      onClick={() => setSelectedFields((prev) => (checked ? prev.filter((key) => key !== field.field_key) : [...prev, field.field_key]))}
-                      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
-                        checked ? "border-primary bg-primary text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
-                      }`}
-                    >
-                      {field.label}
-                    </button>
-                  );
-                })}
+          <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <RailSection title={`Student Detail Fields (${detailFields.length})`}>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDetailFields((prev) => [
+                      ...prev,
+                      {
+                        field_key: `detail_${Date.now()}`,
+                        label: "Custom Detail",
+                        value: "",
+                        value_type: "text",
+                        display_order: prev.length + 1,
+                        is_student_visible: true,
+                      },
+                    ])
+                  }
+                  className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark"
+                >
+                  <span className="material-symbols-outlined text-[18px]">add</span>
+                  Add Detail
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDetailFields((prev) =>
+                      mergeDetailFields(prev, [
+                        {
+                          field_key: "application_deadline",
+                          label: "Application Deadline",
+                          value: "",
+                          value_type: "date",
+                          display_order: prev.length + 1,
+                          is_student_visible: true,
+                        },
+                      ])
+                    )
+                  }
+                  className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-amber-700"
+                >
+                  <span className="material-symbols-outlined text-[18px]">event</span>
+                  Add Deadline
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const fieldKey = `custom_${Date.now()}`;
-                  setCustomFields((prev) => [...prev, { field_key: fieldKey, label: "Custom Field", description: "", fieldHint: "", inputType: "text", optionsText: "" }]);
-                  setSelectedFields((prev) => [...prev, fieldKey]);
-                }}
-                className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark"
-              >
-                <span className="material-symbols-outlined text-[18px]">add</span>
-                Add Field
-              </button>
-            </RailSection>
-
-            <RailSection title="Eligibility">
               <div className="space-y-2">
-                {visibilityRules.map((rule, index) => (
-                  <div key={`${rule.ruleType}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
-                    <select
-                      className="min-h-[40px] rounded-lg border border-slate-200 bg-white p-2 text-sm"
-                      value={rule.ruleType}
+                {detailFields.length === 0 && <p className="text-sm text-slate-500">No custom student-facing details yet.</p>}
+                {detailFields.map((field, index) => (
+                  <div key={field.field_key} className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2 md:grid-cols-[minmax(120px,0.8fr)_110px_minmax(160px,1.2fr)_40px]">
+                    <input
+                      className="min-h-[38px] rounded-md border border-slate-200 bg-white px-2 text-sm"
+                      value={field.label}
                       onChange={(event) =>
-                        setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleType: event.target.value as GeneratorVisibilityRule["ruleType"] } : item)))
+                        setDetailFields((prev) => prev.map((item, itemIndex) => (itemIndex === index ? { ...item, label: event.target.value } : item)))
+                      }
+                      placeholder="Label"
+                    />
+                    <select
+                      className="min-h-[38px] rounded-md border border-slate-200 bg-white px-2 text-sm"
+                      value={field.value_type}
+                      onChange={(event) =>
+                        setDetailFields((prev) => prev.map((item, itemIndex) => (itemIndex === index ? { ...item, value_type: event.target.value as OpportunityDetailField["value_type"] } : item)))
                       }
                     >
-                      <option value="GROUP_EMAIL">Group</option>
-                      <option value="EMAIL">Email</option>
+                      <option value="text">Text</option>
+                      <option value="number">Number</option>
+                      <option value="date">Date</option>
                     </select>
                     <input
-                      className="min-h-[40px] rounded-lg border border-slate-200 p-2 text-sm"
-                      value={rule.ruleValue}
-                      onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
-                      placeholder="ug2024@plaksha.edu.in"
+                      type={field.value_type === "date" ? "date" : field.value_type === "number" ? "number" : "text"}
+                      className="min-h-[38px] rounded-md border border-slate-200 bg-white px-2 text-sm"
+                      value={field.value}
+                      onChange={(event) =>
+                        setDetailFields((prev) => prev.map((item, itemIndex) => (itemIndex === index ? { ...item, value: event.target.value } : item)))
+                      }
+                      placeholder="Value"
                     />
+                    <button
+                      type="button"
+                      className="flex min-h-[38px] items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-red-600"
+                      onClick={() => setDetailFields((prev) => prev.filter((_, itemIndex) => itemIndex !== index))}
+                      aria-label={`Remove ${field.label || "detail field"}`}
+                    >
+                      <span className="material-symbols-outlined text-[18px]">delete</span>
+                    </button>
                   </div>
                 ))}
               </div>
-              <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleType: "EMAIL", ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
-                <span className="material-symbols-outlined text-[18px]">add</span>
-                Add Rule
-              </button>
+            </RailSection>
+
+            <RailSection title="Student Summary">
+              <div className="space-y-2">
+                {summaryIsStale && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    Summary may be stale after your edits.
+                  </div>
+                )}
+                {(opportunity.ai_summary_bullets || []).map((bullet, index) => (
+                  <input
+                    key={`${index}-${bullet}`}
+                    className="min-h-[38px] w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                    value={bullet}
+                    onChange={(event) =>
+                      setOpportunity((prev) => ({
+                        ...prev,
+                        ai_summary_bullets: (prev.ai_summary_bullets || []).map((item, itemIndex) => (itemIndex === index ? event.target.value : item)),
+                      }))
+                    }
+                    placeholder="Summary bullet"
+                  />
+                ))}
+                {(opportunity.ai_summary_bullets || []).length === 0 && <p className="text-sm text-slate-500">Generate or add a few bullets for students.</p>}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={onGenerateSummary} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
+                  <span className="material-symbols-outlined text-[18px]">auto_fix_high</span>
+                  Generate Summary
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpportunity((prev) => ({ ...prev, ai_summary_bullets: [...(prev.ai_summary_bullets || []), ""] }))}
+                  className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-slate-600"
+                >
+                  <span className="material-symbols-outlined text-[18px]">add</span>
+                  Add Bullet
+                </button>
+              </div>
             </RailSection>
           </div>
         </section>
@@ -843,6 +1033,199 @@ function SetupScreen({
           onAnswerChange={onAnswerChange}
           onSubmitAnswers={onSubmitAnswers}
         />
+      </div>
+    </main>
+  );
+}
+
+function ApplicationFormScreen({
+  selectedFields,
+  setSelectedFields,
+  selectableFields,
+  customFields,
+  setCustomFields,
+  visibilityRules,
+  setVisibilityRules,
+  onBack,
+  onContinue,
+}: {
+  selectedFields: string[];
+  setSelectedFields: React.Dispatch<React.SetStateAction<string[]>>;
+  selectableFields: CatalogField[];
+  customFields: CustomFieldDraft[];
+  setCustomFields: React.Dispatch<React.SetStateAction<CustomFieldDraft[]>>;
+  visibilityRules: GeneratorVisibilityRule[];
+  setVisibilityRules: React.Dispatch<React.SetStateAction<GeneratorVisibilityRule[]>>;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const selectedSet = new Set(selectedFields);
+
+  function addCustomField() {
+    const fieldKey = `custom_${Date.now()}`;
+    setCustomFields((prev) => [
+      ...prev,
+      {
+        field_key: fieldKey,
+        label: "Custom Field",
+        description: "",
+        fieldHint: "",
+        inputType: "text",
+        optionsText: "",
+        persistForFuture: true,
+      },
+    ]);
+    setSelectedFields((prev) => [...prev, fieldKey]);
+  }
+
+  function updateCustomField(index: number, patch: Partial<CustomFieldDraft>) {
+    setCustomFields((prev) => prev.map((field, fieldIndex) => (fieldIndex === index ? { ...field, ...patch } : field)));
+  }
+
+  function removeCustomField(index: number) {
+    const field = customFields[index];
+    setCustomFields((prev) => prev.filter((_, fieldIndex) => fieldIndex !== index));
+    if (field) setSelectedFields((prev) => prev.filter((key) => key !== field.field_key));
+  }
+
+  return (
+    <main className="flex-1 overflow-y-auto bg-slate-50">
+      <div className="mx-auto grid max-w-7xl gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Application Form</p>
+              <h2 className="mt-1 font-display text-xl font-semibold text-slate-900">Applicant fields</h2>
+            </div>
+            <button type="button" onClick={addCustomField} className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-slate-900 px-3 text-sm font-semibold text-white">
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              Add Field
+            </button>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <RailSection title={`Selected Fields (${selectedFields.length})`}>
+              <div className="flex flex-wrap gap-2">
+                {selectableFields.map((field) => {
+                  const checked = selectedSet.has(field.field_key);
+                  return (
+                    <button
+                      key={field.field_key}
+                      type="button"
+                      onClick={() => setSelectedFields((prev) => (checked ? prev.filter((key) => key !== field.field_key) : [...prev, field.field_key]))}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                        checked ? "border-primary bg-primary text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+                      }`}
+                    >
+                      {field.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </RailSection>
+
+            <RailSection title="Field Inspector">
+              <div className="space-y-3">
+                {customFields.length === 0 && <p className="text-sm text-slate-500">Add a custom applicant field to edit labels, hints, options, and reuse.</p>}
+                {customFields.map((field, index) => (
+                  <div key={field.field_key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_150px_36px]">
+                      <input
+                        className="min-h-[38px] rounded-md border border-slate-200 bg-white px-2 text-sm"
+                        value={field.label}
+                        onChange={(event) => updateCustomField(index, { label: event.target.value })}
+                        placeholder="Field label"
+                      />
+                      <select
+                        className="min-h-[38px] rounded-md border border-slate-200 bg-white px-2 text-sm"
+                        value={field.inputType}
+                        onChange={(event) => updateCustomField(index, { inputType: event.target.value as CustomFieldDraft["inputType"] })}
+                      >
+                        <option value="text">Text box</option>
+                        <option value="textarea">Textarea</option>
+                        <option value="single_select">Single select</option>
+                        <option value="multiselect">Multiselect</option>
+                      </select>
+                      <button type="button" onClick={() => removeCustomField(index)} className="flex min-h-[38px] items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-red-600">
+                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                      </button>
+                    </div>
+                    <textarea
+                      rows={2}
+                      className="mt-2 w-full resize-none rounded-md border border-slate-200 bg-white px-2 py-2 text-sm"
+                      value={field.description}
+                      onChange={(event) => updateCustomField(index, { description: event.target.value })}
+                      placeholder="Description shown under the field"
+                    />
+                    <input
+                      className="mt-2 min-h-[38px] w-full rounded-md border border-slate-200 bg-white px-2 text-sm"
+                      value={field.fieldHint}
+                      onChange={(event) => updateCustomField(index, { fieldHint: event.target.value })}
+                      placeholder="Student-facing hint"
+                    />
+                    {(field.inputType === "single_select" || field.inputType === "multiselect") && (
+                      <textarea
+                        rows={2}
+                        className="mt-2 w-full resize-none rounded-md border border-slate-200 bg-white px-2 py-2 text-sm"
+                        value={field.optionsText}
+                        onChange={(event) => updateCustomField(index, { optionsText: event.target.value })}
+                        placeholder="Options separated by commas or new lines"
+                      />
+                    )}
+                    <label className="mt-2 flex items-center gap-2 text-xs font-medium text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={field.persistForFuture !== false}
+                        onChange={(event) => updateCustomField(index, { persistForFuture: event.target.checked })}
+                      />
+                      Persist this field for future opportunities
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </RailSection>
+          </div>
+        </section>
+
+        <aside className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm xl:sticky xl:top-4 xl:self-start">
+          <RailSection title="Eligibility">
+            <div className="space-y-2">
+              {visibilityRules.map((rule, index) => (
+                <div key={`${rule.ruleType}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+                  <select
+                    className="min-h-[40px] rounded-lg border border-slate-200 bg-white p-2 text-sm"
+                    value={rule.ruleType}
+                    onChange={(event) =>
+                      setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleType: event.target.value as GeneratorVisibilityRule["ruleType"] } : item)))
+                    }
+                  >
+                    <option value="GROUP_EMAIL">Group</option>
+                    <option value="EMAIL">Email</option>
+                  </select>
+                  <input
+                    className="min-h-[40px] rounded-lg border border-slate-200 p-2 text-sm"
+                    value={rule.ruleValue}
+                    onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
+                    placeholder="ug2024@plaksha.edu.in"
+                  />
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleType: "EMAIL", ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              Add Rule
+            </button>
+          </RailSection>
+          <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-slate-100 pt-4">
+            <button type="button" onClick={onBack} className="min-h-[40px] rounded-lg px-3 text-sm font-semibold text-slate-600 hover:bg-slate-100">
+              Back
+            </button>
+            <button type="button" onClick={onContinue} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm">
+              Build Pipeline
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </button>
+          </div>
+        </aside>
       </div>
     </main>
   );
@@ -988,9 +1371,7 @@ function PipelineRail({
       <RailSection title="Setup">
         <div className="space-y-2 text-sm">
           <p className="font-semibold leading-5 text-slate-800">{opportunity.title || "Untitled opportunity"}</p>
-          <p className="text-slate-500">{opportunity.destination || "No destination"}</p>
-          <p className="text-slate-500">{opportunity.term || "No term"}</p>
-          <p className="text-slate-500">{opportunity.deadline || "No deadline"}</p>
+          <p className="text-slate-500">{opportunity.code || "Code auto-generated"}</p>
         </div>
       </RailSection>
 

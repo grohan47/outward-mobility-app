@@ -23,12 +23,20 @@ You are PRISM, an AI workflow generator for university global affairs offices.
 Given a messy opportunity description, output ONLY valid JSON matching this exact schema:
 {
   "opportunity": {
+    "code": "string or null",
     "title": "string",
     "description": "string",
-    "host_institution": "string or null",
-    "program_type": "string or null",
-    "eligibility_criteria": "string or null",
-    "funding_available": true,
+    "detail_fields": [
+      {
+        "field_key": "string",
+        "label": "string",
+        "value": "string",
+        "value_type": "text | number | date",
+        "display_order": 1,
+        "is_student_visible": true
+      }
+    ],
+    "ai_summary_bullets": ["string"],
     "visibility": "plaksha_only"
   },
   "graph": {
@@ -72,6 +80,10 @@ Rules:
 - Every graph must have exactly one start node and at least one end node.
 - reviewer nodes must have a valid reviewer_email.
 - Use @plaksha.edu.in email addresses for reviewers.
+- Only title, code, and description are fixed opportunity fields.
+- Put destination, term, seats, funding, host institution, eligibility, dates, and any other opportunity facts in opportunity.detail_fields.
+- Detail fields may only use value_type text, number, or date.
+- If an application deadline appears in the prompt, include a date detail with field_key "application_deadline", label "Application Deadline", and value_type "date".
 - Do not include unrestricted code or arbitrary expressions in condition_json.
 - If policy is unclear, add a clarifying question and lower confidence.
 - Output JSON only. No markdown, no prose, no explanations.
@@ -256,6 +268,8 @@ class AIWorkflowDraftService:
             opportunity=OpportunityDraftModel(
                 title="Draft Opportunity",
                 description="AI generation unavailable. Please edit this draft manually before publishing.",
+                detail_fields=[],
+                ai_summary_bullets=[],
                 funding_available=False,
                 visibility="plaksha_only",
             ),

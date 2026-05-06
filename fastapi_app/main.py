@@ -19,6 +19,17 @@ from fastapi_app.graph_execution import GraphExecutionService
 from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, OpportunityDraftModel
 from fastapi_app.graph_publishing import GraphPublishingService
 from fastapi_app.graph_validation import GraphPolicyValidator
+from fastapi_app.opportunity_details import (
+    enforced_deadline,
+    fetch_detail_fields,
+    generate_unique_opportunity_code,
+    normalize_ai_summary_bullets,
+    normalize_detail_fields,
+    parse_ai_summary_json,
+    replace_detail_fields,
+    summary_source_hash,
+    validate_cover_image_url,
+)
 from fastapi_app.sla_management import SLAEmailSender, SLAManagementService, sla_check_job
 
 try:
@@ -39,6 +50,7 @@ CANONICAL_TABLES = {
     "student_profiles",
     "form_field_catalog",
     "opportunities",
+    "opportunity_detail_fields",
     "email_groups",
     "email_group_memberships",
     "opportunity_visibility_rules",
@@ -129,6 +141,12 @@ def serialize_form_field(row: sqlite3.Row) -> dict[str, Any]:
         "options": parse_options_json(row["options_json"]),
         "section_key": row["section_key"],
     }
+
+
+def serialize_opportunity(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["ai_summary_bullets"] = parse_ai_summary_json(item.get("ai_summary_json"))
+    return item
 
 
 def extract_ctas_from_description(description: str | None) -> list[str]:
@@ -404,17 +422,53 @@ def build_ai_opportunity_draft(
     if not normalized_visibility_rules:
         normalized_visibility_rules = [{"rule_type": "GROUP_EMAIL", "rule_value": "ug2024@plaksha.edu.in"}]
 
+    detail_fields = [
+        {
+            "field_key": "destination",
+            "label": "Destination",
+            "value": destination,
+            "value_type": "text",
+            "display_order": 1,
+            "is_student_visible": True,
+        },
+        {
+            "field_key": "term",
+            "label": "Term",
+            "value": term,
+            "value_type": "text",
+            "display_order": 2,
+            "is_student_visible": True,
+        },
+        {
+            "field_key": "application_deadline",
+            "label": "Application Deadline",
+            "value": deadline,
+            "value_type": "date",
+            "display_order": 3,
+            "is_student_visible": True,
+        },
+        {
+            "field_key": "seats",
+            "label": "Seats",
+            "value": "25",
+            "value_type": "number",
+            "display_order": 4,
+            "is_student_visible": True,
+        },
+    ]
+
     return {
         "draft": {
             "opportunity": {
                 "code": code,
                 "title": title,
                 "description": f"AI-generated draft from prompt: {prompt_clean}",
-                "cover_image_url": "",
-                "term": term,
-                "destination": destination,
-                "deadline": deadline,
-                "seats": 25,
+                "detail_fields": detail_fields,
+                "ai_summary_bullets": [
+                    f"{title} is prepared for {destination}.",
+                    f"Applications are due by {deadline}.",
+                    f"PRISM selected {len(workflow_steps)} reviewer stage(s) from the prompt.",
+                ],
             },
             "formFields": dedupe_preserve_order(selected_fields),
             "customFields": custom_fields,
@@ -471,6 +525,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id"},
         "form_field_catalog": {"field_hint", "options_json"},
         "application_workflow_tasks": {"reviewer_data_json"},
+        "opportunities": {"ai_summary_json", "ai_summary_source_hash"},
     }
     for table, columns in required_columns.items():
         if not columns.issubset(table_columns(conn, table)):
@@ -501,6 +556,30 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE applications ADD COLUMN graph_version_id INTEGER REFERENCES graph_versions(id)")
     if "application_workflow_tasks" in list_tables(conn) and "reviewer_data_json" not in table_columns(conn, "application_workflow_tasks"):
         conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
+    if "opportunities" in list_tables(conn):
+        opportunity_columns = table_columns(conn, "opportunities")
+        if "ai_summary_json" not in opportunity_columns:
+            conn.execute("ALTER TABLE opportunities ADD COLUMN ai_summary_json TEXT")
+        if "ai_summary_source_hash" not in opportunity_columns:
+            conn.execute("ALTER TABLE opportunities ADD COLUMN ai_summary_source_hash TEXT")
+    if "opportunity_detail_fields" not in list_tables(conn):
+        conn.execute(
+            """
+            CREATE TABLE opportunity_detail_fields (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              opportunity_id INTEGER NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+              field_key TEXT NOT NULL,
+              label TEXT NOT NULL,
+              value TEXT NOT NULL,
+              value_type TEXT NOT NULL DEFAULT 'text',
+              display_order INTEGER NOT NULL,
+              is_student_visible INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(opportunity_id, field_key)
+            )
+            """
+        )
     conn.commit()
 
 
@@ -581,9 +660,25 @@ CREATE TABLE opportunities (
   destination TEXT,
   deadline TEXT,
   seats INTEGER,
+  ai_summary_json TEXT,
+  ai_summary_source_hash TEXT,
   status TEXT NOT NULL DEFAULT 'published',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE opportunity_detail_fields (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id INTEGER NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+  field_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  value TEXT NOT NULL,
+  value_type TEXT NOT NULL DEFAULT 'text',
+  display_order INTEGER NOT NULL,
+  is_student_visible INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(opportunity_id, field_key)
 );
 
 CREATE TABLE email_groups (
@@ -948,11 +1043,30 @@ def seed_data(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT OR IGNORE INTO opportunities (
-              id, code, title, description, cover_image_url, term, destination, deadline, seats, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              id, code, title, description, cover_image_url, term, destination, deadline, seats, status, ai_summary_json, ai_summary_source_hash, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (*opp, now, now),
+            (*opp, json.dumps([f"{opp[2]} is open for {opp[5]}.", f"Destination: {opp[6]}."]), None, now, now),
         )
+
+    seed_detail_fields = {
+        1: [
+            {"field_key": "host_institution", "label": "Host Institution", "value": "TU Delft", "value_type": "text", "display_order": 1, "is_student_visible": 1},
+            {"field_key": "funding", "label": "Funding", "value": "Travel grant review after nomination", "value_type": "text", "display_order": 2, "is_student_visible": 1},
+        ],
+        2: [
+            {"field_key": "host_institution", "label": "Host Institution", "value": "National University of Singapore", "value_type": "text", "display_order": 1, "is_student_visible": 1},
+            {"field_key": "eligibility", "label": "Eligibility", "value": "Open to eligible undergraduate students", "value_type": "text", "display_order": 2, "is_student_visible": 1},
+        ],
+    }
+    for opportunity_id, fields in seed_detail_fields.items():
+        replace_detail_fields(conn, opportunity_id, fields, now)
+        opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        if opp:
+            conn.execute(
+                "UPDATE opportunities SET ai_summary_source_hash = ? WHERE id = ?",
+                (summary_source_hash(dict(opp), fields), opportunity_id),
+            )
 
     email_groups = [
         (1, "ug2024@plaksha.edu.in", "UG 2024 Cohort"),
@@ -1388,6 +1502,20 @@ class CustomFormFieldPayload(BaseModel):
     fieldHint: str | None = None
     inputType: Literal["text", "textarea", "single_select", "multiselect"] = "text"
     options: list[str] = Field(default_factory=list)
+    persistForFuture: bool = True
+
+
+class OpportunityDetailFieldPayload(BaseModel):
+    key: str | None = None
+    field_key: str | None = None
+    label: str
+    value: str
+    valueType: Literal["text", "number", "date"] = "text"
+    value_type: str | None = None
+    displayOrder: int | None = None
+    display_order: int | None = None
+    isStudentVisible: bool = True
+    is_student_visible: bool | None = None
 
 
 class OpportunityPatchBody(BaseModel):
@@ -1403,6 +1531,8 @@ class OpportunityPatchBody(BaseModel):
     customFields: list[CustomFormFieldPayload] | None = None
     workflowSteps: list["WorkflowStepPayload"] | None = None
     generatorVisibilityRules: list["VisibilityRulePayload"] | None = None
+    detailFields: list[OpportunityDetailFieldPayload] | None = None
+    aiSummaryBullets: list[str] | None = None
     useDefaultTemplate: bool | None = None
 
 
@@ -1428,6 +1558,8 @@ class OpportunityCreatePayload(BaseModel):
     opportunity: dict[str, Any]
     formFields: list[str]
     customFields: list[CustomFormFieldPayload] = Field(default_factory=list)
+    detailFields: list[OpportunityDetailFieldPayload] = Field(default_factory=list)
+    aiSummaryBullets: list[str] = Field(default_factory=list)
     workflowSteps: list[WorkflowStepPayload]
     generatorVisibilityRules: list["VisibilityRulePayload"] = Field(default_factory=list)
     useDefaultTemplate: bool | None = False
@@ -2086,12 +2218,7 @@ def replace_opportunity_structure(
     form_fields = ensure_form_fields_exist(conn, form_fields)
     workflow_steps = normalize_workflow_steps(workflow_steps, form_fields)
 
-    conn.execute("DELETE FROM opportunity_required_fields WHERE opportunity_id = ?", (opportunity_id,))
-    for order, field_key in enumerate(form_fields, start=1):
-        conn.execute(
-            "INSERT INTO opportunity_required_fields (opportunity_id, field_key, display_order) VALUES (?, ?, ?)",
-            (opportunity_id, field_key, order),
-        )
+    replace_opportunity_form_fields(conn, opportunity_id, form_fields)
 
     conn.execute("DELETE FROM opportunity_pipeline_steps WHERE opportunity_id = ?", (opportunity_id,))
     prior_step_input_keys: list[str] = []
@@ -2167,6 +2294,21 @@ def replace_opportunity_structure(
             )
             step_input_keys.append(input_key)
         prior_step_input_keys.extend(step_input_keys)
+
+
+def replace_opportunity_form_fields(
+    conn: sqlite3.Connection,
+    opportunity_id: int,
+    form_fields: list[str],
+) -> list[str]:
+    resolved_fields = ensure_form_fields_exist(conn, form_fields)
+    conn.execute("DELETE FROM opportunity_required_fields WHERE opportunity_id = ?", (opportunity_id,))
+    for order, field_key in enumerate(resolved_fields, start=1):
+        conn.execute(
+            "INSERT INTO opportunity_required_fields (opportunity_id, field_key, display_order) VALUES (?, ?, ?)",
+            (opportunity_id, field_key, order),
+        )
+    return resolved_fields
 
 
 def get_pipeline_step_payloads(conn: sqlite3.Connection, opportunity_id: int) -> list[WorkflowStepPayload]:
@@ -2886,7 +3028,14 @@ def form_fields(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> di
 def list_opportunities(session: SessionUser = Depends(get_session)) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        rows = conn.execute("SELECT * FROM opportunities ORDER BY created_at DESC").fetchall()
+        rows = conn.execute(
+            """
+            SELECT id, code, title, description, cover_image_url, term, destination,
+                   deadline, seats, status, created_at, updated_at
+            FROM opportunities
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
             if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, int(row["id"])):
@@ -2929,8 +3078,10 @@ def opportunity_detail(opportunity_id: int, session: SessionUser = Depends(get_s
             (opportunity_id,),
         ).fetchall()
         steps = get_pipeline_steps(conn, opportunity_id)
+        detail_fields = fetch_detail_fields(conn, opportunity_id, visible_only=True)
     return {
-        "opportunity": dict(opp),
+        "opportunity": serialize_opportunity(opp),
+        "detail_fields": detail_fields,
         "required_fields": [serialize_form_field(row) for row in required_fields],
         "workflow_steps": steps,
     }
@@ -3022,8 +3173,10 @@ def admin_get_opportunity(opportunity_id: int, session: SessionUser = Depends(re
         ).fetchall()
         steps = get_pipeline_steps(conn, opportunity_id)
         visibility_rules = get_opportunity_visibility_rules(conn, opportunity_id)
+        detail_fields = fetch_detail_fields(conn, opportunity_id)
     return {
-        "opportunity": dict(opp),
+        "opportunity": serialize_opportunity(opp),
+        "detail_fields": detail_fields,
         "form_fields": [row["field_key"] for row in required_fields],
         "custom_fields": [serialize_form_field(row) for row in custom_fields],
         "workflow_steps": steps,
@@ -3211,16 +3364,17 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
     ensure_db_initialized()
 
     opportunity = payload.opportunity
-    code = str(opportunity.get("code", "")).strip().upper()
     title = str(opportunity.get("title", "")).strip()
 
-    if not code or not title:
-        raise HTTPException(status_code=400, detail="Opportunity code and title are required")
+    if not title:
+        raise HTTPException(status_code=400, detail="Opportunity title is required")
 
     workflow_steps = payload.workflowSteps
     if payload.useDefaultTemplate or not workflow_steps:
         workflow_steps = [WorkflowStepPayload(**item) for item in default_pipeline_template()]
     custom_fields = normalize_custom_form_fields(payload.customFields or [])
+    detail_fields = normalize_detail_fields([field.model_dump() for field in payload.detailFields])
+    ai_summary_bullets = normalize_ai_summary_bullets(payload.aiSummaryBullets)
     visibility_rules = normalize_visibility_rules(payload.generatorVisibilityRules)
     if not visibility_rules:
         raise HTTPException(
@@ -3230,22 +3384,26 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
 
     ts = now_iso()
     with db_conn() as conn:
+        code = str(opportunity.get("code", "")).strip().upper() or generate_unique_opportunity_code(conn, title)
         try:
             cursor = conn.execute(
                 """
                 INSERT INTO opportunities
-                (code, title, description, cover_image_url, term, destination, deadline, seats, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+                (code, title, description, cover_image_url, term, destination, deadline, seats,
+                 ai_summary_json, ai_summary_source_hash, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
                 """,
                 (
                     code,
                     title,
                     opportunity.get("description"),
-                    opportunity.get("cover_image_url"),
+                    validate_cover_image_url(opportunity.get("cover_image_url")),
                     opportunity.get("term"),
                     opportunity.get("destination"),
                     opportunity.get("deadline"),
                     opportunity.get("seats"),
+                    json.dumps(ai_summary_bullets) if ai_summary_bullets else None,
+                    summary_source_hash({**opportunity, "code": code, "title": title}, detail_fields) if ai_summary_bullets else None,
                     ts,
                     ts,
                 ),
@@ -3254,6 +3412,7 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
             raise HTTPException(status_code=409, detail="Opportunity code already exists") from exc
 
         opportunity_id = int(cursor.lastrowid)
+        replace_detail_fields(conn, opportunity_id, detail_fields, ts)
         upsert_custom_form_fields(conn, custom_fields)
         replace_opportunity_structure(conn, opportunity_id, payload.formFields, workflow_steps, ts)
         replace_opportunity_visibility_rules(conn, opportunity_id, visibility_rules, ts)
@@ -3273,22 +3432,32 @@ def admin_patch_opportunity(
     custom_fields_override = body.customFields
     workflow_steps_override = body.workflowSteps
     visibility_rules_override = body.generatorVisibilityRules
+    detail_fields_override = body.detailFields
+    ai_summary_bullets_override = body.aiSummaryBullets
     use_default_template = body.useDefaultTemplate
     core_updates = {
         k: v
-        for k, v in body.model_dump(exclude={"formFields", "customFields", "workflowSteps", "generatorVisibilityRules", "useDefaultTemplate"}).items()
+        for k, v in body.model_dump(exclude={"formFields", "customFields", "workflowSteps", "generatorVisibilityRules", "detailFields", "aiSummaryBullets", "useDefaultTemplate"}).items()
         if v is not None
     }
+    if "cover_image_url" in core_updates:
+        core_updates["cover_image_url"] = validate_cover_image_url(core_updates["cover_image_url"])
 
+    should_update_form_fields = form_fields_override is not None or custom_fields_override is not None
+    should_rewrite_workflow = (
+        workflow_steps_override is not None
+        or bool(use_default_template)
+    )
+    should_update_visibility = visibility_rules_override is not None
     should_rewrite_structure = (
-        form_fields_override is not None
-        or custom_fields_override is not None
-        or workflow_steps_override is not None
+        should_update_form_fields
+        or should_rewrite_workflow
         or visibility_rules_override is not None
         or bool(use_default_template)
     )
+    should_update_details = detail_fields_override is not None or ai_summary_bullets_override is not None
 
-    if not core_updates and not should_rewrite_structure:
+    if not core_updates and not should_update_form_fields and not should_rewrite_workflow and not should_update_visibility and not should_update_details:
         raise HTTPException(status_code=400, detail="No fields provided")
 
     with db_conn() as conn:
@@ -3303,7 +3472,8 @@ def admin_patch_opportunity(
             values = tuple(core_updates.values()) + (opportunity_id,)
             conn.execute(f"UPDATE opportunities SET {columns} WHERE id = ?", values)
 
-        if should_rewrite_structure:
+        current_form_fields: list[str] | None = None
+        if should_update_form_fields or should_rewrite_workflow:
             if form_fields_override is None:
                 rows = conn.execute(
                     """
@@ -3316,7 +3486,15 @@ def admin_patch_opportunity(
                 form_fields = [row["field_key"] for row in rows]
             else:
                 form_fields = form_fields_override
+            current_form_fields = form_fields
 
+        if should_update_form_fields:
+            if custom_fields_override is not None:
+                normalized_custom_fields = normalize_custom_form_fields(custom_fields_override)
+                upsert_custom_form_fields(conn, normalized_custom_fields)
+            replace_opportunity_form_fields(conn, opportunity_id, current_form_fields or [])
+
+        if should_rewrite_workflow:
             if use_default_template:
                 workflow_steps = [WorkflowStepPayload(**item) for item in default_pipeline_template()]
             elif workflow_steps_override is not None:
@@ -3324,19 +3502,47 @@ def admin_patch_opportunity(
             else:
                 workflow_steps = get_pipeline_step_payloads(conn, opportunity_id)
 
-            if custom_fields_override is not None:
-                normalized_custom_fields = normalize_custom_form_fields(custom_fields_override)
-                upsert_custom_form_fields(conn, normalized_custom_fields)
+            replace_opportunity_structure(conn, opportunity_id, current_form_fields or [], workflow_steps, ts)
 
-            replace_opportunity_structure(conn, opportunity_id, form_fields, workflow_steps, ts)
-            if visibility_rules_override is not None:
-                normalized_visibility_rules = normalize_visibility_rules(visibility_rules_override)
-                if not normalized_visibility_rules:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Define at least one eligible generator email/group rule for this opportunity.",
-                    )
-                replace_opportunity_visibility_rules(conn, opportunity_id, normalized_visibility_rules, ts)
+        if should_update_visibility:
+            normalized_visibility_rules = normalize_visibility_rules(visibility_rules_override)
+            if not normalized_visibility_rules:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Define at least one eligible generator email/group rule for this opportunity.",
+                )
+            replace_opportunity_visibility_rules(conn, opportunity_id, normalized_visibility_rules, ts)
+
+        if should_update_form_fields or should_rewrite_workflow or should_update_visibility:
+            conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
+
+        if should_update_details:
+            if detail_fields_override is not None:
+                replace_detail_fields(
+                    conn,
+                    opportunity_id,
+                    normalize_detail_fields([field.model_dump() for field in detail_fields_override]),
+                    ts,
+                )
+            if ai_summary_bullets_override is not None:
+                detail_fields = fetch_detail_fields(conn, opportunity_id)
+                current = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+                bullets = normalize_ai_summary_bullets(ai_summary_bullets_override)
+                conn.execute(
+                    """
+                    UPDATE opportunities
+                    SET ai_summary_json = ?,
+                        ai_summary_source_hash = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(bullets) if bullets else None,
+                        summary_source_hash(dict(current), detail_fields) if bullets and current else None,
+                        ts,
+                        opportunity_id,
+                    ),
+                )
             conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
 
         conn.commit()
@@ -3358,8 +3564,10 @@ def admin_patch_opportunity(
         ).fetchall()
         steps = get_pipeline_steps(conn, opportunity_id)
         visibility_rules = get_opportunity_visibility_rules(conn, opportunity_id)
+        detail_fields = fetch_detail_fields(conn, opportunity_id)
     return {
-        "opportunity": dict(opp) if opp else None,
+        "opportunity": serialize_opportunity(opp) if opp else None,
+        "detail_fields": detail_fields,
         "form_fields": [row["field_key"] for row in required_fields],
         "custom_fields": [serialize_form_field(row) for row in custom_fields],
         "workflow_steps": steps,
@@ -3434,6 +3642,10 @@ def create_application(body: ApplicationCreateBody, session: SessionUser = Depen
             raise HTTPException(status_code=404, detail="Opportunity not found")
         if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, body.opportunityId):
             raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
+
+        deadline = enforced_deadline(conn, body.opportunityId)
+        if deadline and datetime.now(timezone.utc).date() > deadline:
+            raise HTTPException(status_code=400, detail="This opportunity deadline has passed.")
 
         # Check whether this opportunity has an active graph version.
         active_graph = conn.execute(

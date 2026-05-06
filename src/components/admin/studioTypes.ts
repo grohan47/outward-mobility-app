@@ -17,6 +17,16 @@ export type CustomFieldDraft = {
   fieldHint: string;
   inputType: "text" | "textarea" | "single_select" | "multiselect";
   optionsText: string;
+  persistForFuture?: boolean;
+};
+
+export type OpportunityDetailField = {
+  field_key: string;
+  label: string;
+  value: string;
+  value_type: "text" | "number" | "date";
+  display_order: number;
+  is_student_visible: boolean;
 };
 
 export type RequiredInputType = "text" | "number" | "dropdown" | "multiselect";
@@ -57,6 +67,8 @@ export type OpportunityData = {
   deadline: string;
   seats: number;
   status: string;
+  ai_summary_bullets: string[];
+  ai_summary_source_hash?: string | null;
 };
 
 export type StudioNodeType = "start" | "reviewer" | "join_all" | "join_any" | "conditional" | "end";
@@ -103,6 +115,8 @@ export type DraftOutput = {
     seats?: number | null;
     host_institution?: string | null;
     program_type?: string | null;
+    detail_fields?: OpportunityDetailField[];
+    ai_summary_bullets?: string[];
     eligibility_criteria?: string | null;
     funding_available?: boolean;
     visibility?: string;

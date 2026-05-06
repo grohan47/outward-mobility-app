@@ -11,18 +11,21 @@ interface Opportunity {
   title: string;
   description?: string | null;
   ai_ctas?: string[];
+  ai_summary_bullets?: string[];
   code: string;
-  destination: string;
-  term: string;
-  deadline: string;
-  seats: number;
-  cover_image_url?: string;
 }
+
+type DetailField = {
+  field_key: string;
+  label: string;
+  value: string;
+};
 
 export default function GeneratorOpportunities() {
   const [items, setItems] = useState<Opportunity[]>([]);
   const [loading, setLoading] = useState(true);
   const [focusedId, setFocusedId] = useState<number | null>(null);
+  const [detailCache, setDetailCache] = useState<Record<number, { opportunity: Opportunity; detail_fields: DetailField[] }>>({});
   const router = useRouter();
 
   useEffect(() => {
@@ -41,6 +44,28 @@ export default function GeneratorOpportunities() {
   }
 
   const focusedOpportunity = items.find((item) => item.id === focusedId) || null;
+  const focusedDetail = focusedId ? detailCache[focusedId] : null;
+
+  useEffect(() => {
+    if (!focusedId || detailCache[focusedId]) return;
+    fetch(`/api/opportunities/${focusedId}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setDetailCache((prev) => ({
+          ...prev,
+          [focusedId]: {
+            opportunity: d.opportunity || {},
+            detail_fields: Array.isArray(d.detail_fields) ? d.detail_fields : [],
+          },
+        }));
+      })
+      .catch(() => {
+        setDetailCache((prev) => ({
+          ...prev,
+          [focusedId]: { opportunity: focusedOpportunity || ({} as Opportunity), detail_fields: [] },
+        }));
+      });
+  }, [detailCache, focusedId, focusedOpportunity]);
 
   return (
     <div className="space-y-6">
@@ -75,17 +100,9 @@ export default function GeneratorOpportunities() {
               }`}
             >
               <div className="flex-1">
-                {opp.cover_image_url && (
-                  <img
-                    src={opp.cover_image_url}
-                    alt={opp.title}
-                    className="w-full h-36 object-cover rounded-xl mb-4 border border-slate-100"
-                  />
-                )}
-
                 <div className="flex items-start justify-between mb-4">
-                  <Badge variant="neutral" icon="pin_drop">
-                    {opp.destination}
+                  <Badge variant="neutral" icon="auto_awesome">
+                    PRISM
                   </Badge>
                   <span className="text-xs font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-md">{opp.code}</span>
                 </div>
@@ -108,23 +125,7 @@ export default function GeneratorOpportunities() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 gap-4 mt-6">
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Term</span>
-                    <span className="text-sm font-semibold text-slate-700">{opp.term || "-"}</span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Seats Available</span>
-                    <span className="text-sm font-semibold text-slate-700">{opp.seats ?? "-"}</span>
-                  </div>
-                  <div className="flex flex-col col-span-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Application Deadline</span>
-                    <div className="flex items-center gap-1.5 text-sm font-bold text-amber-600">
-                      <span className="material-symbols-outlined text-[16px]">schedule</span>
-                      {opp.deadline ? new Date(opp.deadline).toLocaleDateString() : "Not specified"}
-                    </div>
-                  </div>
-                </div>
+                <p className="mt-6 text-xs font-semibold uppercase tracking-wider text-slate-400">Open details to review eligibility, dates, and other opportunity facts.</p>
               </div>
 
               {focusedId === opp.id && (
@@ -157,15 +158,12 @@ export default function GeneratorOpportunities() {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="relative">
-                {focusedOpportunity.cover_image_url ? (
-                  <img
-                    src={focusedOpportunity.cover_image_url}
-                    alt={focusedOpportunity.title}
-                    className="w-full h-56 md:h-72 object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-56 md:h-72 bg-gradient-to-r from-primary/20 via-sky-200 to-indigo-100" />
-                )}
+                <div className="flex h-28 items-center bg-slate-900 px-6 text-white md:h-32">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-white/60">{focusedOpportunity.code}</p>
+                    <p className="mt-1 text-2xl font-black tracking-tight">{focusedOpportunity.title}</p>
+                  </div>
+                </div>
                 <button
                   type="button"
                   onClick={() => setFocusedId(null)}
@@ -177,8 +175,8 @@ export default function GeneratorOpportunities() {
 
               <div className="p-6 md:p-8">
                 <div className="flex flex-wrap items-center gap-3 mb-3">
-                  <Badge variant="neutral" icon="pin_drop">
-                    {focusedOpportunity.destination}
+                  <Badge variant="neutral" icon="auto_awesome">
+                    PRISM
                   </Badge>
                   <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md">{focusedOpportunity.code}</span>
                 </div>
@@ -194,19 +192,30 @@ export default function GeneratorOpportunities() {
                   </div>
 
                   <aside className="rounded-2xl border border-primary/20 bg-primary/5 p-5">
-                    <p className="text-xs uppercase tracking-wider font-semibold text-primary mb-3">AI CTA Highlights</p>
+                    <p className="text-xs uppercase tracking-wider font-semibold text-primary mb-3">PRISM Summary</p>
                     <ul className="space-y-2">
-                      {(focusedOpportunity.ai_ctas || []).map((cta) => (
+                      {(focusedDetail?.opportunity.ai_summary_bullets || focusedOpportunity.ai_ctas || []).map((cta) => (
                         <li key={cta} className="rounded-lg bg-white border border-primary/20 px-3 py-2 text-xs text-slate-700">
                           {cta}
                         </li>
                       ))}
-                      {(focusedOpportunity.ai_ctas || []).length === 0 && (
-                        <li className="text-xs text-slate-500">No CTA highlights available.</li>
+                      {(focusedDetail?.opportunity.ai_summary_bullets || focusedOpportunity.ai_ctas || []).length === 0 && (
+                        <li className="text-xs text-slate-500">No summary available.</li>
                       )}
                     </ul>
                   </aside>
                 </div>
+
+                {(focusedDetail?.detail_fields || []).length > 0 && (
+                  <div className="mt-6 grid gap-3 md:grid-cols-2">
+                    {(focusedDetail?.detail_fields || []).map((field) => (
+                      <div key={field.field_key} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{field.label}</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-800">{field.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="mt-8 pt-6 border-t border-slate-100 flex justify-end">
                   <Button className="w-full md:w-auto md:min-w-56" icon="rocket_launch" onClick={() => applyToOpportunity(focusedOpportunity.id)}>

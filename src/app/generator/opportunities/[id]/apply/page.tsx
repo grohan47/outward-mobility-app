@@ -20,10 +20,13 @@ type OpportunityDetailPayload = {
     id: number;
     title: string;
     description: string | null;
-    term: string | null;
-    destination: string | null;
-    deadline: string | null;
+    ai_summary_bullets?: string[];
   };
+  detail_fields: Array<{
+    field_key: string;
+    label: string;
+    value: string;
+  }>;
   required_fields: RequiredField[];
 };
 
@@ -136,9 +139,6 @@ export default function OpportunityApplyPage() {
         </button>
 
         <h1 className="text-3xl font-black text-slate-900 tracking-tight">Apply: {payload.opportunity.title}</h1>
-        <p className="text-slate-500 mt-1">
-          {[payload.opportunity.term, payload.opportunity.destination].filter(Boolean).join(" • ")}
-        </p>
         {payload.opportunity.description && (
           <div className="mt-5 grid gap-4 lg:grid-cols-[2fr,1fr]">
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -146,16 +146,26 @@ export default function OpportunityApplyPage() {
               <p className="text-sm text-slate-700 leading-6">{payload.opportunity.description}</p>
             </div>
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
-              <p className="text-sm font-semibold text-primary mb-2">AI-Suggested CTAs</p>
+              <p className="text-sm font-semibold text-primary mb-2">PRISM Summary</p>
               <ul className="space-y-2">
-                {ctaItems.map((cta) => (
+                {(payload.opportunity.ai_summary_bullets || ctaItems).map((cta) => (
                   <li key={cta} className="text-xs text-slate-700 bg-white border border-primary/20 rounded-lg px-2.5 py-2">
                     {cta}
                   </li>
                 ))}
-                {ctaItems.length === 0 && <li className="text-xs text-slate-500">No CTAs generated yet.</li>}
+                {(payload.opportunity.ai_summary_bullets || ctaItems).length === 0 && <li className="text-xs text-slate-500">No summary generated yet.</li>}
               </ul>
             </div>
+          </div>
+        )}
+        {(payload.detail_fields || []).length > 0 && (
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {(payload.detail_fields || []).map((field) => (
+              <div key={field.field_key} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{field.label}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-800">{field.value}</p>
+              </div>
+            ))}
           </div>
         )}
       </div>

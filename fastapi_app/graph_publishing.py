@@ -7,6 +7,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi_app.graph_models import AIWorkflowDraftOutput
+from fastapi_app.opportunity_details import (
+    generate_unique_opportunity_code,
+    normalize_ai_summary_bullets,
+    normalize_detail_fields,
+    replace_detail_fields,
+    summary_source_hash,
+    validate_cover_image_url,
+)
 
 
 def _now_iso() -> str:
@@ -55,6 +63,8 @@ class GraphPublishingService:
                     "UPDATE workflow_drafts SET opportunity_id = ? WHERE id = ?",
                     (opportunity_id, draft_id),
                 )
+            else:
+                self._update_opportunity(db, int(opportunity_id), parsed)
 
             version = self._next_version(db, opportunity_id)
             ts = _now_iso()
@@ -117,29 +127,69 @@ class GraphPublishingService:
     ) -> int:
         opp = parsed.opportunity
         ts = _now_iso()
-        ts_label = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-        code_seed = _slugify(opp.code or opp.title).upper()[:20] or "AI_OPP"
-        code = f"{code_seed}_{ts_label}"
+        code = opp.code or generate_unique_opportunity_code(db, opp.title)
 
         cursor = db.execute(
             """
             INSERT INTO opportunities
-              (code, title, description, term, destination, deadline, seats, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
+              (code, title, description, cover_image_url, term, destination, deadline, seats,
+               ai_summary_json, ai_summary_source_hash, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
             """,
             (
                 code,
                 opp.title,
                 opp.description,
+                validate_cover_image_url(opp.cover_image_url),
                 opp.term or "TBD",
                 opp.destination or opp.host_institution or "Global",
                 opp.deadline or f"{datetime.now(timezone.utc).year}-12-31",
                 opp.seats or 10,
+                json.dumps(normalize_ai_summary_bullets(opp.ai_summary_bullets)) if opp.ai_summary_bullets else None,
+                summary_source_hash(opp.model_dump(), normalize_detail_fields(opp.detail_fields)) if opp.ai_summary_bullets else None,
                 ts,
                 ts,
             ),
         )
-        return int(cursor.lastrowid)
+        opportunity_id = int(cursor.lastrowid)
+        replace_detail_fields(db, opportunity_id, normalize_detail_fields(opp.detail_fields), ts)
+        return opportunity_id
+
+    def _update_opportunity(self, db: sqlite3.Connection, opportunity_id: int, parsed: AIWorkflowDraftOutput) -> None:
+        opp = parsed.opportunity
+        ts = _now_iso()
+        detail_fields = normalize_detail_fields(opp.detail_fields)
+        bullets = normalize_ai_summary_bullets(opp.ai_summary_bullets)
+        db.execute(
+            """
+            UPDATE opportunities
+            SET title = ?,
+                description = ?,
+                cover_image_url = ?,
+                term = ?,
+                destination = ?,
+                deadline = ?,
+                seats = ?,
+                ai_summary_json = ?,
+                ai_summary_source_hash = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                opp.title,
+                opp.description,
+                validate_cover_image_url(opp.cover_image_url),
+                opp.term,
+                opp.destination or opp.host_institution,
+                opp.deadline,
+                opp.seats,
+                json.dumps(bullets) if bullets else None,
+                summary_source_hash(opp.model_dump(), detail_fields) if bullets else None,
+                ts,
+                opportunity_id,
+            ),
+        )
+        replace_detail_fields(db, opportunity_id, detail_fields, ts)
 
     def _next_version(self, db: sqlite3.Connection, opportunity_id: int) -> int:
         row = db.execute(

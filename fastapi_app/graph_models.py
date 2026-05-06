@@ -52,6 +52,8 @@ class OpportunityDraftModel(BaseModel):
     seats: int | None = None
     host_institution: str | None = None
     program_type: str | None = None
+    detail_fields: list[dict[str, Any]] = Field(default_factory=list)
+    ai_summary_bullets: list[str] = Field(default_factory=list)
     eligibility_criteria: str | None = None
     funding_available: bool = False
     visibility: str = "plaksha_only"

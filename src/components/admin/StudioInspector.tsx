@@ -192,8 +192,9 @@ export default function StudioInspector({
           )}
         </section>
 
-        <FieldLabel label="Visible fields at this stage">
+        <FieldLabel label="Student application fields visible at this stage">
           <div className="flex flex-wrap gap-2">
+            {availableFields.length === 0 && <p className="text-sm text-slate-400">No application fields selected yet.</p>}
             {availableFields.map((field) => {
               const checked = node.visible_sections.includes(field.field_key) || node.visible_sections.includes("all");
               return (
@@ -275,6 +276,27 @@ export default function StudioInspector({
                     <span className="material-symbols-outlined text-[18px]">close</span>
                   </button>
                 </div>
+                {input.input_type === "select" && (
+                  <textarea
+                    rows={2}
+                    className="mt-2 w-full resize-none rounded-md border border-slate-200 bg-white p-2 text-sm"
+                    value={(input.options || []).join(", ")}
+                    onChange={(event) =>
+                      updateRequiredInput(
+                        node,
+                        index,
+                        {
+                          options: event.target.value
+                            .split(/[,;\n]+/)
+                            .map((item) => item.trim())
+                            .filter(Boolean),
+                        },
+                        onUpdateNode
+                      )
+                    }
+                    placeholder="Options separated by commas or new lines"
+                  />
+                )}
               </div>
             ))}
           </div>

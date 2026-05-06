@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Response
 
@@ -15,6 +15,7 @@ from fastapi_app.main import (
     LoginBody,
     OpportunityCreatePayload,
     OpportunityAIGenerateBody,
+    OpportunityDetailFieldPayload,
     OpportunityPatchBody,
     SessionUser,
     StudentResponseBody,
@@ -122,6 +123,22 @@ class ApiEndpointTests(unittest.TestCase):
                     label="Organization Unit",
                     description="Department or unit information.",
                 )
+            ],
+            detailFields=[
+                OpportunityDetailFieldPayload(
+                    key="host_institution",
+                    label="Host Institution",
+                    value="Test University",
+                ),
+                OpportunityDetailFieldPayload(
+                    key="funding",
+                    label="Funding",
+                    value="Need-based travel grant review",
+                ),
+            ],
+            aiSummaryBullets=[
+                "Students apply through PRISM after reviewing eligibility.",
+                "Funding is reviewed after nomination.",
             ],
             workflowSteps=[
                 WorkflowStepPayload(
@@ -320,11 +337,21 @@ class ApiEndpointTests(unittest.TestCase):
 
             detail = admin_get_opportunity(opportunity_id, session=admin_session)
             self.assertTrue(any(f["field_key"] == "custom_org_unit" for f in detail.get("custom_fields", [])))
+            self.assertEqual([row["label"] for row in detail.get("detail_fields", [])][:2], ["Host Institution", "Funding"])
+            self.assertIn("Students apply through PRISM", " ".join(detail["opportunity"].get("ai_summary_bullets", [])))
 
             patch = admin_patch_opportunity(
                 opportunity_id,
                 OpportunityPatchBody(
                     title="CRUD Opportunity Updated",
+                    detailFields=[
+                        OpportunityDetailFieldPayload(
+                            key="deadline_note",
+                            label="Deadline Note",
+                            value="Late applications are not accepted.",
+                        )
+                    ],
+                    aiSummaryBullets=["Updated summary for student detail page."],
                     formFields=["full_name", "student_id", "email", "cgpa", "custom_org_unit"],
                     customFields=[
                         CustomFormFieldPayload(
@@ -337,6 +364,8 @@ class ApiEndpointTests(unittest.TestCase):
                 session=admin_session,
             )
             self.assertEqual(patch["opportunity"]["title"], "CRUD Opportunity Updated")
+            self.assertEqual(patch["detail_fields"][0]["field_key"], "deadline_note")
+            self.assertEqual(patch["opportunity"]["ai_summary_bullets"], ["Updated summary for student detail page."])
 
             vis_all = admin_visibility_audit(session=admin_session)
             self.assertGreaterEqual(vis_all.get("count", 0), 1)
@@ -350,6 +379,8 @@ class ApiEndpointTests(unittest.TestCase):
             generator_detail = opportunity_detail(opportunity_id, session=student_session)
             keys = [row["field_key"] for row in generator_detail.get("required_fields", [])]
             self.assertIn("custom_org_unit", keys)
+            self.assertEqual(generator_detail["detail_fields"][0]["label"], "Deadline Note")
+            self.assertEqual(generator_detail["opportunity"]["ai_summary_bullets"], ["Updated summary for student detail page."])
 
             nomination_ai = opportunity_ai_nomination_insights(opportunity_id, session=student_session)
             self.assertIn("nominations_assist", nomination_ai)
@@ -361,6 +392,138 @@ class ApiEndpointTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as deleted_lookup:
             admin_get_opportunity(opportunity_id, session=admin_session)
         self.assertEqual(deleted_lookup.exception.status_code, 404)
+
+    def test_opportunity_cover_image_requires_https(self):
+        payload = OpportunityCreatePayload(
+            opportunity={
+                "code": "BAD_COVER_TEST",
+                "title": "Bad Cover URL Test",
+                "description": "Cover URL validation test",
+                "cover_image_url": "javascript:alert(1)",
+                "term": "Fall 2026",
+                "destination": "Test Destination",
+                "deadline": "2026-12-31",
+                "seats": 5,
+            },
+            formFields=["full_name", "student_id", "email", "cgpa"],
+            customFields=[],
+            detailFields=[],
+            aiSummaryBullets=[],
+            workflowSteps=[
+                WorkflowStepPayload(
+                    name="OGE Intake Review",
+                    reviewerEmail="oge@plaksha.edu.in",
+                    reviewerName="OGE Admin",
+                    visibleFields=["full_name", "student_id", "email", "cgpa"],
+                    requiredInputs=[],
+                    slaHours=24,
+                    canViewComments=True,
+                )
+            ],
+            useDefaultTemplate=False,
+            generatorVisibilityRules=[
+                {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
+            ],
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            admin_create_opportunity(payload, session=self.session_for("oge@plaksha.edu.in"))
+        self.assertEqual(raised.exception.status_code, 400)
+
+    def test_opportunity_code_autogenerates_from_database(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+        payload = OpportunityCreatePayload(
+            opportunity={
+                "title": "Auto Code Opportunity",
+                "description": "Code should be generated by the backend.",
+            },
+            formFields=["full_name", "student_id", "email", "cgpa"],
+            customFields=[],
+            detailFields=[],
+            aiSummaryBullets=[],
+            workflowSteps=[
+                WorkflowStepPayload(
+                    name="OGE Intake Review",
+                    reviewerEmail="oge@plaksha.edu.in",
+                    reviewerName="OGE Admin",
+                    visibleFields=["full_name", "student_id", "email", "cgpa"],
+                    requiredInputs=[],
+                    slaHours=24,
+                    canViewComments=True,
+                )
+            ],
+            useDefaultTemplate=False,
+            generatorVisibilityRules=[
+                {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
+            ],
+        )
+        first = admin_create_opportunity(payload, session=admin)
+        second = admin_create_opportunity(payload, session=admin)
+        try:
+            first_detail = admin_get_opportunity(int(first["id"]), session=admin)
+            second_detail = admin_get_opportunity(int(second["id"]), session=admin)
+            self.assertEqual(first_detail["opportunity"]["code"], "AUTO_CODE_OPPORTUNITY")
+            self.assertEqual(second_detail["opportunity"]["code"], "AUTO_CODE_OPPORTUNITY_2")
+        finally:
+            admin_delete_opportunity(int(first["id"]), session=admin)
+            admin_delete_opportunity(int(second["id"]), session=admin)
+
+    def test_application_create_rejects_expired_detail_deadline(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+        student = self.session_for("rohan@plaksha.edu.in")
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+        payload = OpportunityCreatePayload(
+            opportunity={
+                "title": "Expired Detail Deadline",
+                "description": "Deadline should block late applications.",
+            },
+            formFields=["full_name", "student_id", "email", "cgpa"],
+            customFields=[],
+            detailFields=[
+                OpportunityDetailFieldPayload(
+                    key="application_deadline",
+                    label="Application Deadline",
+                    value=yesterday,
+                    valueType="date",
+                )
+            ],
+            aiSummaryBullets=[],
+            workflowSteps=[
+                WorkflowStepPayload(
+                    name="OGE Intake Review",
+                    reviewerEmail="oge@plaksha.edu.in",
+                    reviewerName="OGE Admin",
+                    visibleFields=["full_name", "student_id", "email", "cgpa"],
+                    requiredInputs=[],
+                    slaHours=24,
+                    canViewComments=True,
+                )
+            ],
+            useDefaultTemplate=False,
+            generatorVisibilityRules=[
+                {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
+            ],
+        )
+        created = admin_create_opportunity(payload, session=admin)
+        opportunity_id = int(created["id"])
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                create_application(
+                    ApplicationCreateBody(
+                        opportunityId=opportunity_id,
+                        submittedData={
+                            "full_name": "Rohan",
+                            "student_id": "PL-2022-ROH",
+                            "email": "rohan@plaksha.edu.in",
+                            "cgpa": "8.1",
+                        },
+                    ),
+                    session=student,
+                )
+            self.assertEqual(raised.exception.status_code, 400)
+            self.assertIn("deadline has passed", str(raised.exception.detail))
+        finally:
+            admin_delete_opportunity(opportunity_id, session=admin)
 
     def test_admin_ai_opportunity_generation(self):
         # Without a real AI provider, the service returns a deterministic fallback draft.

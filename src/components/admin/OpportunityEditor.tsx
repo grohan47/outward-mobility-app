@@ -8,6 +8,7 @@ import type {
   GeneratorVisibilityRule,
   ImpactApplication,
   OpportunityData,
+  OpportunityDetailField,
   RequiredInput,
   RequiredInputType,
   StudioGraphEdge,
@@ -31,6 +32,7 @@ const blankOpportunity: OpportunityData = {
   deadline: "",
   seats: 0,
   status: "published",
+  ai_summary_bullets: [],
 };
 
 function slugify(value: string): string {
@@ -147,6 +149,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
   const [opportunity, setOpportunity] = useState<OpportunityData>(blankOpportunity);
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
   const [customFields, setCustomFields] = useState<CustomFieldDraft[]>([]);
+  const [detailFields, setDetailFields] = useState<OpportunityDetailField[]>([]);
   const [generatorVisibilityRules, setGeneratorVisibilityRules] = useState<GeneratorVisibilityRule[]>([
     { ruleType: "GROUP_EMAIL", ruleValue: "" },
   ]);
@@ -208,7 +211,19 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
           deadline: String(opp.deadline || ""),
           seats: Number(opp.seats || 0),
           status: String(opp.status || "published"),
+          ai_summary_bullets: Array.isArray(opp.ai_summary_bullets) ? opp.ai_summary_bullets.map(String) : parseJson<string[]>(opp.ai_summary_json, []),
+          ai_summary_source_hash: typeof opp.ai_summary_source_hash === "string" ? opp.ai_summary_source_hash : null,
         });
+        setDetailFields(
+          (Array.isArray(detailData.detail_fields) ? detailData.detail_fields : []).map((field: any, index: number) => ({
+          field_key: String(field.field_key || `detail_${index + 1}`),
+          label: String(field.label || ""),
+          value: String(field.value || ""),
+          value_type: ["text", "number", "date"].includes(field.value_type) ? field.value_type : "text",
+            display_order: Number(field.display_order || index + 1),
+            is_student_visible: field.is_student_visible !== 0 && field.is_student_visible !== false,
+          }))
+        );
         setSelectedFields(Array.isArray(detailData.form_fields) ? detailData.form_fields : []);
         setCustomFields(
           (Array.isArray(detailData.custom_fields) ? detailData.custom_fields : []).map((field: any) => ({
@@ -218,6 +233,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
             fieldHint: String(field.field_hint || field.description || ""),
             inputType: ["text", "textarea", "single_select", "multiselect"].includes(field.input_type) ? field.input_type : "text",
             optionsText: Array.isArray(field.options) ? field.options.join(", ") : parseJson<string[]>(field.options_json, []).join(", "),
+            persistForFuture: true,
           }))
         );
         setGeneratorVisibilityRules(
@@ -278,6 +294,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
       availableFields={availableFields}
       defaultPipeline={defaultPipeline}
       initialOpportunity={opportunity}
+      initialDetailFields={detailFields}
       initialSelectedFields={selectedFields}
       initialCustomFields={customFields}
       initialGeneratorVisibilityRules={generatorVisibilityRules}
