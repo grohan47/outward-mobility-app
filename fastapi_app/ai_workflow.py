@@ -111,10 +111,10 @@ BATCH / ELIGIBILITY INFERENCE:
 
 APPLICANT FORM FIELDS RULES:
 - Always include: full_name, student_id, email, cgpa, statement_of_purpose.
-- Add resume_url if the email mentions CV, resume, or portfolio.
+- Add resume_upload if the email mentions CV, resume, or portfolio.
 - Add custom_funding_plan if funding, scholarship, or budget justification is mentioned.
 - Add custom_research_focus if research, lab, or project topic selection is mentioned.
-- Add custom_language_cert if language proficiency or IELTS/TOEFL is required.
+- Add language_score if language proficiency or IELTS/TOEFL is required.
 
 STANDARD PLAKSHA APPROVAL PATHWAY:
 If the email does not specify an explicit reviewer/approval chain, use this graph.

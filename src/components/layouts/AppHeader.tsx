@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import SLANotificationBanner from "@/components/SLANotificationBanner";
 
 interface AppHeaderProps {
   userName: string;
@@ -48,6 +49,7 @@ export function AppHeader({ userName, roleDisplayName, canSwitchWorkspace = fals
       </div>
 
       <div className="flex items-center gap-5">
+        <SLANotificationBanner />
         {canSwitchWorkspace && (
           <Link
             href="/select-workspace"

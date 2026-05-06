@@ -172,7 +172,7 @@
     "email",
     "cgpa",
     "statement_of_purpose",
-    "resume_url"
+    "resume_upload"
   ],
   "clarifying_questions": [],
   "confidence": 0.9,

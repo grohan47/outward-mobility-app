@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from datetime import date
@@ -9,6 +10,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
+
+_log = logging.getLogger(__name__)
 
 
 DETAIL_VALUE_TYPES = {"text", "number", "date"}
@@ -200,3 +203,44 @@ def summary_source_hash(opportunity: dict[str, Any], detail_fields: list[dict[st
     }
     raw = json.dumps(source, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for v in values:
+        key = v.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(key)
+    return result
+
+
+def ensure_form_fields_exist(conn: sqlite3.Connection, form_fields: list[str]) -> list[str]:
+    normalized = _dedupe_preserve_order(form_fields)
+    if not normalized:
+        return []
+
+    rows = conn.execute(
+        "SELECT field_key FROM form_field_catalog WHERE is_active = 1",
+    ).fetchall()
+    known = {row["field_key"] for row in rows}
+    invalid = [key for key in normalized if key not in known]
+    if invalid:
+        _log.warning("Skipping unknown form field keys (not in catalog): %s", ", ".join(invalid))
+    return [key for key in normalized if key in known]
+
+
+def replace_opportunity_form_fields(
+    conn: sqlite3.Connection,
+    opportunity_id: int,
+    form_fields: list[str],
+) -> list[str]:
+    resolved_fields = ensure_form_fields_exist(conn, form_fields)
+    conn.execute("DELETE FROM opportunity_required_fields WHERE opportunity_id = ?", (opportunity_id,))
+    for order, field_key in enumerate(resolved_fields, start=1):
+        conn.execute(
+            "INSERT INTO opportunity_required_fields (opportunity_id, field_key, display_order) VALUES (?, ?, ?)",
+            (opportunity_id, field_key, order),
+        )
+    return resolved_fields

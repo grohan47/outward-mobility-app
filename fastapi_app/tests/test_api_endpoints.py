@@ -61,6 +61,7 @@ from fastapi_app.main import (
     ensure_db_initialized,
     form_fields,
     get_comments,
+    get_sla_notifications,
     get_user_role,
     health,
     list_tables,
@@ -83,7 +84,7 @@ from fastapi_app.main import (
 )
 from fastapi_app.graph_execution import GraphExecutionService
 from fastapi_app.graph_publishing import GraphPublishingService
-from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, GraphNodeModel, GraphEdgeModel
+from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, GraphNodeModel, GraphEdgeModel, OpportunityDraftModel
 
 
 class ApiEndpointTests(unittest.TestCase):
@@ -258,6 +259,7 @@ class ApiEndpointTests(unittest.TestCase):
             ("GET", "/api/admin/dashboard/summary"),
             ("GET", "/api/admin/applications"),
             ("PATCH", "/api/admin/applications/{application_id}"),
+            ("GET", "/api/admin/sla-notifications"),
         }
 
         actual_routes = set()
@@ -718,6 +720,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                     GraphEdgeModel(from_node_key="review", to_node_key="end"),
                 ],
             ),
+            applicant_form_fields=[],
             clarifying_questions=[],
             confidence=0.9,
             warnings=[],
@@ -1170,6 +1173,82 @@ class GraphPublishingRouteTests(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0]["status"], "active")
         self.assertEqual(tasks[0]["node_key"], "review")
+
+    def test_publish_draft_writes_form_fields(self):
+        """Chunk B: publishing a draft with applicant_form_fields persists them to the DB."""
+        output = AIWorkflowDraftOutput(
+            opportunity=OpportunityDraftModel(
+                title="Form Fields Publish Test",
+                description="Verify form fields are written on publish.",
+                host_institution="Test University",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="review",
+                        node_type="reviewer",
+                        display_name="OGE Review",
+                        reviewer_email="oge@plaksha.edu.in",
+                    ),
+                    GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="review"),
+                    GraphEdgeModel(from_node_key="review", to_node_key="end"),
+                ],
+            ),
+            applicant_form_fields=["full_name", "cgpa", "email"],
+            clarifying_questions=[],
+            confidence=0.95,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'ready', ?, '[]', '{}', '[]', 0.95, 1, ?, ?, ?)
+                """,
+                (output.model_dump_json(), "oge@plaksha.edu.in", ts, ts),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_publish_workflow_draft(draft_id, session=admin)
+        self.assertIn("graph_version_id", resp)
+
+        with db_conn() as conn:
+            draft = conn.execute("SELECT opportunity_id FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+            opportunity_id = draft["opportunity_id"]
+            self.assertIsNotNone(opportunity_id)
+
+            rows = conn.execute(
+                "SELECT field_key FROM opportunity_required_fields WHERE opportunity_id = ? ORDER BY display_order ASC",
+                (opportunity_id,),
+            ).fetchall()
+            field_keys = [row["field_key"] for row in rows]
+
+        self.assertEqual(len(field_keys), 3)
+        self.assertIn("full_name", field_keys)
+        self.assertIn("cgpa", field_keys)
+        self.assertIn("email", field_keys)
+
+    def test_sla_notifications_endpoint_returns_summary(self):
+        """Chunk C: the SLA notifications endpoint returns the expected keys."""
+        admin = self.session_for("oge@plaksha.edu.in")
+        result = get_sla_notifications(session=admin)
+        self.assertIn("approaching", result)
+        self.assertIn("breached", result)
+        self.assertIn("items", result)
+        self.assertIsInstance(result["approaching"], int)
+        self.assertIsInstance(result["breached"], int)
+        self.assertIsInstance(result["items"], list)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from fastapi_app.opportunity_details import (
     normalize_ai_summary_bullets,
     normalize_detail_fields,
     replace_detail_fields,
+    replace_opportunity_form_fields,
     summary_source_hash,
     validate_cover_image_url,
 )
@@ -153,6 +154,8 @@ class GraphPublishingService:
         )
         opportunity_id = int(cursor.lastrowid)
         replace_detail_fields(db, opportunity_id, normalize_detail_fields(opp.detail_fields), ts)
+        if parsed.applicant_form_fields:
+            replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
         return opportunity_id
 
     def _update_opportunity(self, db: sqlite3.Connection, opportunity_id: int, parsed: AIWorkflowDraftOutput) -> None:

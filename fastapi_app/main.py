@@ -27,6 +27,7 @@ from fastapi_app.opportunity_details import (
     normalize_detail_fields,
     parse_ai_summary_json,
     replace_detail_fields,
+    replace_opportunity_form_fields as _replace_opportunity_form_fields,
     summary_source_hash,
     validate_cover_image_url,
 )
@@ -1003,6 +1004,8 @@ def seed_data(conn: sqlite3.Connection) -> None:
         ("transcript_upload", "Transcript Upload", "Add the transcript file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
         ("recommendation_upload", "Recommendation Upload", "Add recommendation letter file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
         ("resume_upload", "Resume Upload", "Add the resume/CV file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
+        ("custom_funding_plan", "Funding Plan", "Explain how you will fund the exchange, including any scholarships applied for.", "Mention scholarship, self-funding, or department support.", "textarea", None, "documents"),
+        ("custom_research_focus", "Research Focus Area", "Describe your primary research interest or project focus for this opportunity.", "Be specific — mention lab, topic, or faculty if applicable.", "textarea", None, "documents"),
     ]
     for row in form_fields:
         conn.execute(
@@ -2301,14 +2304,7 @@ def replace_opportunity_form_fields(
     opportunity_id: int,
     form_fields: list[str],
 ) -> list[str]:
-    resolved_fields = ensure_form_fields_exist(conn, form_fields)
-    conn.execute("DELETE FROM opportunity_required_fields WHERE opportunity_id = ?", (opportunity_id,))
-    for order, field_key in enumerate(resolved_fields, start=1):
-        conn.execute(
-            "INSERT INTO opportunity_required_fields (opportunity_id, field_key, display_order) VALUES (?, ?, ?)",
-            (opportunity_id, field_key, order),
-        )
-    return resolved_fields
+    return _replace_opportunity_form_fields(conn, opportunity_id, form_fields)
 
 
 def get_pipeline_step_payloads(conn: sqlite3.Connection, opportunity_id: int) -> list[WorkflowStepPayload]:
@@ -4396,6 +4392,20 @@ def reviewer_acknowledge_sla_breach(
             return SLAManagementService().acknowledge_breach(conn, task_id, session.email, body.notes)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/admin/sla-notifications")
+def get_sla_notifications(
+    session: SessionUser = Depends(require_roles(*REVIEWER_ROLES, ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        dashboard = SLAManagementService().dashboard(conn)
+    return {
+        "approaching": dashboard["approaching"],
+        "breached": dashboard["breached"],
+        "items": (dashboard["approaching_tasks"] + dashboard["breached_tasks"])[:10],
+    }
 
 
 @app.get("/api/admin/dashboard/summary")
