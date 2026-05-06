@@ -1,0 +1,182 @@
+{
+  "_meta": {
+    "name": "Plaksha Standard Approval Pathway",
+    "description": "Default approval graph for outward mobility opportunities at Plaksha University. OAA and UG Academics run in parallel, then Freshmore Coordinator / Program Chair, then Dean final approval. Use this when an opportunity email has no explicit approval chain.",
+    "sla_hours_default": 72,
+    "excel_columns": [
+      {"key": "name",          "label": "Name",                        "prefilled_by": "OGE"},
+      {"key": "email",         "label": "Email",                       "prefilled_by": "OGE"},
+      {"key": "student_id",    "label": "Student ID",                  "prefilled_by": "OGE"},
+      {"key": "batch",         "label": "Batch Number",                "prefilled_by": "OGE"},
+      {"key": "major",         "label": "Major",                       "prefilled_by": "OGE"},
+      {"key": "oaa",           "label": "OAA",                         "reviewer": "oaa_review"},
+      {"key": "ug_academics",  "label": "UG Academics",                "reviewer": "ug_academics_review"},
+      {"key": "program_chair", "label": "Freshmore / Program Chair",   "reviewer": "program_chair_review", "prefilled_by": "OGE"},
+      {"key": "remarks",       "label": "Remarks"}
+    ]
+  },
+  "opportunity": {
+    "code": null,
+    "title": "PLACEHOLDER — replace with opportunity title",
+    "description": "PLACEHOLDER — replace with opportunity description",
+    "detail_fields": [],
+    "ai_summary_bullets": [],
+    "visibility": "plaksha_only"
+  },
+  "graph": {
+    "nodes": [
+      {
+        "node_key": "start",
+        "node_type": "start",
+        "display_name": "Application Submitted",
+        "reviewer_email": null,
+        "visible_sections": ["all"],
+        "allowed_actions": [],
+        "metadata": {}
+      },
+      {
+        "node_key": "oaa_review",
+        "node_type": "reviewer",
+        "display_name": "Office of Academic Affairs",
+        "reviewer_email": "oaa@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "backlog_status",
+              "label": "Backlog / Misconduct Status",
+              "input_type": "select",
+              "options": [
+                "Clear — no active backlogs or misconduct",
+                "Active backlog — details in remarks",
+                "Misconduct record — details in remarks"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "ug_academics_review",
+        "node_type": "reviewer",
+        "display_name": "UG Academics",
+        "reviewer_email": "ug-academics@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "cgpa_verified",
+              "label": "CGPA Verified",
+              "input_type": "select",
+              "options": [
+                "Meets minimum requirement",
+                "Below minimum — details in remarks",
+                "Cannot verify at this time"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "parallel_join",
+        "node_type": "join_all",
+        "display_name": "OAA + UG Academics Complete",
+        "reviewer_email": null,
+        "visible_sections": ["all"],
+        "allowed_actions": [],
+        "metadata": {}
+      },
+      {
+        "node_key": "program_chair_review",
+        "node_type": "reviewer",
+        "display_name": "Freshmore Coordinator / Program Chair",
+        "reviewer_email": "shashikant.pawar@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "coursework_alignment",
+              "label": "Coursework Alignment with Partner Programme",
+              "input_type": "select",
+              "options": [
+                "Strong alignment — recommend approval",
+                "Adequate alignment — conditional approval",
+                "Weak alignment — details in remarks",
+                "No alignment — recommend rejection"
+              ],
+              "required": true
+            },
+            {
+              "input_key": "program_chair_remarks",
+              "label": "Additional Remarks",
+              "input_type": "text",
+              "options": [],
+              "required": false
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "dean_approval",
+        "node_type": "reviewer",
+        "display_name": "Dean — Final Approval",
+        "reviewer_email": "dean@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "reject", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "dean_decision",
+              "label": "Final Decision",
+              "input_type": "select",
+              "options": [
+                "Approved for nomination",
+                "Rejected — details in remarks"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "end",
+        "node_type": "end",
+        "display_name": "Nomination Complete",
+        "reviewer_email": null,
+        "visible_sections": ["all"],
+        "allowed_actions": [],
+        "metadata": {}
+      }
+    ],
+    "edges": [
+      {"from_node_key": "start",              "to_node_key": "oaa_review",           "condition_json": null, "label": null},
+      {"from_node_key": "start",              "to_node_key": "ug_academics_review",  "condition_json": null, "label": null},
+      {"from_node_key": "oaa_review",         "to_node_key": "parallel_join",        "condition_json": null, "label": null},
+      {"from_node_key": "ug_academics_review","to_node_key": "parallel_join",        "condition_json": null, "label": null},
+      {"from_node_key": "parallel_join",      "to_node_key": "program_chair_review", "condition_json": null, "label": null},
+      {"from_node_key": "program_chair_review","to_node_key": "dean_approval",       "condition_json": null, "label": null},
+      {"from_node_key": "dean_approval",      "to_node_key": "end",                  "condition_json": null, "label": null}
+    ]
+  },
+  "applicant_form_fields": [
+    "full_name",
+    "student_id",
+    "email",
+    "cgpa",
+    "statement_of_purpose",
+    "resume_url"
+  ],
+  "clarifying_questions": [],
+  "confidence": 0.9,
+  "warnings": [],
+  "is_fallback": false,
+  "is_standard_pathway": true
+}

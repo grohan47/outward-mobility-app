@@ -1,0 +1,193 @@
+{
+  "_meta": {
+    "purpose": "Demo fixture — seed this via POST /api/admin/workflow-drafts/manual to create the golden path demo opportunity without needing a live LLM call.",
+    "demo_email": "Subject: Summer 2026 AI/Robotics Research Exchange — NTU Singapore (UG 2023 only)\n\nDear OGE Team,\n\nWe are pleased to announce that NTU Singapore has confirmed 5 seats for Plaksha students in their Summer 2026 AI and Robotics Research Exchange Programme (July 1 – August 31, 2026).\n\nEligibility: Open exclusively to UG 2023 batch students. Minimum CGPA 7.5 required. Students must not have any active backlogs.\n\nFunding: Plaksha will cover the programme fee (SGD 1,200). Students are responsible for travel and accommodation (~SGD 1,800/month). Limited need-based travel grants available — apply separately via the scholarship office.\n\nApplication deadline: June 15, 2026. Please submit the nomination list to partners@ntu.edu.sg by June 20, 2026.\n\nRequired documents: CV/resume, statement of purpose (500 words), unofficial transcript.\n\nApproval process: As per standard procedure, all nominations must be cleared by OAA (no backlogs), UG Academics (CGPA verification), and reviewed by the relevant Program Chair before OGE submits to NTU. Dean approval required for final nomination.\n\nFor queries contact: oge@plaksha.edu.in\n\nBest,\nOGE Team"
+  },
+  "opportunity": {
+    "code": "NTU-AIR-SU2026",
+    "title": "Summer 2026 AI & Robotics Research Exchange — NTU Singapore",
+    "description": "Five-seat summer research exchange at Nanyang Technological University Singapore. Students join NTU's AI and Robotics labs for two months, working alongside PhD researchers. Covers programme fee; students fund travel and accommodation. Need-based travel grants available from the scholarship office.",
+    "term": "Summer 2026 (July 1 – August 31)",
+    "destination": "Singapore",
+    "deadline": "2026-06-15",
+    "seats": 5,
+    "host_institution": "Nanyang Technological University (NTU)",
+    "program_type": "Research Exchange",
+    "funding_available": true,
+    "eligibility_criteria": "UG 2023 batch only. Minimum CGPA 7.5. No active backlogs. Resume, SOP, and unofficial transcript required.",
+    "visibility": "plaksha_only",
+    "detail_fields": [
+      {"field_key": "destination",          "label": "Destination",            "value": "Singapore, NTU",        "value_type": "text",   "display_order": 1, "is_student_visible": true},
+      {"field_key": "term",                 "label": "Programme Term",         "value": "July 1 – Aug 31 2026",  "value_type": "text",   "display_order": 2, "is_student_visible": true},
+      {"field_key": "application_deadline", "label": "Application Deadline",   "value": "2026-06-15",            "value_type": "date",   "display_order": 3, "is_student_visible": true},
+      {"field_key": "seats",                "label": "Seats Available",        "value": "5",                     "value_type": "number", "display_order": 4, "is_student_visible": true},
+      {"field_key": "min_cgpa",             "label": "Minimum CGPA",           "value": "7.5",                   "value_type": "number", "display_order": 5, "is_student_visible": true},
+      {"field_key": "programme_fee",        "label": "Programme Fee",          "value": "SGD 1,200 (covered by Plaksha)", "value_type": "text", "display_order": 6, "is_student_visible": true},
+      {"field_key": "estimated_cost",       "label": "Est. Personal Cost",     "value": "~SGD 1,800/month (travel + accommodation)", "value_type": "text", "display_order": 7, "is_student_visible": true},
+      {"field_key": "eligible_batch",       "label": "Eligible Batch",         "value": "UG 2023 only",          "value_type": "text",   "display_order": 8, "is_student_visible": true},
+      {"field_key": "host_contact",         "label": "NTU Partner Contact",    "value": "partners@ntu.edu.sg",   "value_type": "text",   "display_order": 9, "is_student_visible": false}
+    ],
+    "ai_summary_bullets": [
+      "5-seat research exchange at NTU Singapore, July–August 2026.",
+      "Open to UG 2023 batch only. Minimum CGPA 7.5, no active backlogs.",
+      "Programme fee (SGD 1,200) covered by Plaksha. Travel grants available.",
+      "Application deadline: June 15, 2026. Nomination due to NTU: June 20.",
+      "Standard 4-stage Plaksha approval pathway: OAA + UG Academics (parallel) → Program Chair → Dean."
+    ]
+  },
+  "graph": {
+    "nodes": [
+      {
+        "node_key": "start",
+        "node_type": "start",
+        "display_name": "Application Submitted",
+        "reviewer_email": null,
+        "visible_sections": ["all"],
+        "allowed_actions": [],
+        "metadata": {}
+      },
+      {
+        "node_key": "oaa_review",
+        "node_type": "reviewer",
+        "display_name": "Office of Academic Affairs",
+        "reviewer_email": "oaa@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "backlog_status",
+              "label": "Backlog / Misconduct Status",
+              "input_type": "select",
+              "options": [
+                "Clear — no active backlogs or misconduct",
+                "Active backlog — details in remarks",
+                "Misconduct record — details in remarks"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "ug_academics_review",
+        "node_type": "reviewer",
+        "display_name": "UG Academics (CGPA ≥ 7.5)",
+        "reviewer_email": "ug-academics@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "cgpa_verified",
+              "label": "CGPA Verification",
+              "input_type": "select",
+              "options": [
+                "Verified ≥ 7.5 — meets requirement",
+                "Below 7.5 — does not meet minimum",
+                "Cannot verify at this time"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "parallel_join",
+        "node_type": "join_all",
+        "display_name": "OAA + UG Academics Complete",
+        "reviewer_email": null,
+        "visible_sections": ["all"],
+        "allowed_actions": [],
+        "metadata": {}
+      },
+      {
+        "node_key": "program_chair_review",
+        "node_type": "reviewer",
+        "display_name": "Freshmore Coordinator (Prof. Shashikant Pawar)",
+        "reviewer_email": "shashikant.pawar@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "request_changes", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "coursework_alignment",
+              "label": "Coursework Alignment with NTU AI/Robotics Programme",
+              "input_type": "select",
+              "options": [
+                "Strong alignment — student's coursework directly relevant",
+                "Adequate alignment — conditional approval",
+                "Weak alignment — details in remarks",
+                "No alignment — recommend rejection"
+              ],
+              "required": true
+            },
+            {
+              "input_key": "program_chair_remarks",
+              "label": "Additional Remarks",
+              "input_type": "text",
+              "options": [],
+              "required": false
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "dean_approval",
+        "node_type": "reviewer",
+        "display_name": "Dean — Final Approval",
+        "reviewer_email": "dean@plaksha.edu.in",
+        "visible_sections": ["all"],
+        "allowed_actions": ["approve", "reject", "comment"],
+        "metadata": {
+          "sla_hours": 72,
+          "required_inputs": [
+            {
+              "input_key": "dean_decision",
+              "label": "Final Nomination Decision",
+              "input_type": "select",
+              "options": [
+                "Approved — submit to NTU",
+                "Rejected — details in remarks"
+              ],
+              "required": true
+            }
+          ]
+        }
+      },
+      {
+        "node_key": "end",
+        "node_type": "end",
+        "display_name": "Nominated — Submitted to NTU",
+        "reviewer_email": null,
+        "visible_sections": ["all"],
+        "allowed_actions": [],
+        "metadata": {}
+      }
+    ],
+    "edges": [
+      {"from_node_key": "start",               "to_node_key": "oaa_review",           "condition_json": null, "label": "Parallel →"},
+      {"from_node_key": "start",               "to_node_key": "ug_academics_review",  "condition_json": null, "label": "Parallel →"},
+      {"from_node_key": "oaa_review",          "to_node_key": "parallel_join",        "condition_json": null, "label": null},
+      {"from_node_key": "ug_academics_review", "to_node_key": "parallel_join",        "condition_json": null, "label": null},
+      {"from_node_key": "parallel_join",       "to_node_key": "program_chair_review", "condition_json": null, "label": null},
+      {"from_node_key": "program_chair_review","to_node_key": "dean_approval",        "condition_json": null, "label": null},
+      {"from_node_key": "dean_approval",       "to_node_key": "end",                  "condition_json": null, "label": null}
+    ]
+  },
+  "applicant_form_fields": [
+    "full_name",
+    "student_id",
+    "email",
+    "cgpa",
+    "statement_of_purpose",
+    "resume_url"
+  ],
+  "clarifying_questions": [],
+  "confidence": 0.97,
+  "warnings": [],
+  "is_fallback": false
+}

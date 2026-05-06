@@ -14,6 +14,7 @@ class NodeRequiredInput(BaseModel):
 
 
 class NodeMetadata(BaseModel):
+    sla_hours: int = 72
     required_inputs: list[NodeRequiredInput] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
@@ -62,6 +63,9 @@ class OpportunityDraftModel(BaseModel):
 class AIWorkflowDraftOutput(BaseModel):
     opportunity: OpportunityDraftModel
     graph: GraphModel
+    applicant_form_fields: list[str] = Field(
+        default_factory=lambda: ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"]
+    )
     clarifying_questions: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     warnings: list[str] = Field(default_factory=list)
