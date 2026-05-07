@@ -32,7 +32,7 @@ class GraphPolicyValidator:
         "all_of",
         "any_of",
     }
-    VALID_EDGE_ACTIONS = {"always", "approve", "reject", "request_changes", "condition_true", "condition_false"}
+    VALID_EDGE_ACTIONS = {"always", "approve", "reject", "request_changes", "flag", "condition_true", "condition_false"}
     VALID_NODE_TYPES = {"start", "reviewer", "join_all", "join_any", "conditional", "end"}
 
     def validate_graph(self, graph: GraphModel, known_fields: list[str] | None = None) -> list[str]:

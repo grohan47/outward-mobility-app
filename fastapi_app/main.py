@@ -82,7 +82,6 @@ ADMIN_ROLE = "ADMIN"
 REVIEWER_ROLES = {REVIEWER_ROLE}
 # Backward naming alias for student-centric code paths.
 STUDENT_ROLE = GENERATOR_ROLE
-REQUIRED_INPUT_TYPES = {"text", "number", "dropdown", "multiselect"}
 SLA_SCHEDULER = None
 CUSTOM_FIELD_INPUT_TYPES = {"text", "textarea", "single_select", "multiselect"}
 
@@ -397,28 +396,7 @@ def build_ai_opportunity_draft(
         )
         selected_fields.append("custom_project_focus")
 
-    workflow_steps = default_pipeline_template()
-    if any(keyword in tokens for keyword in {"interview", "panel"}):
-        workflow_steps.insert(
-            1,
-            {
-                "name": "Panel Interview",
-                "reviewerEmail": "program-chair@plaksha.edu.in",
-                "reviewerName": "Program Chair Panel",
-                "visibleFields": [],
-                "slaHours": 48,
-                "canViewComments": True,
-                "requiredInputs": [
-                    {
-                        "id": "panel_recommendation",
-                        "label": "Panel Recommendation",
-                        "inputType": "dropdown",
-                        "required": True,
-                        "options": ["Strong pass", "Pass", "Borderline", "Do not progress"],
-                    }
-                ],
-            },
-        )
+    review_stage_count = 2 if any(keyword in tokens for keyword in {"interview", "panel"}) else 1
 
     normalized_visibility_rules = normalize_visibility_rules(requested_visibility_rules)
     if not normalized_visibility_rules:
@@ -469,16 +447,14 @@ def build_ai_opportunity_draft(
                 "ai_summary_bullets": [
                     f"{title} is prepared for {destination}.",
                     f"Applications are due by {deadline}.",
-                    f"PRISM selected {len(workflow_steps)} reviewer stage(s) from the prompt.",
+                    f"PRISM selected {review_stage_count} reviewer stage(s) from the prompt.",
                 ],
             },
             "formFields": dedupe_preserve_order(selected_fields),
             "customFields": custom_fields,
-            "workflowSteps": workflow_steps,
             "generatorVisibilityRules": [
                 {"ruleType": item["rule_type"], "ruleValue": item["rule_value"]} for item in normalized_visibility_rules
             ],
-            "useDefaultTemplate": False,
         },
         "review_instructions": [
             "Review all AI-generated labels and descriptions before publishing.",
@@ -529,6 +505,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         "application_workflow_tasks": {"reviewer_data_json"},
         "opportunities": {"ai_summary_json", "ai_summary_source_hash"},
         "graph_edges": {"action"},
+        "workflow_drafts": {"original_prompt"},
     }
     for table, columns in required_columns.items():
         if not columns.issubset(table_columns(conn, table)):
@@ -561,6 +538,8 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
     if "graph_edges" in list_tables(conn) and "action" not in table_columns(conn, "graph_edges"):
         conn.execute("ALTER TABLE graph_edges ADD COLUMN action TEXT")
+    if "workflow_drafts" in list_tables(conn) and "original_prompt" not in table_columns(conn, "workflow_drafts"):
+        conn.execute("ALTER TABLE workflow_drafts ADD COLUMN original_prompt TEXT")
     if "opportunities" in list_tables(conn):
         opportunity_columns = table_columns(conn, "opportunities")
         if "ai_summary_json" not in opportunity_columns:
@@ -814,6 +793,7 @@ CREATE TABLE timeline_events (
 CREATE TABLE workflow_drafts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   opportunity_id INTEGER REFERENCES opportunities(id),
+  original_prompt TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   draft_output TEXT,
   clarifying_questions TEXT,
@@ -1336,29 +1316,9 @@ class OpportunityPatchBody(BaseModel):
     status: str | None = None
     formFields: list[str] | None = None
     customFields: list[CustomFormFieldPayload] | None = None
-    workflowSteps: list["WorkflowStepPayload"] | None = None
     generatorVisibilityRules: list["VisibilityRulePayload"] | None = None
     detailFields: list[OpportunityDetailFieldPayload] | None = None
     aiSummaryBullets: list[str] | None = None
-    useDefaultTemplate: bool | None = None
-
-
-class WorkflowRequiredInput(BaseModel):
-    id: str | None = None
-    label: str
-    inputType: Literal["text", "number", "dropdown", "multiselect"] = "text"
-    required: bool = True
-    options: list[str] = Field(default_factory=list)
-
-
-class WorkflowStepPayload(BaseModel):
-    name: str
-    reviewerEmail: str
-    reviewerName: str | None = None
-    visibleFields: list[str] = Field(default_factory=list)
-    requiredInputs: list[WorkflowRequiredInput] = Field(default_factory=list)
-    slaHours: int = 72
-    canViewComments: bool = False
 
 
 class OpportunityCreatePayload(BaseModel):
@@ -1367,9 +1327,7 @@ class OpportunityCreatePayload(BaseModel):
     customFields: list[CustomFormFieldPayload] = Field(default_factory=list)
     detailFields: list[OpportunityDetailFieldPayload] = Field(default_factory=list)
     aiSummaryBullets: list[str] = Field(default_factory=list)
-    workflowSteps: list[WorkflowStepPayload]
     generatorVisibilityRules: list["VisibilityRulePayload"] = Field(default_factory=list)
-    useDefaultTemplate: bool | None = False
 
 
 class OpportunityAIGenerateBody(BaseModel):
@@ -1764,118 +1722,6 @@ def ensure_reviewer_account(
     ensure_user_has_role(conn, user_id, role_code, ts)
 
 
-def default_pipeline_template() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": "OGE Intake Review",
-            "reviewerEmail": "oge@plaksha.edu.in",
-            "reviewerName": "Rajesh Kumar",
-            "visibleFields": [],
-            "slaHours": 24,
-            "canViewComments": True,
-            "requiredInputs": [
-                {
-                    "id": "oge_intake_notes",
-                    "label": "OGE Intake Notes",
-                    "inputType": "text",
-                    "required": True,
-                    "options": [],
-                }
-            ],
-        },
-        {
-            "name": "Student Life Review",
-            "reviewerEmail": "student-life@plaksha.edu.in",
-            "reviewerName": "Ananya Iyer",
-            "visibleFields": [],
-            "slaHours": 48,
-            "canViewComments": False,
-            "requiredInputs": [
-                {
-                    "id": "student_life_flags",
-                    "label": "Student Life Flags",
-                    "inputType": "multiselect",
-                    "required": True,
-                    "options": [
-                        "No infractions",
-                        "Late hostel fee warning",
-                        "Library dues pending",
-                        "Disciplinary committee referral",
-                    ],
-                }
-            ],
-        },
-        {
-            "name": "Program Chair Review",
-            "reviewerEmail": "program-chair@plaksha.edu.in",
-            "reviewerName": "Prof. Rajesh Gupta",
-            "visibleFields": [],
-            "slaHours": 72,
-            "canViewComments": False,
-            "requiredInputs": [
-                {
-                    "id": "program_fit_score",
-                    "label": "Program Fit Score (/10)",
-                    "inputType": "number",
-                    "required": True,
-                    "options": [],
-                }
-            ],
-        },
-        {
-            "name": "Dean Final Approval",
-            "reviewerEmail": "dean@plaksha.edu.in",
-            "reviewerName": "Dr. Sarah Jenkins",
-            "visibleFields": [],
-            "slaHours": 48,
-            "canViewComments": True,
-            "requiredInputs": [
-                {
-                    "id": "dean_recommendation",
-                    "label": "Dean Recommendation",
-                    "inputType": "dropdown",
-                    "required": True,
-                    "options": ["Strongly Recommend", "Recommend", "Do Not Recommend"],
-                }
-            ],
-        },
-    ]
-
-
-def normalize_required_input(
-    required_input: WorkflowRequiredInput,
-    step_order: int,
-    input_index: int,
-) -> tuple[str, str, str, int, list[str]]:
-    input_type = required_input.inputType.lower().strip()
-    if input_type not in REQUIRED_INPUT_TYPES:
-        raise HTTPException(status_code=400, detail=f"Unsupported input type: {required_input.inputType}")
-
-    label = required_input.label.strip()
-    if not label:
-        raise HTTPException(status_code=400, detail="Required input label cannot be empty")
-
-    suggested = (required_input.id or slugify_input_key(label)).strip().lower()
-    if suggested.startswith(f"{step_order}_"):
-        key = suggested
-    else:
-        key = f"{step_order}_{suggested}"
-    if not re.fullmatch(r"[a-z0-9_]+", key):
-        key = f"{step_order}_input_{input_index}"
-
-    options = dedupe_preserve_order(required_input.options or [])
-    if input_type in {"dropdown", "multiselect"} and not options:
-        raise HTTPException(
-            status_code=400,
-            detail=f'Options are required for input "{label}" when type is {input_type}.',
-        )
-    if input_type not in {"dropdown", "multiselect"}:
-        options = []
-
-    is_required = 1 if required_input.required else 0
-    return key, label, input_type, is_required, options
-
-
 def normalize_custom_field_key(raw_key: str, fallback_label: str) -> str:
     base = raw_key.strip().lower()
     if not base:
@@ -1984,168 +1830,12 @@ def ensure_form_fields_exist(conn: sqlite3.Connection, form_fields: list[str]) -
     return normalized
 
 
-def normalize_workflow_steps(
-    workflow_steps: list[WorkflowStepPayload],
-    form_fields: list[str],
-) -> list[WorkflowStepPayload]:
-    if not workflow_steps:
-        raise HTTPException(status_code=400, detail="Define at least one workflow step.")
-
-    normalized_steps: list[WorkflowStepPayload] = []
-    for step in workflow_steps:
-        if not step.reviewerEmail.lower().endswith(PLAKSHA_DOMAIN):
-            raise HTTPException(status_code=400, detail=f"Reviewer email must end with {PLAKSHA_DOMAIN}")
-        if not step.name.strip():
-            raise HTTPException(status_code=400, detail="Workflow step name cannot be empty")
-        normalized_steps.append(
-            WorkflowStepPayload(
-                name=step.name.strip(),
-                reviewerEmail=step.reviewerEmail.strip().lower(),
-                reviewerName=(step.reviewerName or "").strip() or None,
-                visibleFields=dedupe_preserve_order(step.visibleFields),
-                requiredInputs=step.requiredInputs,
-                slaHours=max(1, min(int(step.slaHours or 72), 24 * 30)),
-                canViewComments=bool(step.canViewComments),
-            )
-        )
-
-    if not any(step.reviewerEmail == "oge@plaksha.edu.in" for step in normalized_steps):
-        normalized_steps.insert(
-            0,
-            WorkflowStepPayload(
-                name="OGE Intake Review",
-                reviewerEmail="oge@plaksha.edu.in",
-                reviewerName="Rajesh Kumar",
-                visibleFields=form_fields,
-                requiredInputs=[],
-                slaHours=24,
-                canViewComments=True,
-            ),
-        )
-    return normalized_steps
-
-
-def replace_opportunity_structure(
-    conn: sqlite3.Connection,
-    opportunity_id: int,
-    form_fields: list[str],
-    workflow_steps: list[WorkflowStepPayload],
-    ts: str,
-) -> None:
-    form_fields = ensure_form_fields_exist(conn, form_fields)
-    workflow_steps = normalize_workflow_steps(workflow_steps, form_fields)
-
-    replace_opportunity_form_fields(conn, opportunity_id, form_fields)
-
-    conn.execute("DELETE FROM opportunity_pipeline_steps WHERE opportunity_id = ?", (opportunity_id,))
-    prior_step_input_keys: list[str] = []
-    for order, step in enumerate(workflow_steps, start=1):
-        ensure_reviewer_account(conn, step.reviewerEmail, step.reviewerName, step.name, ts)
-
-        allowed_actions = ["approve", "request_changes", "comment"]
-        if order == len(workflow_steps):
-            allowed_actions = ["approve", "reject", "comment"]
-        elif step.reviewerEmail == "oge@plaksha.edu.in":
-            allowed_actions = ["approve", "request_changes", "reject", "comment"]
-
-        step_cursor = conn.execute(
-            """
-            INSERT INTO opportunity_pipeline_steps
-            (opportunity_id, step_order, step_name, reviewer_email, reviewer_display_name, sla_hours, can_view_comments, allowed_actions_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                opportunity_id,
-                order,
-                step.name,
-                step.reviewerEmail,
-                step.reviewerName,
-                step.slaHours,
-                1 if step.canViewComments else 0,
-                json.dumps(allowed_actions),
-                ts,
-            ),
-        )
-        pipeline_step_id = int(step_cursor.lastrowid)
-
-        available_keys = dedupe_preserve_order(form_fields + prior_step_input_keys)
-        requested_keys = dedupe_preserve_order(step.visibleFields)
-        if not requested_keys:
-            # Default to generator-submitted form fields only.
-            # Reviewer-added fields from previous steps must be explicitly enabled by admin.
-            resolved_visible_keys = form_fields
-        elif any(key in {"all", "__all__"} for key in requested_keys):
-            resolved_visible_keys = available_keys
-        else:
-            allowed = set(available_keys)
-            resolved_visible_keys = [key for key in requested_keys if key in allowed]
-            if not resolved_visible_keys:
-                resolved_visible_keys = form_fields
-
-        for key in resolved_visible_keys:
-            conn.execute(
-                "INSERT OR IGNORE INTO opportunity_step_field_access (pipeline_step_id, field_key) VALUES (?, ?)",
-                (pipeline_step_id, key),
-            )
-
-        step_input_keys: list[str] = []
-        for input_index, required_input in enumerate(step.requiredInputs, start=1):
-            input_key, input_label, input_type, is_required, options = normalize_required_input(
-                required_input, order, input_index
-            )
-            conn.execute(
-                """
-                INSERT INTO opportunity_step_required_inputs
-                (pipeline_step_id, input_key, input_label, input_type, options_json, is_required, display_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    pipeline_step_id,
-                    input_key,
-                    input_label,
-                    input_type,
-                    json.dumps(options) if options else None,
-                    is_required,
-                    input_index,
-                ),
-            )
-            step_input_keys.append(input_key)
-        prior_step_input_keys.extend(step_input_keys)
-
-
 def replace_opportunity_form_fields(
     conn: sqlite3.Connection,
     opportunity_id: int,
     form_fields: list[str],
 ) -> list[str]:
     return _replace_opportunity_form_fields(conn, opportunity_id, form_fields)
-
-
-def get_pipeline_step_payloads(conn: sqlite3.Connection, opportunity_id: int) -> list[WorkflowStepPayload]:
-    steps = get_pipeline_steps(conn, opportunity_id)
-    payload_steps: list[WorkflowStepPayload] = []
-    for step in steps:
-        payload_steps.append(
-            WorkflowStepPayload(
-                name=step["step_name"],
-                reviewerEmail=step["reviewer_email"],
-                reviewerName=step["reviewer_display_name"],
-                visibleFields=step["visible_fields"],
-                slaHours=step["sla_hours"],
-                canViewComments=bool(step["can_view_comments"]),
-                requiredInputs=[
-                    WorkflowRequiredInput(
-                        id=entry["input_key"],
-                        label=entry["input_label"],
-                        inputType=entry["input_type"],
-                        required=bool(entry["is_required"]),
-                        options=entry.get("options", []),
-                    )
-                    for entry in step["required_inputs"]
-                ],
-            )
-        )
-    return payload_steps
 
 
 def get_pipeline_steps(conn: sqlite3.Connection, opportunity_id: int) -> list[dict[str, Any]]:
@@ -2597,44 +2287,6 @@ def ensure_application_access_for_user(
     raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def validate_required_inputs_for_step(
-    conn: sqlite3.Connection,
-    pipeline_step_id: int,
-    provided_inputs: dict[str, Any] | None,
-) -> None:
-    provided_inputs = provided_inputs or {}
-    rows = conn.execute(
-        """
-        SELECT input_key, input_label, is_required
-        FROM opportunity_step_required_inputs
-        WHERE pipeline_step_id = ?
-        ORDER BY display_order ASC, id ASC
-        """,
-        (pipeline_step_id,),
-    ).fetchall()
-
-    missing: list[str] = []
-    for row in rows:
-        if not row["is_required"]:
-            continue
-        key = row["input_key"]
-        value = provided_inputs.get(key)
-        if value is None:
-            missing.append(row["input_label"])
-            continue
-        if isinstance(value, str) and not value.strip():
-            missing.append(row["input_label"])
-            continue
-        if isinstance(value, list) and len(value) == 0:
-            missing.append(row["input_label"])
-            continue
-    if missing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing required step inputs: {', '.join(missing)}",
-        )
-
-
 def write_review_and_timeline(
     conn: sqlite3.Connection,
     application_id: int,
@@ -2868,7 +2520,6 @@ def form_fields(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> di
         ).fetchall()
     return {
         "items": [serialize_form_field(row) for row in rows],
-        "defaultPipelineTemplate": default_pipeline_template(),
     }
 
 
@@ -3206,6 +2857,22 @@ def admin_answer_workflow_draft_clarification(
     return {"draft": updated}
 
 
+@app.post("/api/admin/workflow-drafts/{draft_id}/regenerate")
+def admin_regenerate_workflow_draft(
+    draft_id: int,
+    body: ClarificationAnswerBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        try:
+            updated = AIWorkflowDraftService().regenerate_with_answers(conn, draft_id, body.answers)
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc).lower() else 400
+            raise HTTPException(status_code=status_code, detail=str(exc))
+    return {"draft": updated}
+
+
 @app.post("/api/admin/workflow-drafts/{draft_id}/publish")
 def admin_publish_workflow_draft(
     draft_id: int,
@@ -3265,9 +2932,6 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
     if not title:
         raise HTTPException(status_code=400, detail="Opportunity title is required")
 
-    workflow_steps = payload.workflowSteps
-    if payload.useDefaultTemplate or not workflow_steps:
-        workflow_steps = [WorkflowStepPayload(**item) for item in default_pipeline_template()]
     custom_fields = normalize_custom_form_fields(payload.customFields or [])
     detail_fields = normalize_detail_fields([field.model_dump() for field in payload.detailFields])
     ai_summary_bullets = normalize_ai_summary_bullets(payload.aiSummaryBullets)
@@ -3310,7 +2974,7 @@ def admin_create_opportunity(payload: OpportunityCreatePayload, session: Session
         opportunity_id = int(cursor.lastrowid)
         replace_detail_fields(conn, opportunity_id, detail_fields, ts)
         upsert_custom_form_fields(conn, custom_fields)
-        replace_opportunity_structure(conn, opportunity_id, payload.formFields, workflow_steps, ts)
+        replace_opportunity_form_fields(conn, opportunity_id, payload.formFields)
         replace_opportunity_visibility_rules(conn, opportunity_id, visibility_rules, ts)
         conn.commit()
 
@@ -3326,34 +2990,22 @@ def admin_patch_opportunity(
     ensure_db_initialized()
     form_fields_override = body.formFields
     custom_fields_override = body.customFields
-    workflow_steps_override = body.workflowSteps
     visibility_rules_override = body.generatorVisibilityRules
     detail_fields_override = body.detailFields
     ai_summary_bullets_override = body.aiSummaryBullets
-    use_default_template = body.useDefaultTemplate
     core_updates = {
         k: v
-        for k, v in body.model_dump(exclude={"formFields", "customFields", "workflowSteps", "generatorVisibilityRules", "detailFields", "aiSummaryBullets", "useDefaultTemplate"}).items()
+        for k, v in body.model_dump(exclude={"formFields", "customFields", "generatorVisibilityRules", "detailFields", "aiSummaryBullets"}).items()
         if v is not None
     }
     if "cover_image_url" in core_updates:
         core_updates["cover_image_url"] = validate_cover_image_url(core_updates["cover_image_url"])
 
     should_update_form_fields = form_fields_override is not None or custom_fields_override is not None
-    should_rewrite_workflow = (
-        workflow_steps_override is not None
-        or bool(use_default_template)
-    )
     should_update_visibility = visibility_rules_override is not None
-    should_rewrite_structure = (
-        should_update_form_fields
-        or should_rewrite_workflow
-        or visibility_rules_override is not None
-        or bool(use_default_template)
-    )
     should_update_details = detail_fields_override is not None or ai_summary_bullets_override is not None
 
-    if not core_updates and not should_update_form_fields and not should_rewrite_workflow and not should_update_visibility and not should_update_details:
+    if not core_updates and not should_update_form_fields and not should_update_visibility and not should_update_details:
         raise HTTPException(status_code=400, detail="No fields provided")
 
     with db_conn() as conn:
@@ -3369,7 +3021,7 @@ def admin_patch_opportunity(
             conn.execute(f"UPDATE opportunities SET {columns} WHERE id = ?", values)
 
         current_form_fields: list[str] | None = None
-        if should_update_form_fields or should_rewrite_workflow:
+        if should_update_form_fields:
             if form_fields_override is None:
                 rows = conn.execute(
                     """
@@ -3390,16 +3042,6 @@ def admin_patch_opportunity(
                 upsert_custom_form_fields(conn, normalized_custom_fields)
             replace_opportunity_form_fields(conn, opportunity_id, current_form_fields or [])
 
-        if should_rewrite_workflow:
-            if use_default_template:
-                workflow_steps = [WorkflowStepPayload(**item) for item in default_pipeline_template()]
-            elif workflow_steps_override is not None:
-                workflow_steps = workflow_steps_override
-            else:
-                workflow_steps = get_pipeline_step_payloads(conn, opportunity_id)
-
-            replace_opportunity_structure(conn, opportunity_id, current_form_fields or [], workflow_steps, ts)
-
         if should_update_visibility:
             normalized_visibility_rules = normalize_visibility_rules(visibility_rules_override)
             if not normalized_visibility_rules:
@@ -3409,7 +3051,7 @@ def admin_patch_opportunity(
                 )
             replace_opportunity_visibility_rules(conn, opportunity_id, normalized_visibility_rules, ts)
 
-        if should_update_form_fields or should_rewrite_workflow or should_update_visibility:
+        if should_update_form_fields or should_update_visibility:
             conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
 
         if should_update_details:
@@ -3714,6 +3356,16 @@ def delete_application(application_id: int, session: SessionUser = Depends(get_s
         if not can_delete:
             raise HTTPException(status_code=403, detail="You are not allowed to delete this application.")
 
+        task_rows = conn.execute("SELECT id FROM application_workflow_tasks WHERE application_id = ?", (application_id,)).fetchall()
+        task_ids = [int(row["id"]) for row in task_rows]
+        if task_ids:
+            placeholders = ", ".join("?" for _ in task_ids)
+            params = tuple(task_ids)
+            conn.execute(f"DELETE FROM sla_reminders_sent WHERE task_id IN ({placeholders})", params)
+            conn.execute(f"DELETE FROM sla_breaches WHERE task_id IN ({placeholders})", params)
+            conn.execute("UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id = ?", (application_id,))
+            conn.execute(f"DELETE FROM application_workflow_tasks WHERE id IN ({placeholders})", params)
+
         conn.execute("DELETE FROM timeline_events WHERE application_id = ?", (application_id,))
         conn.execute("DELETE FROM application_comments WHERE application_id = ?", (application_id,))
         conn.execute("DELETE FROM application_reviews WHERE application_id = ?", (application_id,))
@@ -3908,8 +3560,6 @@ def approve_application(
 
         # ── Legacy pipeline path ──
         current_step = ensure_reviewer_assigned(conn, app_row, session)
-        validate_required_inputs_for_step(conn, int(current_step["id"]), body.requiredInputs)
-
         last_step = conn.execute(
             """
             SELECT MAX(step_order) AS max_step

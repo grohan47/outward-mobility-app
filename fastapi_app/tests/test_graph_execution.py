@@ -125,6 +125,32 @@ class GraphExecutionServiceTests(unittest.TestCase):
         self.assertEqual(inbox[0].student_name, "Student One")
         self.assertIn("approve", inbox[0].allowed_actions)
 
+    def test_reviewer_task_creation_sets_step_order_to_one_from_graph_sentinel(self):
+        self.conn.execute(
+            "UPDATE applications SET current_step_order = -1, current_stage_label = 'Graph Pending' WHERE id = 1"
+        )
+        self._insert_node("start", "start")
+        self._insert_node("oge_review", "reviewer", "oge@plaksha.edu.in", "OGE Review")
+        self._insert_node("dean_review", "reviewer", "dean@plaksha.edu.in", "Dean Review")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "oge_review")
+        self._insert_edge("oge_review", "dean_review")
+        self._insert_edge("dean_review", "end")
+
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+
+        application = self._application()
+        self.assertEqual(application["current_stage_label"], "OGE Review")
+        self.assertEqual(application["current_step_order"], 1)
+
+        self.conn.execute("UPDATE applications SET current_step_order = 0 WHERE id = 1")
+        result = self.service.transition(self.conn, task_id, "approve", "oge@plaksha.edu.in", "Looks good")
+
+        self.assertEqual(len(result.next_task_ids), 1)
+        application = self._application()
+        self.assertEqual(application["current_stage_label"], "Dean Review")
+        self.assertEqual(application["current_step_order"], 1)
+
     def test_approve_advances_to_next_reviewer_node(self):
         self._insert_node("start", "start")
         self._insert_node("oge_review", "reviewer", "oge@plaksha.edu.in", "OGE Review")

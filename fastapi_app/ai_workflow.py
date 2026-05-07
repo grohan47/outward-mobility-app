@@ -240,6 +240,38 @@ class AIWorkflowDraftService:
 
     def generate_draft(self, db: sqlite3.Connection, admin_email: str, prompt: str) -> dict[str, Any]:
         """Call model, validate output, persist to workflow_drafts. Returns row dict."""
+        parsed = self._generate_parsed(prompt)
+        return self._persist_draft(db, admin_email, parsed, original_prompt=prompt)
+
+    def regenerate_with_answers(
+        self, db: sqlite3.Connection, draft_id: int, answers: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Regenerate an existing draft using its original prompt plus admin clarification answers."""
+        row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        if not row:
+            raise ValueError(f"Draft {draft_id} not found")
+
+        original_prompt = row["original_prompt"]
+        if not original_prompt:
+            raise ValueError(f"Draft {draft_id} does not have an original prompt")
+
+        existing: dict[str, Any] = {}
+        if row["admin_answers"]:
+            try:
+                existing = json.loads(row["admin_answers"])
+            except json.JSONDecodeError:
+                pass
+        merged = {**existing, **answers}
+
+        prompt = self._prompt_with_answers(original_prompt, merged)
+        try:
+            parsed = self._generate_parsed(prompt, fallback_on_failure=False)
+        except Exception:
+            return self.answer_clarification(db, draft_id, answers)
+        return self._update_draft(db, draft_id, parsed, merged)
+
+    def _generate_parsed(self, prompt: str, fallback_on_failure: bool = True) -> AIWorkflowDraftOutput:
+        """Call model and return parsed output, falling back deterministically on failure."""
         provider = self._provider or get_provider()
         t0 = time.monotonic()
         parsed: AIWorkflowDraftOutput | None = None
@@ -274,10 +306,13 @@ class AIWorkflowDraftService:
                         "error_type": type(exc).__name__,
                     },
                 )
-                parsed = self._fallback_draft()
-                break
+                if fallback_on_failure:
+                    parsed = self._fallback_draft()
+                    break
+                raise
 
-        return self._persist_draft(db, admin_email, parsed)  # type: ignore[arg-type]
+        assert parsed is not None
+        return parsed
 
     def answer_clarification(
         self, db: sqlite3.Connection, draft_id: int, answers: dict[str, Any]
@@ -365,7 +400,11 @@ class AIWorkflowDraftService:
         )
 
     def _persist_draft(
-        self, db: sqlite3.Connection, admin_email: str, parsed: AIWorkflowDraftOutput
+        self,
+        db: sqlite3.Connection,
+        admin_email: str,
+        parsed: AIWorkflowDraftOutput,
+        original_prompt: str | None = None,
     ) -> dict[str, Any]:
         """Write to workflow_drafts. Returns the new row as a dict."""
         validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
@@ -378,12 +417,13 @@ class AIWorkflowDraftService:
             cursor = db.execute(
                 """
                 INSERT INTO workflow_drafts
-                  (opportunity_id, status, draft_output, clarifying_questions,
+                  (opportunity_id, original_prompt, status, draft_output, clarifying_questions,
                    admin_answers, warnings, confidence, publish_ready,
                    created_by_email, created_at, updated_at)
-                VALUES (NULL, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)
+                VALUES (NULL, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    original_prompt,
                     status,
                     parsed.model_dump_json(),
                     json.dumps(parsed.clarifying_questions),
@@ -399,3 +439,51 @@ class AIWorkflowDraftService:
 
         row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
         return dict(row)
+
+    def _update_draft(
+        self,
+        db: sqlite3.Connection,
+        draft_id: int,
+        parsed: AIWorkflowDraftOutput,
+        admin_answers: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Replace AI-generated content for an existing workflow_draft row."""
+        validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
+        has_questions = bool(parsed.clarifying_questions)
+        publish_ready = 1 if (not validation_errors and not has_questions and not parsed.is_fallback) else 0
+        status = "ready" if publish_ready else "pending"
+        ts = _now_iso()
+
+        with db:
+            db.execute(
+                """
+                UPDATE workflow_drafts
+                SET status = ?, draft_output = ?, clarifying_questions = ?,
+                    admin_answers = ?, warnings = ?, confidence = ?,
+                    publish_ready = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    parsed.model_dump_json(),
+                    json.dumps(parsed.clarifying_questions),
+                    json.dumps(admin_answers),
+                    json.dumps(parsed.warnings),
+                    parsed.confidence,
+                    publish_ready,
+                    ts,
+                    draft_id,
+                ),
+            )
+
+        row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        return dict(row)
+
+    def _prompt_with_answers(self, original_prompt: str, answers: dict[str, Any]) -> str:
+        answers_json = json.dumps(answers, indent=2, sort_keys=True, default=str)
+        return (
+            f"{original_prompt}\n\n"
+            "ADMIN CLARIFICATION ANSWERS:\n"
+            "Use these answers to resolve prior clarifying questions and regenerate the full workflow draft.\n"
+            f"{answers_json}"
+        )

@@ -1,6 +1,7 @@
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from fastapi import HTTPException, Response
 
@@ -20,10 +21,8 @@ from fastapi_app.main import (
     SessionUser,
     StudentResponseBody,
     TaskDecideBody,
-    WorkflowRequiredInput,
     WorkflowDraftManualBody,
     WorkflowDraftValidateBody,
-    WorkflowStepPayload,
     SLABreachAcknowledgeBody,
     SLAPolicyBody,
     SLATestReminderBody,
@@ -43,6 +42,7 @@ from fastapi_app.main import (
     admin_patch_application,
     admin_patch_opportunity,
     admin_publish_workflow_draft,
+    admin_regenerate_workflow_draft,
     admin_send_sla_test_reminder,
     admin_sla_dashboard,
     admin_summary,
@@ -144,49 +144,78 @@ class ApiEndpointTests(unittest.TestCase):
                 "Students apply through PRISM after reviewing eligibility.",
                 "Funding is reviewed after nomination.",
             ],
-            workflowSteps=[
-                WorkflowStepPayload(
-                    name="OGE Intake Review",
-                    reviewerEmail="oge@plaksha.edu.in",
-                    reviewerName="OGE Admin",
-                    visibleFields=["full_name", "student_id", "email", "cgpa", "custom_org_unit"],
-                    requiredInputs=[],
-                    slaHours=24,
-                    canViewComments=True,
-                ),
-                WorkflowStepPayload(
-                    name="VC Review",
-                    reviewerEmail="vc@plaksha.edu.in",
-                    reviewerName="Vice Chancellor",
-                    visibleFields=["full_name", "student_id", "email", "cgpa"],
-                    requiredInputs=[
-                        WorkflowRequiredInput(
-                            id="vc_decision_reason",
-                            label="VC Decision Reason",
-                            inputType="dropdown",
-                            required=True,
-                            options=["Academic fit", "Capacity constraints", "Policy mismatch"],
-                        ),
-                        WorkflowRequiredInput(
-                            id="vc_tags",
-                            label="VC Tags",
-                            inputType="multiselect",
-                            required=False,
-                            options=["High priority", "Merit", "Scholarship"],
-                        ),
-                    ],
-                    slaHours=48,
-                    canViewComments=False,
-                ),
-            ],
-            useDefaultTemplate=False,
             generatorVisibilityRules=[
                 {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
             ],
         )
 
         result = admin_create_opportunity(payload, session=self.session_for("oge@plaksha.edu.in"))
-        return int(result["id"])
+        opportunity_id = int(result["id"])
+        self.seed_active_review_graph(opportunity_id)
+        return opportunity_id
+
+    def seed_active_review_graph(self, opportunity_id: int) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO graph_versions (opportunity_id, version, status, published_by_email, published_at, created_at)
+                VALUES (?, 1, 'active', ?, ?, ?)
+                """,
+                (opportunity_id, "oge@plaksha.edu.in", now, now),
+            )
+            graph_version_id = int(cursor.lastrowid)
+            nodes = [
+                ("start", "start", "Start", None, ["all"], [], {}),
+                (
+                    "oge_review",
+                    "reviewer",
+                    "OGE Intake Review",
+                    "oge@plaksha.edu.in",
+                    ["all"],
+                    ["approve", "request_changes", "reject", "comment"],
+                    {},
+                ),
+                (
+                    "vc_review",
+                    "reviewer",
+                    "VC Review",
+                    "vc@plaksha.edu.in",
+                    ["full_name", "student_id", "email", "cgpa"],
+                    ["approve", "reject"],
+                    {},
+                ),
+                ("end", "end", "End", None, [], [], {}),
+            ]
+            for node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata in nodes:
+                conn.execute(
+                    """
+                    INSERT INTO graph_nodes
+                    (graph_version_id, node_key, node_type, display_name, reviewer_email,
+                     visible_sections, allowed_actions, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        graph_version_id,
+                        node_key,
+                        node_type,
+                        display_name,
+                        reviewer_email,
+                        json.dumps(visible_sections),
+                        json.dumps(allowed_actions),
+                        json.dumps(metadata),
+                    ),
+                )
+            for from_key, to_key in [("start", "oge_review"), ("oge_review", "vc_review"), ("vc_review", "end")]:
+                conn.execute(
+                    """
+                    INSERT INTO graph_edges (graph_version_id, from_node_key, to_node_key)
+                    VALUES (?, ?, ?)
+                    """,
+                    (graph_version_id, from_key, to_key),
+                )
+            conn.commit()
+            return graph_version_id
 
     def create_test_application(self, opportunity_id: int, email: str = "rohan@plaksha.edu.in") -> int:
         body = ApplicationCreateBody(
@@ -255,6 +284,7 @@ class ApiEndpointTests(unittest.TestCase):
             ("POST", "/api/reviewer/sla-breaches/{task_id}/acknowledge"),
             ("GET", "/api/admin/workflow-drafts/{draft_id}"),
             ("POST", "/api/admin/workflow-drafts/{draft_id}/answer"),
+            ("POST", "/api/admin/workflow-drafts/{draft_id}/regenerate"),
             ("POST", "/api/admin/workflow-drafts/{draft_id}/publish"),
             ("GET", "/api/admin/opportunities/{opportunity_id}/graph"),
             ("GET", "/api/admin/sla-policies"),
@@ -337,7 +367,6 @@ class ApiEndpointTests(unittest.TestCase):
         try:
             fields = form_fields(session=admin_session)
             self.assertIn("items", fields)
-            self.assertIn("defaultPipelineTemplate", fields)
 
             admin_list = admin_list_opportunities(session=admin_session)
             self.assertIn(opportunity_id, [row["id"] for row in admin_list.get("items", [])])
@@ -416,18 +445,6 @@ class ApiEndpointTests(unittest.TestCase):
             customFields=[],
             detailFields=[],
             aiSummaryBullets=[],
-            workflowSteps=[
-                WorkflowStepPayload(
-                    name="OGE Intake Review",
-                    reviewerEmail="oge@plaksha.edu.in",
-                    reviewerName="OGE Admin",
-                    visibleFields=["full_name", "student_id", "email", "cgpa"],
-                    requiredInputs=[],
-                    slaHours=24,
-                    canViewComments=True,
-                )
-            ],
-            useDefaultTemplate=False,
             generatorVisibilityRules=[
                 {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
             ],
@@ -448,18 +465,6 @@ class ApiEndpointTests(unittest.TestCase):
             customFields=[],
             detailFields=[],
             aiSummaryBullets=[],
-            workflowSteps=[
-                WorkflowStepPayload(
-                    name="OGE Intake Review",
-                    reviewerEmail="oge@plaksha.edu.in",
-                    reviewerName="OGE Admin",
-                    visibleFields=["full_name", "student_id", "email", "cgpa"],
-                    requiredInputs=[],
-                    slaHours=24,
-                    canViewComments=True,
-                )
-            ],
-            useDefaultTemplate=False,
             generatorVisibilityRules=[
                 {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
             ],
@@ -495,18 +500,6 @@ class ApiEndpointTests(unittest.TestCase):
                 )
             ],
             aiSummaryBullets=[],
-            workflowSteps=[
-                WorkflowStepPayload(
-                    name="OGE Intake Review",
-                    reviewerEmail="oge@plaksha.edu.in",
-                    reviewerName="OGE Admin",
-                    visibleFields=["full_name", "student_id", "email", "cgpa"],
-                    requiredInputs=[],
-                    slaHours=24,
-                    canViewComments=True,
-                )
-            ],
-            useDefaultTemplate=False,
             generatorVisibilityRules=[
                 {"ruleType": "EMAIL", "ruleValue": "rohan@plaksha.edu.in"},
             ],
@@ -628,7 +621,8 @@ class ApiEndpointTests(unittest.TestCase):
                 DecisionBody(remarks="Proceed to VC"),
                 session=admin_session,
             )
-            self.assertEqual(first_approve["application"]["current_step_order"], 2)
+            self.assertEqual(first_approve["application"]["current_step_order"], 1)
+            self.assertEqual(first_approve["application"]["current_stage_label"], "VC Review")
 
             vc_session = self.session_for("vc@plaksha.edu.in")
             vc_inbox = reviewer_inbox(session=vc_session)
@@ -642,10 +636,6 @@ class ApiEndpointTests(unittest.TestCase):
 
             vc_comments = get_comments(application_id, session=vc_session)
             self.assertGreaterEqual(len(vc_comments.get("comments", [])), 1)
-
-            with self.assertRaises(HTTPException) as missing_required_input:
-                approve_application(application_id, DecisionBody(remarks="Missing required fields"), session=vc_session)
-            self.assertEqual(missing_required_input.exception.status_code, 400)
 
             final_approve = approve_application(
                 application_id,
@@ -925,6 +915,61 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 session=admin,
             )
         self.assertEqual(ctx.exception.status_code, 404)
+
+    # --- POST workflow-drafts/{id}/regenerate ---
+
+    def test_regenerate_workflow_draft_uses_clarification_body(self):
+        draft_id = self._seed_publish_ready_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+
+        with patch("fastapi_app.main.AIWorkflowDraftService") as service_cls:
+            service_cls.return_value.regenerate_with_answers.return_value = {
+                "id": draft_id,
+                "admin_answers": json.dumps({"Who approves?": "Dean"}),
+                "publish_ready": 1,
+            }
+
+            resp = admin_regenerate_workflow_draft(
+                draft_id,
+                ClarificationAnswerBody(answers={"Who approves?": "Dean"}),
+                session=admin,
+            )
+
+        self.assertEqual(resp["draft"]["id"], draft_id)
+        service_cls.return_value.regenerate_with_answers.assert_called_once()
+        _, called_draft_id, called_answers = service_cls.return_value.regenerate_with_answers.call_args.args
+        self.assertEqual(called_draft_id, draft_id)
+        self.assertEqual(called_answers, {"Who approves?": "Dean"})
+
+    def test_regenerate_workflow_draft_404_for_missing(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+
+        with patch("fastapi_app.main.AIWorkflowDraftService") as service_cls:
+            service_cls.return_value.regenerate_with_answers.side_effect = ValueError("Draft 999999 not found")
+            with self.assertRaises(HTTPException) as ctx:
+                admin_regenerate_workflow_draft(
+                    999999,
+                    ClarificationAnswerBody(answers={"q": "a"}),
+                    session=admin,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_regenerate_workflow_draft_400_for_missing_original_prompt(self):
+        admin = self.session_for("oge@plaksha.edu.in")
+
+        with patch("fastapi_app.main.AIWorkflowDraftService") as service_cls:
+            service_cls.return_value.regenerate_with_answers.side_effect = ValueError(
+                "Draft 123 does not have an original prompt"
+            )
+            with self.assertRaises(HTTPException) as ctx:
+                admin_regenerate_workflow_draft(
+                    123,
+                    ClarificationAnswerBody(answers={"q": "a"}),
+                    session=admin,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 400)
 
     # --- POST workflow-drafts/{id}/publish ---
 

@@ -684,6 +684,28 @@ export default function OpportunityStudio({
     };
   }
 
+  function applyDraftData(draftData: DraftOutput) {
+    setDraftOutput(draftData);
+    const draftDetails = [
+      ...(draftData.opportunity.detail_fields || []),
+      detailFieldFromDraft("destination", "Destination", draftData.opportunity.destination || draftData.opportunity.host_institution),
+      detailFieldFromDraft("term", "Term", draftData.opportunity.term || draftData.opportunity.program_type),
+      detailFieldFromDraft("application_deadline", "Application Deadline", draftData.opportunity.deadline, "date"),
+      detailFieldFromDraft("seats", "Seats", draftData.opportunity.seats, "number"),
+    ].filter(Boolean) as OpportunityDetailField[];
+    setOpportunity((prev) => ({
+      ...prev,
+      code: draftData.opportunity.code || prev.code,
+      title: draftData.opportunity.title || prev.title,
+      description: draftData.opportunity.description || prev.description,
+      ai_summary_bullets: draftData.opportunity.ai_summary_bullets?.length ? draftData.opportunity.ai_summary_bullets : prev.ai_summary_bullets,
+    }));
+    if (draftDetails.length > 0) {
+      setDetailFields((prev) => mergeDetailFields(prev, draftDetails));
+    }
+    commitGraph(draftData.graph.nodes, draftData.graph.edges);
+  }
+
   async function generateDraft() {
     setError(null);
     setNotice(null);
@@ -701,28 +723,19 @@ export default function OpportunityStudio({
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.detail || "AI generation failed.");
-      const draft = normalizeDraftRow(body.draft);
+      const draftData = normalizeDraftRow(body.draft);
       setCurrentDraftId(Number(body.draft_id || body.draft?.id || 0) || null);
-      setDraftOutput(draft);
-      const draftDetails = [
-        ...(draft.opportunity.detail_fields || []),
-        detailFieldFromDraft("destination", "Destination", draft.opportunity.destination || draft.opportunity.host_institution),
-        detailFieldFromDraft("term", "Term", draft.opportunity.term || draft.opportunity.program_type),
-        detailFieldFromDraft("application_deadline", "Application Deadline", draft.opportunity.deadline, "date"),
-        detailFieldFromDraft("seats", "Seats", draft.opportunity.seats, "number"),
-      ].filter(Boolean) as OpportunityDetailField[];
-      setOpportunity((prev) => ({
-        ...prev,
-        code: draft.opportunity.code || prev.code,
-        title: draft.opportunity.title || prev.title,
-        description: draft.opportunity.description || prev.description,
-        ai_summary_bullets: draft.opportunity.ai_summary_bullets?.length ? draft.opportunity.ai_summary_bullets : prev.ai_summary_bullets,
-      }));
-      if (draftDetails.length > 0) {
-        setDetailFields((prev) => mergeDetailFields(prev, draftDetails));
-      }
-      commitGraph(draft.graph.nodes, draft.graph.edges);
-      setNotice(Date.now() - started > 5000 ? "PRISM filled a draft. It took a little longer than usual." : "PRISM filled the draft. Review details, then continue to the pipeline.");
+      setAnswers({});
+      applyDraftData(draftData);
+      const shouldAdvanceToPipeline = draftData.clarifying_questions.length === 0 && draftData.confidence >= 0.8;
+      if (shouldAdvanceToPipeline) setStudioStep("pipeline");
+      setNotice(
+        shouldAdvanceToPipeline
+          ? "PRISM filled the draft and moved you to the pipeline."
+          : Date.now() - started > 5000
+            ? "PRISM filled a draft. It took a little longer than usual."
+            : "PRISM filled the draft. Review details, then continue to the pipeline."
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to generate draft.");
     } finally {
@@ -738,19 +751,23 @@ export default function OpportunityStudio({
     setAnswering(true);
     setError(null);
     try {
-      const response = await fetch(`/api/admin/workflow-drafts/${currentDraftId}/answer`, {
+      const response = await fetch(`/api/admin/workflow-drafts/${currentDraftId}/regenerate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ answers }),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body?.detail || "Unable to record clarification answers.");
+      if (!response.ok) throw new Error(body?.detail || "Unable to regenerate workflow draft.");
       if (body?.draft) {
-        setDraftOutput(normalizeDraftRow(body.draft));
+        const draftData = normalizeDraftRow(body.draft);
+        setCurrentDraftId(Number(body.draft_id || body.draft?.id || currentDraftId) || currentDraftId);
+        setAnswers({});
+        applyDraftData(draftData);
+        if (draftData.clarifying_questions.length === 0) setStudioStep("pipeline");
       }
-      setNotice("Clarification answers recorded on the draft.");
+      setNotice("PRISM regenerated the draft with your answers.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to record clarification answers.");
+      setError(err instanceof Error ? err.message : "Unable to regenerate workflow draft.");
     } finally {
       setAnswering(false);
     }
@@ -1650,7 +1667,7 @@ function AIAssistantPanel({
               disabled={!allQuestionsAnswered || answering}
               className="inline-flex min-h-[40px] w-full items-center justify-center rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 disabled:opacity-50"
             >
-              {answering ? "Recording..." : "Record answers"}
+              {answering ? "Regenerating..." : "Submit and Regenerate"}
             </button>
           </div>
         )}

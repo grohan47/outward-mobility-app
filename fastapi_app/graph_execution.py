@@ -11,6 +11,8 @@ from fastapi_app.graph_models import TaskRow, TransitionResult
 APPROVE = "approve"
 REJECT = "reject"
 REQUEST_CHANGES = "request_changes"
+COMMENT = "comment"
+FLAG = "flag"
 
 
 def _now_iso() -> str:
@@ -64,7 +66,7 @@ class GraphExecutionService:
         unless a request_changes edge explicitly routes to another reviewer/task
     """
 
-    VALID_DECISIONS = {APPROVE, REJECT, REQUEST_CHANGES}
+    VALID_DECISIONS = {APPROVE, REJECT, REQUEST_CHANGES, COMMENT, FLAG}
 
     def instantiate(self, db: sqlite3.Connection, application_id: int, graph_version_id: int) -> list[int]:
         with db:
@@ -109,6 +111,44 @@ class GraphExecutionService:
             allowed_actions = set(_json_list(node["allowed_actions"], ["approve", "reject", "request_changes", "comment"]))
             if normalized_decision not in allowed_actions:
                 raise ValueError(f"Decision '{normalized_decision}' is not allowed for this reviewer task")
+
+            if normalized_decision == COMMENT:
+                entry = f"[{ts}] {comment or ''}"
+                existing_comment = task["comment_summary"] or ""
+                comment_summary = f"{existing_comment}\n{entry}" if existing_comment else entry
+                db.execute(
+                    """
+                    UPDATE application_workflow_tasks
+                    SET comment_summary = ?
+                    WHERE id = ?
+                    """,
+                    (comment_summary, task_id),
+                )
+                return TransitionResult(success=True, next_task_ids=[], application_status=None)
+
+            if normalized_decision == FLAG:
+                db.execute(
+                    """
+                    UPDATE application_workflow_tasks
+                    SET status = 'flagged',
+                        acted_at = ?,
+                        decision = ?,
+                        comment_summary = ?,
+                        reviewer_data_json = ?
+                    WHERE id = ?
+                    """,
+                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
+                )
+                db.execute(
+                    """
+                    UPDATE applications
+                    SET current_stage_label = 'Flagged — Needs Attention',
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (ts, int(task["application_id"])),
+                )
+                return TransitionResult(success=True, next_task_ids=[], application_status="FLAGGED")
 
             if normalized_decision == APPROVE:
                 missing = self._missing_required_inputs(node, reviewer_data)
@@ -298,7 +338,7 @@ class GraphExecutionService:
             JOIN graph_nodes n
               ON n.graph_version_id = t.graph_version_id
              AND n.node_key = t.node_key
-            WHERE t.status = 'active'
+            WHERE t.status IN ('active', 'flagged')
               AND LOWER(t.assigned_reviewer_email) = LOWER(?)
             ORDER BY t.assigned_at DESC, t.id DESC
             """,
@@ -423,7 +463,9 @@ class GraphExecutionService:
         db.execute(
             """
             UPDATE applications
-            SET current_stage_label = ?, updated_at = ?
+            SET current_stage_label = ?,
+                current_step_order = 1,
+                updated_at = ?
             WHERE id = ?
             """,
             (node["display_name"] or node["node_key"], _now_iso(), int(application["id"])),
@@ -569,7 +611,7 @@ class GraphExecutionService:
             WHERE application_id = ?
               AND graph_version_id = ?
               AND node_key = ?
-              AND status IN ('active', 'completed', 'rejected')
+              AND status IN ('active', 'completed', 'flagged', 'returned', 'rejected')
             LIMIT 1
             """,
             (application_id, graph_version_id, node_key),

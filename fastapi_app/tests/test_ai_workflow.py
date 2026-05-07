@@ -11,14 +11,19 @@ class _MockProvider:
 
     def __init__(self, response):
         self._response = response
+        self._responses = list(response) if isinstance(response, list) else None
+        self.calls = []
 
     def complete(self, system: str, user: str, timeout: int) -> str:
-        if isinstance(self._response, Exception):
-            raise self._response
-        return self._response
+        self.calls.append({"system": system, "user": user, "timeout": timeout})
+        response = self._responses.pop(0) if self._responses is not None else self._response
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _valid_json(
+    title="Singapore AI Exchange",
     clarifying_questions=None,
     reviewer_email="oge@plaksha.edu.in",
     confidence=0.85,
@@ -27,7 +32,7 @@ def _valid_json(
     return json.dumps(
         {
             "opportunity": {
-                "title": "Singapore AI Exchange",
+                "title": title,
                 "description": "4-week research program at NTU.",
                 "host_institution": "NTU",
                 "program_type": "Research",
@@ -89,12 +94,14 @@ class AIWorkflowDraftServiceTests(unittest.TestCase):
 
     def test_valid_model_output_parses_and_persists(self):
         service = AIWorkflowDraftService(provider=_MockProvider(_valid_json()))
-        result = service.generate_draft(self.conn, "admin@plaksha.edu.in", "Exchange in Singapore")
+        prompt = "Exchange in Singapore"
+        result = service.generate_draft(self.conn, "admin@plaksha.edu.in", prompt)
 
         self.assertIn("id", result)
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["publish_ready"], 1)
         self.assertEqual(result["created_by_email"], "admin@plaksha.edu.in")
+        self.assertEqual(result["original_prompt"], prompt)
 
         stored = json.loads(result["draft_output"])
         self.assertEqual(stored["opportunity"]["title"], "Singapore AI Exchange")
@@ -185,13 +192,15 @@ class AIWorkflowDraftServiceTests(unittest.TestCase):
 
     def test_draft_row_written_to_workflow_drafts_table(self):
         service = AIWorkflowDraftService(provider=_MockProvider(_valid_json()))
-        result = service.generate_draft(self.conn, "oge@plaksha.edu.in", "prompt")
+        prompt = "prompt"
+        result = service.generate_draft(self.conn, "oge@plaksha.edu.in", prompt)
 
         row = self.conn.execute(
             "SELECT * FROM workflow_drafts WHERE id = ?", (result["id"],)
         ).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["created_by_email"], "oge@plaksha.edu.in")
+        self.assertEqual(row["original_prompt"], prompt)
 
     # --- answer_clarification ---
 
@@ -233,6 +242,80 @@ class AIWorkflowDraftServiceTests(unittest.TestCase):
         service = AIWorkflowDraftService()
         with self.assertRaises(ValueError):
             service.answer_clarification(self.conn, 9999, {"Q?": "A"})
+
+    # --- regenerate_with_answers ---
+
+    def test_regenerate_with_answers_reuses_original_prompt_and_updates_row(self):
+        provider = _MockProvider(
+            [
+                _valid_json(title="Draft Needing Answers", clarifying_questions=["Who approves?"]),
+                _valid_json(title="Regenerated Ready Draft"),
+            ]
+        )
+        service = AIWorkflowDraftService(provider=provider)
+        draft = service.generate_draft(
+            self.conn,
+            "admin@plaksha.edu.in",
+            "Original messy opportunity prompt",
+        )
+
+        updated = service.regenerate_with_answers(
+            self.conn,
+            draft["id"],
+            {"Who approves?": "Dean of Academic Affairs"},
+        )
+
+        self.assertEqual(updated["id"], draft["id"])
+        self.assertEqual(updated["original_prompt"], "Original messy opportunity prompt")
+        self.assertEqual(updated["publish_ready"], 1)
+        self.assertEqual(updated["status"], "ready")
+        answers = json.loads(updated["admin_answers"])
+        self.assertEqual(answers["Who approves?"], "Dean of Academic Affairs")
+        stored = json.loads(updated["draft_output"])
+        self.assertEqual(stored["opportunity"]["title"], "Regenerated Ready Draft")
+        self.assertEqual(len(provider.calls), 2)
+        self.assertIn("Original messy opportunity prompt", provider.calls[1]["user"])
+        self.assertIn("ADMIN CLARIFICATION ANSWERS", provider.calls[1]["user"])
+        self.assertIn("Dean of Academic Affairs", provider.calls[1]["user"])
+
+    def test_regenerate_with_answers_invalid_draft_id_raises(self):
+        service = AIWorkflowDraftService(provider=_MockProvider(_valid_json()))
+        with self.assertRaises(ValueError):
+            service.regenerate_with_answers(self.conn, 9999, {"Q?": "A"})
+
+    def test_regenerate_with_answers_records_answers_when_provider_fails(self):
+        provider = _MockProvider(
+            [
+                _valid_json(title="Draft Needing Answers", clarifying_questions=["Who approves?"]),
+                RuntimeError("provider unavailable"),
+            ]
+        )
+        service = AIWorkflowDraftService(provider=provider)
+        draft = service.generate_draft(
+            self.conn,
+            "admin@plaksha.edu.in",
+            "Original messy opportunity prompt",
+        )
+        original_output = draft["draft_output"]
+
+        updated = service.regenerate_with_answers(
+            self.conn,
+            draft["id"],
+            {"Who approves?": "Dean of Academic Affairs"},
+        )
+
+        self.assertEqual(updated["draft_output"], original_output)
+        self.assertEqual(updated["publish_ready"], 1)
+        answers = json.loads(updated["admin_answers"])
+        self.assertEqual(answers["Who approves?"], "Dean of Academic Affairs")
+
+    def test_regenerate_with_answers_requires_original_prompt(self):
+        service = AIWorkflowDraftService(provider=_MockProvider(_valid_json()))
+        draft = service.generate_draft(self.conn, "admin@plaksha.edu.in", "prompt")
+        self.conn.execute("UPDATE workflow_drafts SET original_prompt = NULL WHERE id = ?", (draft["id"],))
+
+        with self.assertRaisesRegex(ValueError, "original prompt"):
+            service.regenerate_with_answers(self.conn, draft["id"], {"Q?": "A"})
 
     # --- _fallback_draft ---
 

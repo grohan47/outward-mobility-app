@@ -56,6 +56,7 @@ def _make_db() -> sqlite3.Connection:
         CREATE TABLE workflow_drafts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             opportunity_id INTEGER,
+            original_prompt TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             draft_output TEXT,
             clarifying_questions TEXT,

@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS workflow_drafts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   opportunity_id INTEGER REFERENCES opportunities(id),
+  original_prompt TEXT,
   status TEXT NOT NULL DEFAULT 'pending',
   draft_output TEXT,
   clarifying_questions TEXT,
