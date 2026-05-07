@@ -63,6 +63,7 @@ type DetailPayload = {
   comments: Array<{ id: number; author_email: string; text: string; created_at: string }>;
   timeline: TimelineRecord[];
   pipeline_steps: PipelineStep[];
+  graph_stages?: Array<{ step_order: number; step_name: string; node_key: string; reviewer_email?: string; task_status: string; task_decision: string | null }>;
   application_file?: Record<string, unknown>;
   field_labels?: Record<string, string>;
   permissions?: { can_view_comments?: boolean };

@@ -24,6 +24,7 @@ type ApplicationDetailPayload = {
   comments: Array<{ id: number; author_email: string; text: string; visibility: string; created_at: string }>;
   timeline: Array<{ id: number; event_type: string; created_at: string; event_payload: { to_stage?: string } | null }>;
   pipeline_steps: Array<{ step_order: number; step_name: string; reviewer_email?: string; reviewer_display_name?: string }>;
+  graph_stages?: Array<{ step_order: number; step_name: string; node_key: string; reviewer_email?: string; task_status: string; task_decision: string | null }>;
   field_labels?: Record<string, string>;
 };
 
@@ -80,7 +81,28 @@ export default function ApplicationDetailView() {
     );
   }
 
-  const stages = data.pipeline_steps.map((step) => ({ code: `STEP_${step.step_order}`, label: step.step_name }));
+  const isGraphApp = (data.graph_stages?.length ?? 0) > 0;
+  const stages = isGraphApp
+    ? (data.graph_stages ?? []).map((s) => ({
+        code: `NODE_${s.node_key}`,
+        label: s.step_name,
+        taskStatus: s.task_status,
+        taskDecision: s.task_decision,
+      }))
+    : data.pipeline_steps.map((step) => ({ code: `STEP_${step.step_order}`, label: step.step_name }));
+
+  const currentGraphStage = isGraphApp
+    ? (() => {
+        const active = (data.graph_stages ?? []).find((s) => s.task_status === "active");
+        const lastDone = [...(data.graph_stages ?? [])].reverse().find((s) => s.task_status === "completed");
+        if (data.application.final_status === "APPROVED") return "APPROVED";
+        if (data.application.final_status === "REJECTED") return "REJECTED";
+        if (active) return `NODE_${active.node_key}`;
+        if (lastDone) return `NODE_${lastDone.node_key}`;
+        return data.workflow.stageCode;
+      })()
+    : data.workflow.stageCode;
+
   const waitingOnStudent = !data.application.final_status && data.application.current_stage_label === "Student Rework";
 
   async function deleteApplication() {
@@ -157,7 +179,7 @@ export default function ApplicationDetailView() {
         <h3 className="text-lg font-bold text-slate-900 mb-8 text-center uppercase tracking-widest text-sm">Approval Progress</h3>
         <StepProgressBar
           stages={stages}
-          currentStage={data.workflow.stageCode || (waitingOnStudent ? "STUDENT_REWORK" : `STEP_${data.application.current_step_order}`)}
+          currentStage={waitingOnStudent ? "STUDENT_REWORK" : currentGraphStage}
           finalStatus={data.workflow.finalStatus}
         />
         {waitingOnStudent && (

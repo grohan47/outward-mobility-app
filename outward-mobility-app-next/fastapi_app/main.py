@@ -2638,6 +2638,46 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
 
     pipeline_steps = get_pipeline_steps(conn, app["opportunity_id"])
 
+    # For graph-based applications, build pipeline_steps from graph nodes + task status
+    graph_stages: list[dict[str, Any]] = []
+    if app["graph_version_id"]:
+        gv_id = int(app["graph_version_id"])
+        graph_nodes_rows = conn.execute(
+            """
+            SELECT node_key, node_type, display_name, reviewer_email, allowed_actions
+            FROM graph_nodes
+            WHERE graph_version_id = ? AND node_type = 'reviewer'
+            ORDER BY id ASC
+            """,
+            (gv_id,),
+        ).fetchall()
+        graph_tasks_rows = conn.execute(
+            """
+            SELECT node_key, status, decision
+            FROM application_workflow_tasks
+            WHERE application_id = ? AND graph_version_id = ?
+            ORDER BY id ASC
+            """,
+            (application_id, gv_id),
+        ).fetchall()
+        task_by_node: dict[str, list[dict[str, Any]]] = {}
+        for t in graph_tasks_rows:
+            task_by_node.setdefault(t["node_key"], []).append(dict(t))
+        for idx, node in enumerate(graph_nodes_rows):
+            nk = node["node_key"]
+            tasks_for_node = task_by_node.get(nk, [])
+            latest = tasks_for_node[-1] if tasks_for_node else None
+            task_status = latest["status"] if latest else "pending"
+            task_decision = latest["decision"] if latest else None
+            graph_stages.append({
+                "step_order": idx + 1,
+                "step_name": node["display_name"] or nk,
+                "node_key": nk,
+                "reviewer_email": node["reviewer_email"],
+                "task_status": task_status,
+                "task_decision": task_decision,
+            })
+
     base_submitted_data: dict[str, Any] = {}
     if app["submitted_data_json"]:
         try:
@@ -2711,6 +2751,7 @@ def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dic
         "comments": [dict(row) for row in comments],
         "timeline": timeline_payload,
         "pipeline_steps": pipeline_steps,
+        "graph_stages": graph_stages,
         "workflow": compute_workflow_meta(app),
         "application_file": application_file,
         "field_labels": field_labels,
