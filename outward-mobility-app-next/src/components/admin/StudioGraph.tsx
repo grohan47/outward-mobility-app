@@ -36,6 +36,7 @@ type StudioGraphProps = {
   onResetLayout: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onDeleteNode?: (nodeKey: string) => void;
 };
 
 function reviewerVisualState(selected: boolean, hasWarning: boolean) {
@@ -255,6 +256,7 @@ export default function StudioGraph({
   onResetLayout,
   onUndo,
   onRedo,
+  onDeleteNode,
 }: StudioGraphProps) {
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
 
@@ -299,6 +301,10 @@ export default function StudioGraph({
         onSelectNode(null);
         onSelectEdge(null);
       }
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedNodeKey) {
+        event.preventDefault();
+        onDeleteNode?.(selectedNodeKey);
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         onUndo();
@@ -315,7 +321,7 @@ export default function StudioGraph({
         onSelectNode(next.node_key);
       }
     },
-    [nodes, onRedo, onSelectEdge, onSelectNode, onUndo, selectedNodeKey]
+    [nodes, onDeleteNode, onRedo, onSelectEdge, onSelectNode, onUndo, selectedNodeKey]
   );
 
   if (mobile) {

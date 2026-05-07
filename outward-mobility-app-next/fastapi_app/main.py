@@ -1839,7 +1839,7 @@ def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[st
     seen: set[tuple[str, str]] = set()
     for raw_rule in rules or []:
         rule = raw_rule if isinstance(raw_rule, VisibilityRulePayload) else VisibilityRulePayload(**raw_rule)
-        rule_type = (rule.ruleType or "EMAIL").strip().upper()
+        rule_type = "EMAIL"
         rule_value = rule.ruleValue.strip().lower()
         if not rule_value:
             continue
@@ -1859,20 +1859,14 @@ def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[st
 def get_opportunity_visibility_rules(conn: sqlite3.Connection, opportunity_id: int) -> list[dict[str, str]]:
     rows = conn.execute(
         """
-        SELECT rule_type, rule_value
+        SELECT rule_value
         FROM opportunity_visibility_rules
         WHERE opportunity_id = ?
-        ORDER BY CASE rule_type WHEN 'GROUP_EMAIL' THEN 1 ELSE 2 END, LOWER(rule_value) ASC
+        ORDER BY LOWER(rule_value) ASC
         """,
         (opportunity_id,),
     ).fetchall()
-    return [
-        {
-            "ruleType": row["rule_type"],
-            "ruleValue": row["rule_value"],
-        }
-        for row in rows
-    ]
+    return [{"ruleValue": row["rule_value"]} for row in rows]
 
 
 def replace_opportunity_visibility_rules(
@@ -2526,18 +2520,20 @@ def build_visibility_audit_for_opportunity(
 
 def compute_workflow_meta(application_row: sqlite3.Row) -> dict[str, Any]:
     stage_label = application_row["current_stage_label"]
+    is_student_rework = stage_label == "Student Rework"
+
     if application_row["final_status"] == "APPROVED":
         current_stakeholder = "Completed"
+        stage_code = "APPROVED"
     elif application_row["final_status"] == "REJECTED":
         current_stakeholder = "Rejected"
-    elif int(application_row["current_step_order"]) <= 0:
+        stage_code = "REJECTED"
+    elif is_student_rework:
         current_stakeholder = "Student Rework"
+        stage_code = "STUDENT_REWORK"
     else:
         current_stakeholder = stage_label
-
-    stage_code = f"STEP_{application_row['current_step_order']}"
-    if int(application_row["current_step_order"]) <= 0:
-        stage_code = "STUDENT_REWORK"
+        stage_code = f"STEP_{application_row['current_step_order']}"
 
     return {
         "stageCode": stage_code,

@@ -1008,7 +1008,7 @@ export default function OpportunityStudio({
           onContinue={() => changeStudioStep("pipeline")}
         />
       ) : (
-        <div className="hidden flex-1 lg:grid lg:grid-cols-[220px_1fr_280px]">
+        <div className={`hidden flex-1 lg:grid ${selectedNode || selectedEdge ? "lg:grid-cols-[180px_1fr_300px]" : "lg:grid-cols-[180px_1fr]"}`}>
           <PipelineRail
             opportunity={opportunity}
             nodes={graphNodes}
@@ -1047,22 +1047,25 @@ export default function OpportunityStudio({
               onResetLayout={resetGraphLayout}
               onUndo={undo}
               onRedo={redo}
+              onDeleteNode={removeNode}
             />
           </main>
-          <StudioInspector
-            node={selectedNode}
-            edge={selectedEdge}
-            nodes={graphNodes}
-            availableFields={selectedApplicationFields}
-            validationWarnings={validationWarnings}
-            onClose={() => {
-              setSelectedNodeKey(null);
-              setSelectedEdgeKey(null);
-            }}
-            onUpdateNode={updateNode}
-            onUpdateEdge={updateEdge}
-            onRemoveNode={removeNode}
-          />
+          {(selectedNode || selectedEdge) && (
+            <StudioInspector
+              node={selectedNode}
+              edge={selectedEdge}
+              nodes={graphNodes}
+              availableFields={selectedApplicationFields}
+              validationWarnings={validationWarnings}
+              onClose={() => {
+                setSelectedNodeKey(null);
+                setSelectedEdgeKey(null);
+              }}
+              onUpdateNode={updateNode}
+              onUpdateEdge={updateEdge}
+              onRemoveNode={removeNode}
+            />
+          )}
         </div>
       )}
 
@@ -1093,6 +1096,7 @@ export default function OpportunityStudio({
               onResetLayout={resetGraphLayout}
               onUndo={undo}
               onRedo={redo}
+              onDeleteNode={removeNode}
             />
           )}
           {mobileTab === "inspector" && (

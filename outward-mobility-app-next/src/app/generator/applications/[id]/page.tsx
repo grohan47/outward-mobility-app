@@ -19,7 +19,7 @@ type ApplicationDetailPayload = {
   };
   opportunity?: { title?: string; term?: string };
   student_user?: { full_name?: string };
-  workflow: { stageLabel: string; finalStatus: string | null };
+  workflow: { stageCode: string; stageLabel: string; finalStatus: string | null };
   reviews: Array<{ id: number; reviewer_name?: string; reviewer_role: string; decision: string; remarks: string | null; created_at: string }>;
   comments: Array<{ id: number; author_email: string; text: string; visibility: string; created_at: string }>;
   timeline: Array<{ id: number; event_type: string; created_at: string; event_payload: { to_stage?: string } | null }>;
@@ -81,7 +81,7 @@ export default function ApplicationDetailView() {
   }
 
   const stages = data.pipeline_steps.map((step) => ({ code: `STEP_${step.step_order}`, label: step.step_name }));
-  const waitingOnStudent = !data.application.final_status && Number(data.application.current_step_order) === 0;
+  const waitingOnStudent = !data.application.final_status && data.application.current_stage_label === "Student Rework";
 
   async function deleteApplication() {
     const confirmed = window.confirm("Delete this application permanently?");
@@ -157,7 +157,7 @@ export default function ApplicationDetailView() {
         <h3 className="text-lg font-bold text-slate-900 mb-8 text-center uppercase tracking-widest text-sm">Approval Progress</h3>
         <StepProgressBar
           stages={stages}
-          currentStage={waitingOnStudent ? "STUDENT_REWORK" : `STEP_${data.application.current_step_order}`}
+          currentStage={data.workflow.stageCode || (waitingOnStudent ? "STUDENT_REWORK" : `STEP_${data.application.current_step_order}`)}
           finalStatus={data.workflow.finalStatus}
         />
         {waitingOnStudent && (
