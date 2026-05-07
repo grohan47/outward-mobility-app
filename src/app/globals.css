@@ -23,3 +23,31 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+.material-symbols-outlined {
+  display: inline-flex;
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  line-height: 1;
+  text-indent: -9999px;
+  white-space: nowrap;
+}
+
+.material-symbols-outlined[data-icon] {
+  text-indent: 0;
+}
+
+.material-symbols-outlined svg {
+  width: 1em;
+  height: 1em;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
