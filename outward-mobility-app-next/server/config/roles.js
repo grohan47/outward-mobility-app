@@ -1,0 +1,19 @@
+export const ROLES = Object.freeze({
+    STUDENT: "STUDENT",
+    STUDENT_LIFE: "STUDENT_LIFE",
+    PROGRAM_CHAIR: "PROGRAM_CHAIR",
+    OGE_ADMIN: "OGE_ADMIN",
+    DEAN_ACADEMICS: "DEAN_ACADEMICS",
+});
+
+export const REVIEWER_ROLES = Object.freeze([
+    ROLES.STUDENT_LIFE,
+    ROLES.PROGRAM_CHAIR,
+    ROLES.OGE_ADMIN,
+    ROLES.DEAN_ACADEMICS,
+]);
+
+export const REJECT_ALLOWED_ROLES = Object.freeze([
+    ROLES.OGE_ADMIN,
+    ROLES.DEAN_ACADEMICS,
+]);
