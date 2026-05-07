@@ -74,6 +74,7 @@ class AIWorkflowDraftOutput(BaseModel):
     applicant_form_fields: list[str] = Field(
         default_factory=lambda: ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"]
     )
+    generator_visibility_rules: list[str] = Field(default_factory=lambda: ["ug2024@plaksha.edu.in"])
     clarifying_questions: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     warnings: list[str] = Field(default_factory=list)

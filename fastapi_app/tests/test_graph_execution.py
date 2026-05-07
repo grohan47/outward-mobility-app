@@ -366,6 +366,30 @@ class GraphExecutionServiceTests(unittest.TestCase):
         self.assertIsNone(task["return_to_task_id"])
         self.assertEqual(self._application()["current_stage_label"], "Student Rework")
 
+    def test_resubmit_after_rework_reactivates_returned_task_and_clears_return_fields(self):
+        self._seed_linear_graph()
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+        self.service.transition(
+            self.conn,
+            task_id,
+            "request_changes",
+            "oge@plaksha.edu.in",
+            "Please update your documents.",
+        )
+
+        resubmitted_task_id = self.service.resubmit_after_rework(self.conn, 1)
+
+        self.assertEqual(resubmitted_task_id, task_id)
+        task = self._task(task_id)
+        self.assertEqual(task["status"], "active")
+        self.assertIsNone(task["acted_at"])
+        self.assertIsNone(task["decision"])
+        self.assertIsNone(task["comment_summary"])
+        application = self._application()
+        self.assertEqual(application["current_stage_label"], "OGE Review")
+        self.assertEqual(application["current_step_order"], 1)
+        self.assertIsNone(application["return_to_step_order"])
+        self.assertIsNone(application["return_to_stage_label"])
 
     def test_join_any_skips_sibling_and_advances_once(self):
         self._insert_node("start", "start")

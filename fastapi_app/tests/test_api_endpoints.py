@@ -1227,12 +1227,12 @@ class GraphPublishingRouteTests(unittest.TestCase):
         self.assertEqual(tasks[0]["status"], "active")
         self.assertEqual(tasks[0]["node_key"], "review")
 
-    def test_publish_draft_writes_form_fields(self):
-        """Chunk B: publishing a draft with applicant_form_fields persists them to the DB."""
+    def test_publish_draft_writes_form_fields_and_visibility_rules(self):
+        """Chunk B: publishing a draft persists applicant fields and generator visibility."""
         output = AIWorkflowDraftOutput(
             opportunity=OpportunityDraftModel(
-                title="Form Fields Publish Test",
-                description="Verify form fields are written on publish.",
+                title="Form Fields and Visibility Publish Test",
+                description="Verify form fields and visibility rules are written on publish.",
                 host_institution="Test University",
             ),
             graph=GraphModel(
@@ -1252,6 +1252,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 ],
             ),
             applicant_form_fields=["full_name", "cgpa", "email"],
+            generator_visibility_rules=["ug2024@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.95,
             warnings=[],
@@ -1286,11 +1287,137 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 (opportunity_id,),
             ).fetchall()
             field_keys = [row["field_key"] for row in rows]
+            visibility_rows = conn.execute(
+                """
+                SELECT rule_type, rule_value
+                FROM opportunity_visibility_rules
+                WHERE opportunity_id = ?
+                ORDER BY rule_value ASC
+                """,
+                (opportunity_id,),
+            ).fetchall()
+            visibility_rules = [(row["rule_type"], row["rule_value"]) for row in visibility_rows]
 
         self.assertEqual(len(field_keys), 3)
         self.assertIn("full_name", field_keys)
         self.assertIn("cgpa", field_keys)
         self.assertIn("email", field_keys)
+        self.assertEqual(
+            visibility_rules,
+            [
+                ("GROUP_EMAIL", "ug2024@plaksha.edu.in"),
+            ],
+        )
+
+    def test_publish_draft_updates_existing_form_fields_and_visibility_rules(self):
+        ts = datetime.now(timezone.utc).strftime("%H%M%S%f")
+        created_at = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO opportunities
+                  (code, title, description, status, created_at, updated_at)
+                VALUES (?, 'Existing Publish Target', 'Before AI publish.', 'published', ?, ?)
+                """,
+                (f"PUBUPD_{ts}", created_at, created_at),
+            )
+            opportunity_id = int(cursor.lastrowid)
+            conn.execute(
+                """
+                INSERT INTO opportunity_required_fields (opportunity_id, field_key, display_order)
+                VALUES (?, 'full_name', 1), (?, 'cgpa', 2)
+                """,
+                (opportunity_id, opportunity_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at)
+                VALUES (?, 'EMAIL', 'rohan@plaksha.edu.in', ?)
+                """,
+                (opportunity_id, created_at),
+            )
+            conn.commit()
+
+        output = AIWorkflowDraftOutput(
+            opportunity=OpportunityDraftModel(
+                title="Updated Publish Target",
+                description="Verify publish refreshes existing opportunity fields.",
+                host_institution="Updated Test University",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="review",
+                        node_type="reviewer",
+                        display_name="OGE Review",
+                        reviewer_email="oge@plaksha.edu.in",
+                    ),
+                    GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="review"),
+                    GraphEdgeModel(from_node_key="review", to_node_key="end"),
+                ],
+            ),
+            applicant_form_fields=["full_name", "email"],
+            generator_visibility_rules=["ug2025@plaksha.edu.in"],
+            clarifying_questions=[],
+            confidence=0.95,
+            warnings=[],
+            is_fallback=False,
+        )
+        draft_ts = datetime.now(timezone.utc).isoformat()
+        try:
+            with db_conn() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO workflow_drafts
+                      (opportunity_id, status, draft_output, clarifying_questions,
+                       admin_answers, warnings, confidence, publish_ready,
+                       created_by_email, created_at, updated_at)
+                    VALUES (?, 'ready', ?, '[]', '{}', '[]', 0.95, 1, ?, ?, ?)
+                    """,
+                    (opportunity_id, output.model_dump_json(), "oge@plaksha.edu.in", draft_ts, draft_ts),
+                )
+                draft_id = int(cursor.lastrowid)
+                conn.commit()
+
+            admin = self.session_for("oge@plaksha.edu.in")
+            resp = admin_publish_workflow_draft(draft_id, session=admin)
+            self.assertIn("graph_version_id", resp)
+
+            with db_conn() as conn:
+                field_rows = conn.execute(
+                    """
+                    SELECT field_key
+                    FROM opportunity_required_fields
+                    WHERE opportunity_id = ?
+                    ORDER BY display_order ASC
+                    """,
+                    (opportunity_id,),
+                ).fetchall()
+                visibility_rows = conn.execute(
+                    """
+                    SELECT rule_type, rule_value
+                    FROM opportunity_visibility_rules
+                    WHERE opportunity_id = ?
+                    ORDER BY rule_value ASC
+                    """,
+                    (opportunity_id,),
+                ).fetchall()
+        finally:
+            try:
+                admin_delete_opportunity(opportunity_id, session=self.session_for("oge@plaksha.edu.in"))
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+
+        self.assertEqual([row["field_key"] for row in field_rows], ["full_name", "email"])
+        self.assertEqual(
+            [(row["rule_type"], row["rule_value"]) for row in visibility_rows],
+            [("GROUP_EMAIL", "ug2025@plaksha.edu.in")],
+        )
 
     def test_sla_notifications_endpoint_returns_summary(self):
         """Chunk C: the SLA notifications endpoint returns the expected keys."""
@@ -1339,6 +1466,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 ],
             ),
             applicant_form_fields=[],
+            generator_visibility_rules=["ug2024@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.9,
             warnings=[],
@@ -1363,15 +1491,15 @@ class GraphPublishingRouteTests(unittest.TestCase):
         resp = admin_publish_workflow_draft(draft_id, session=admin)
         gv_id = resp["graph_version_id"]
 
-        # Find the created opportunity and make it visible to Rohan.
+        # Find the created opportunity; draft publishing should make it visible to Rohan via UG 2024.
         with db_conn() as conn:
             draft = conn.execute("SELECT opportunity_id FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
             opportunity_id = draft["opportunity_id"]
-            conn.execute(
-                "INSERT OR IGNORE INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', 'rohan@plaksha.edu.in', ?)",
-                (opportunity_id, ts),
-            )
-            conn.commit()
+            visibility = conn.execute(
+                "SELECT rule_value FROM opportunity_visibility_rules WHERE opportunity_id = ?",
+                (opportunity_id,),
+            ).fetchall()
+        self.assertIn("ug2024@plaksha.edu.in", [row["rule_value"] for row in visibility])
 
         # ── Submit an application as Rohan ──
         student = self.session_for("rohan@plaksha.edu.in")
@@ -1485,6 +1613,294 @@ class GraphPublishingRouteTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(task["status"], "completed")
         self.assertEqual(task["decision"], "reject")
+
+
+class GoldenPathTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        ensure_db_initialized()
+
+    def session_for(self, email: str) -> SessionUser:
+        with db_conn() as conn:
+            row = get_user_role(conn, email.strip().lower())
+        self.assertIsNotNone(row, f"Missing test user for {email}")
+        return SessionUser(
+            email=row["email"],
+            name=row["full_name"],
+            role=row["role_code"],
+            roleDisplayName=row["role_display_name"],
+            userId=int(row["id"]),
+        )
+
+    def _active_task_keys(self, application_id: int) -> list[str]:
+        with db_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT node_key
+                FROM application_workflow_tasks
+                WHERE application_id = ? AND status = 'active'
+                ORDER BY node_key ASC
+                """,
+                (application_id,),
+            ).fetchall()
+        return [row["node_key"] for row in rows]
+
+    def _task_keys(self, application_id: int) -> list[str]:
+        with db_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT node_key
+                FROM application_workflow_tasks
+                WHERE application_id = ?
+                ORDER BY id ASC
+                """,
+                (application_id,),
+            ).fetchall()
+        return [row["node_key"] for row in rows]
+
+    def _seed_standard_pathway_draft(self) -> int:
+        output = AIWorkflowDraftOutput(
+            opportunity=OpportunityDraftModel(
+                title="Golden Path Standard Pathway Test",
+                description="End-to-end test for the Plaksha standard approval pathway.",
+                host_institution="Test Partner University",
+                term="Fall 2026",
+                destination="Singapore",
+                deadline="2026-12-31",
+                seats=5,
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(
+                        node_key="start",
+                        node_type="start",
+                        display_name="Application Submitted",
+                        allowed_actions=[],
+                    ),
+                    GraphNodeModel(
+                        node_key="oaa_review",
+                        node_type="reviewer",
+                        display_name="Office of Academic Affairs",
+                        reviewer_email="oge@plaksha.edu.in",
+                        allowed_actions=["approve", "request_changes", "comment"],
+                        metadata={
+                            "sla_hours": 72,
+                            "required_inputs": [
+                                {
+                                    "input_key": "backlog_status",
+                                    "label": "Backlog / Misconduct Status",
+                                    "input_type": "select",
+                                    "options": ["Clear", "Active backlog", "Misconduct"],
+                                    "required": True,
+                                }
+                            ],
+                        },
+                    ),
+                    GraphNodeModel(
+                        node_key="ug_academics_review",
+                        node_type="reviewer",
+                        display_name="UG Academics",
+                        reviewer_email="prof.a@plaksha.edu.in",
+                        allowed_actions=["approve", "request_changes", "comment"],
+                        metadata={
+                            "sla_hours": 72,
+                            "required_inputs": [
+                                {
+                                    "input_key": "cgpa_verified",
+                                    "label": "CGPA Verified",
+                                    "input_type": "select",
+                                    "options": ["Meets requirement", "Below minimum", "Cannot verify"],
+                                    "required": True,
+                                }
+                            ],
+                        },
+                    ),
+                    GraphNodeModel(
+                        node_key="parallel_join",
+                        node_type="join_all",
+                        display_name="OAA + UG Academics Complete",
+                        allowed_actions=[],
+                    ),
+                    GraphNodeModel(
+                        node_key="program_chair_review",
+                        node_type="reviewer",
+                        display_name="Freshmore Coordinator / Program Chair",
+                        reviewer_email="program-chair@plaksha.edu.in",
+                        allowed_actions=["approve", "request_changes", "comment"],
+                        metadata={
+                            "sla_hours": 72,
+                            "required_inputs": [
+                                {
+                                    "input_key": "coursework_alignment",
+                                    "label": "Coursework Alignment with Partner Programme",
+                                    "input_type": "select",
+                                    "options": ["Strong", "Adequate", "Weak", "No alignment"],
+                                    "required": True,
+                                }
+                            ],
+                        },
+                    ),
+                    GraphNodeModel(
+                        node_key="dean_approval",
+                        node_type="reviewer",
+                        display_name="Dean - Final Approval",
+                        reviewer_email="dean@plaksha.edu.in",
+                        allowed_actions=["approve", "reject", "comment"],
+                        metadata={
+                            "sla_hours": 72,
+                            "required_inputs": [
+                                {
+                                    "input_key": "dean_decision",
+                                    "label": "Final Decision",
+                                    "input_type": "select",
+                                    "options": ["Approved for nomination", "Rejected"],
+                                    "required": True,
+                                }
+                            ],
+                        },
+                    ),
+                    GraphNodeModel(
+                        node_key="end",
+                        node_type="end",
+                        display_name="Nomination Complete",
+                        allowed_actions=[],
+                    ),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="oaa_review"),
+                    GraphEdgeModel(from_node_key="start", to_node_key="ug_academics_review"),
+                    GraphEdgeModel(from_node_key="oaa_review", to_node_key="parallel_join"),
+                    GraphEdgeModel(from_node_key="ug_academics_review", to_node_key="parallel_join"),
+                    GraphEdgeModel(from_node_key="parallel_join", to_node_key="program_chair_review"),
+                    GraphEdgeModel(from_node_key="program_chair_review", to_node_key="dean_approval"),
+                    GraphEdgeModel(from_node_key="dean_approval", to_node_key="end"),
+                ],
+            ),
+            applicant_form_fields=["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
+            generator_visibility_rules=["ug2024@plaksha.edu.in"],
+            clarifying_questions=[],
+            confidence=0.95,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'ready', ?, '[]', '{}', '[]', 0.95, 1, ?, ?, ?)
+                """,
+                (output.model_dump_json(), "oge@plaksha.edu.in", ts, ts),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+        return draft_id
+
+    def test_standard_pathway_golden_path_approval(self):
+        draft_id = self._seed_standard_pathway_draft()
+        admin = self.session_for("oge@plaksha.edu.in")
+        published = admin_publish_workflow_draft(draft_id, session=admin)
+        self.assertIn("graph_version_id", published)
+
+        with db_conn() as conn:
+            draft = conn.execute("SELECT opportunity_id FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+            opportunity_id = int(draft["opportunity_id"])
+
+        try:
+            with db_conn() as conn:
+                field_rows = conn.execute(
+                    """
+                    SELECT field_key
+                    FROM opportunity_required_fields
+                    WHERE opportunity_id = ?
+                    ORDER BY display_order ASC
+                    """,
+                    (opportunity_id,),
+                ).fetchall()
+                visibility_rows = conn.execute(
+                    """
+                    SELECT rule_type, rule_value
+                    FROM opportunity_visibility_rules
+                    WHERE opportunity_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (opportunity_id,),
+                ).fetchall()
+
+            field_keys = [row["field_key"] for row in field_rows]
+            self.assertGreaterEqual(len(visibility_rows), 1)
+            self.assertIn("cgpa", field_keys)
+            self.assertIn("statement_of_purpose", field_keys)
+
+            student = self.session_for("rohan@plaksha.edu.in")
+            app_resp = create_application(
+                ApplicationCreateBody(
+                    opportunityId=opportunity_id,
+                    submittedData={
+                        "full_name": "Rohan",
+                        "student_id": "PL-2022-ROH",
+                        "email": "rohan@plaksha.edu.in",
+                        "cgpa": "8.5",
+                        "statement_of_purpose": "I want to represent Plaksha well abroad.",
+                    },
+                ),
+                session=student,
+            )
+            application_id = int(app_resp["application"]["id"])
+
+            self.assertEqual(
+                self._active_task_keys(application_id),
+                ["oaa_review", "ug_academics_review"],
+            )
+
+            approve_application(
+                application_id,
+                DecisionBody(
+                    remarks="OAA clear.",
+                    requiredInputs={"backlog_status": "Clear"},
+                ),
+                session=admin,
+            )
+            self.assertNotIn("program_chair_review", self._task_keys(application_id))
+
+            approve_application(
+                application_id,
+                DecisionBody(
+                    remarks="UG Academics clear.",
+                    requiredInputs={"cgpa_verified": "Meets requirement"},
+                ),
+                session=self.session_for("prof.a@plaksha.edu.in"),
+            )
+            self.assertEqual(self._active_task_keys(application_id), ["program_chair_review"])
+
+            approve_application(
+                application_id,
+                DecisionBody(
+                    remarks="Program chair recommends approval.",
+                    requiredInputs={"coursework_alignment": "Strong"},
+                ),
+                session=self.session_for("program-chair@plaksha.edu.in"),
+            )
+            self.assertEqual(self._active_task_keys(application_id), ["dean_approval"])
+
+            final = approve_application(
+                application_id,
+                DecisionBody(
+                    remarks="Dean approves nomination.",
+                    requiredInputs={"dean_decision": "Approved for nomination"},
+                ),
+                session=self.session_for("dean@plaksha.edu.in"),
+            )
+            self.assertEqual(final["application"]["final_status"], "APPROVED")
+        finally:
+            try:
+                admin_delete_opportunity(opportunity_id, session=admin)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
 
 
 if __name__ == "__main__":

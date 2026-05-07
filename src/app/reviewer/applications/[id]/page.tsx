@@ -47,6 +47,14 @@ type TimelineRecord = {
   event_payload?: { to_stage?: string } | null;
 };
 
+type GraphNodeInfo = {
+  node_key: string;
+  display_name: string;
+  allowed_actions: string[];
+  visible_sections: string[];
+  required_inputs: StepRequiredInput[];
+};
+
 type DetailPayload = {
   application?: {
     id: number;
@@ -62,6 +70,7 @@ type DetailPayload = {
   comments?: Array<{ id: number; author_email: string; text: string; created_at: string }>;
   timeline?: TimelineRecord[];
   pipeline_steps?: PipelineStep[];
+  graph_node_info?: GraphNodeInfo;
   application_file?: Record<string, unknown>;
   field_labels?: Record<string, string>;
   permissions?: { can_view_comments?: boolean };
@@ -102,14 +111,20 @@ export default function ReviewerApplicationDetail() {
         setUser(userData.user || null);
         setData(detail);
 
-        const currentStepOrder = Number(detail?.application?.current_step_order || 0);
-        const priorSteps = (detail?.pipeline_steps || []).filter((step: PipelineStep) => step.step_order < currentStepOrder);
-        if (priorSteps.length > 0) {
-          setTargetStepOrder(priorSteps[priorSteps.length - 1].step_order);
-        } else if (currentStepOrder > 0) {
+        const isGraphApp = Boolean(detail?.graph_node_info);
+        if (isGraphApp) {
+          // Graph apps always allow send-back to student; pre-select step 0 (student).
           setTargetStepOrder(0);
         } else {
-          setTargetStepOrder(null);
+          const currentStepOrder = Number(detail?.application?.current_step_order || 0);
+          const priorSteps = (detail?.pipeline_steps || []).filter((step: PipelineStep) => step.step_order < currentStepOrder);
+          if (priorSteps.length > 0) {
+            setTargetStepOrder(priorSteps[priorSteps.length - 1].step_order);
+          } else if (currentStepOrder > 0) {
+            setTargetStepOrder(0);
+          } else {
+            setTargetStepOrder(null);
+          }
         }
 
         setLoading(false);
@@ -127,6 +142,9 @@ export default function ReviewerApplicationDetail() {
     }),
     [data]
   );
+
+  const graphNodeInfo = data?.graph_node_info ?? null;
+  const isGraphApp = graphNodeInfo !== null;
 
   const pipelineSteps = useMemo(() => (Array.isArray(data?.pipeline_steps) ? data.pipeline_steps : []), [data?.pipeline_steps]);
   const reviews = useMemo(() => (Array.isArray(data?.reviews) ? data.reviews : []), [data?.reviews]);
@@ -146,35 +164,48 @@ export default function ReviewerApplicationDetail() {
   }, [application.submitted_data_json, data]);
 
   const currentStep = useMemo(() => {
-    if (!data) return null;
+    if (!data || isGraphApp) return null;
     return pipelineSteps.find((step) => step.step_order === application.current_step_order) || null;
-  }, [application.current_step_order, data, pipelineSteps]);
+  }, [application.current_step_order, data, isGraphApp, pipelineSteps]);
 
-  const requiredInputs = currentStep?.required_inputs || [];
+  // For graph apps use node metadata; for legacy apps use pipeline step data.
+  const requiredInputs: StepRequiredInput[] = isGraphApp
+    ? (graphNodeInfo?.required_inputs ?? [])
+    : (currentStep?.required_inputs ?? []);
   const canViewComments = Boolean(data?.permissions?.can_view_comments);
   const fieldLabels = data?.field_labels || {};
 
   const visibleDataEntries = useMemo(() => {
-    const visibleFields = currentStep?.visible_fields || [];
     const entries = Object.entries(applicationFile);
+    if (isGraphApp) {
+      const sections = graphNodeInfo?.visible_sections ?? [];
+      if (sections.length === 0 || sections.includes("all")) return entries;
+      return entries.filter(([key]) => sections.includes(key));
+    }
+    const visibleFields = currentStep?.visible_fields || [];
     if (visibleFields.length === 0) return [];
     return entries.filter(([key]) => visibleFields.includes(key));
-  }, [applicationFile, currentStep]);
+  }, [applicationFile, currentStep, graphNodeInfo, isGraphApp]);
 
   const visibleDataMap = useMemo(() => Object.fromEntries(visibleDataEntries), [visibleDataEntries]);
 
   const priorSteps = useMemo(() => {
-    if (!data) return [];
+    if (!data || isGraphApp) return [];
     return pipelineSteps.filter((step) => step.step_order < application.current_step_order);
-  }, [application.current_step_order, data, pipelineSteps]);
+  }, [application.current_step_order, data, isGraphApp, pipelineSteps]);
 
   const sendBackTargets = useMemo(() => {
-    if (!data || application.current_step_order <= 0) return [];
+    if (!data) return [];
+    if (isGraphApp) {
+      // Graph apps can always be sent back to the student for rework.
+      return [{ stepOrder: 0, label: "Student (Rework)" }];
+    }
+    if (application.current_step_order <= 0) return [];
     return [
       { stepOrder: 0, label: "Student (Generator)" },
       ...priorSteps.map((step) => ({ stepOrder: step.step_order, label: step.step_name })),
     ];
-  }, [application.current_step_order, data, priorSteps]);
+  }, [application.current_step_order, data, isGraphApp, priorSteps]);
 
   async function handleAction(endpoint: "approve" | "request-changes" | "reject") {
     if (!data || !user) return;

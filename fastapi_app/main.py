@@ -3767,41 +3767,105 @@ def application_detail(application_id: int, session: SessionUser = Depends(get_s
         }
 
         if session.role in REVIEWER_ROLES and session.role != ADMIN_ROLE:
-            current_step = next(
-                (
-                    step
-                    for step in detail["pipeline_steps"]
-                    if int(step["step_order"]) == int(app_row["current_step_order"])
-                ),
-                None,
-            )
-            if not current_step:
-                raise HTTPException(status_code=400, detail="No active workflow step for this application.")
+            if app_row["graph_version_id"]:
+                # Graph-backed path: derive permissions/visibility from the active graph node.
+                task = get_active_graph_task(conn, application_id, session.email)
+                if not task:
+                    raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
+                node_row = conn.execute(
+                    "SELECT * FROM graph_nodes WHERE graph_version_id = ? AND node_key = ?",
+                    (app_row["graph_version_id"], task["node_key"]),
+                ).fetchone()
+                visible_sections: list[str] = []
+                allowed_actions: list[str] = []
+                required_inputs_raw: list[dict[str, Any]] = []
+                node_display_name = task["node_key"]
+                if node_row:
+                    node_display_name = node_row["display_name"] or task["node_key"]
+                    try:
+                        visible_sections = json.loads(node_row["visible_sections"] or "[]")
+                    except Exception:
+                        visible_sections = []
+                    try:
+                        allowed_actions = json.loads(node_row["allowed_actions"] or "[]")
+                    except Exception:
+                        allowed_actions = []
+                    try:
+                        meta = json.loads(node_row["metadata"] or "{}")
+                        required_inputs_raw = meta.get("required_inputs", [])
+                    except Exception:
+                        required_inputs_raw = []
 
-            can_view_comments = bool(current_step.get("can_view_comments"))
-            detail["permissions"] = {
-                "can_view_comments": can_view_comments,
-            }
+                can_view_comments = "comment" in allowed_actions or not allowed_actions
+                detail["permissions"] = {"can_view_comments": can_view_comments}
 
-            full_file = detail.get("application_file") or {}
-            visible_keys = set(current_step.get("visible_fields") or [])
-            filtered_file = {key: value for key, value in full_file.items() if key in visible_keys}
-            detail["application_file"] = filtered_file
-            if isinstance(detail.get("field_labels"), dict):
-                detail["field_labels"] = {
-                    key: value for key, value in detail["field_labels"].items() if key in visible_keys
+                full_file = detail.get("application_file") or {}
+                if not visible_sections or "all" in visible_sections:
+                    visible_keys = set(full_file.keys())
+                else:
+                    visible_keys = set(visible_sections)
+                filtered_file = {key: value for key, value in full_file.items() if key in visible_keys}
+                detail["application_file"] = filtered_file
+                if isinstance(detail.get("field_labels"), dict):
+                    detail["field_labels"] = {
+                        key: value for key, value in detail["field_labels"].items() if key in visible_keys
+                    }
+                detail["application"]["submitted_data_json"] = json.dumps(filtered_file)
+
+                profile = detail.get("student_profile")
+                if isinstance(profile, dict):
+                    profile["student_id"] = filtered_file.get("student_id")
+                    profile["program"] = filtered_file.get("program")
+                    profile["official_cgpa"] = filtered_file.get("cgpa")
+
+                if not can_view_comments:
+                    detail["comments"] = []
+                    detail["reviews"] = []
+
+                detail["graph_node_info"] = {
+                    "node_key": task["node_key"],
+                    "display_name": node_display_name,
+                    "allowed_actions": allowed_actions,
+                    "visible_sections": visible_sections,
+                    "required_inputs": required_inputs_raw,
                 }
-            detail["application"]["submitted_data_json"] = json.dumps(filtered_file)
+            else:
+                # Legacy pipeline path.
+                current_step = next(
+                    (
+                        step
+                        for step in detail["pipeline_steps"]
+                        if int(step["step_order"]) == int(app_row["current_step_order"])
+                    ),
+                    None,
+                )
+                if not current_step:
+                    raise HTTPException(status_code=400, detail="No active workflow step for this application.")
 
-            profile = detail.get("student_profile")
-            if isinstance(profile, dict):
-                profile["student_id"] = filtered_file.get("student_id")
-                profile["program"] = filtered_file.get("program")
-                profile["official_cgpa"] = filtered_file.get("cgpa")
+                can_view_comments = bool(current_step.get("can_view_comments"))
+                detail["permissions"] = {
+                    "can_view_comments": can_view_comments,
+                }
 
-            if not can_view_comments:
-                detail["comments"] = []
-                detail["reviews"] = []
+                full_file = detail.get("application_file") or {}
+                visible_keys = set(current_step.get("visible_fields") or [])
+                filtered_file = {key: value for key, value in full_file.items() if key in visible_keys}
+                detail["application_file"] = filtered_file
+                if isinstance(detail.get("field_labels"), dict):
+                    detail["field_labels"] = {
+                        key: value for key, value in detail["field_labels"].items() if key in visible_keys
+                    }
+                detail["application"]["submitted_data_json"] = json.dumps(filtered_file)
+
+                profile = detail.get("student_profile")
+                if isinstance(profile, dict):
+                    profile["student_id"] = filtered_file.get("student_id")
+                    profile["program"] = filtered_file.get("program")
+                    profile["official_cgpa"] = filtered_file.get("cgpa")
+
+                if not can_view_comments:
+                    detail["comments"] = []
+                    detail["reviews"] = []
     return detail
 
 
@@ -4053,11 +4117,15 @@ def submit_student_response(
             raise HTTPException(status_code=403, detail="Forbidden")
         if app_row["final_status"]:
             raise HTTPException(status_code=400, detail="Application already closed")
-        if int(app_row["current_step_order"]) != 0:
-            raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
 
         # ── Graph-backed path ──
         if app_row["graph_version_id"]:
+            returned_task = conn.execute(
+                "SELECT id FROM application_workflow_tasks WHERE application_id = ? AND status = 'returned' ORDER BY id DESC LIMIT 1",
+                (application_id,),
+            ).fetchone()
+            if not returned_task:
+                raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
             ts = now_iso()
             comment_text = body.text.strip()
             conn.execute(
@@ -4084,6 +4152,8 @@ def submit_student_response(
             return {"application": dict(updated) if updated else None}
 
         # ── Legacy pipeline path ──
+        if int(app_row["current_step_order"]) != 0:
+            raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
         if app_row["return_to_step_order"] is None or not app_row["return_to_stage_label"]:
             raise HTTPException(status_code=400, detail="Return step information is missing.")
 

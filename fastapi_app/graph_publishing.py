@@ -26,6 +26,37 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "_", text.strip().lower()).strip("_") or "opp"
 
 
+def _normalize_generator_visibility_rules(rules: list[str]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_rule in rules:
+        rule_value = raw_rule.strip().lower()
+        if not rule_value or rule_value in seen:
+            continue
+        if not rule_value.endswith("@plaksha.edu.in"):
+            raise ValueError(f'Visibility rule "{rule_value}" must be a valid @plaksha.edu.in email address.')
+        seen.add(rule_value)
+        normalized.append({"rule_type": "GROUP_EMAIL", "rule_value": rule_value})
+    return normalized
+
+
+def _replace_opportunity_visibility_rules(
+    db: sqlite3.Connection,
+    opportunity_id: int,
+    rules: list[dict[str, str]],
+    created_at: str,
+) -> None:
+    db.execute("DELETE FROM opportunity_visibility_rules WHERE opportunity_id = ?", (opportunity_id,))
+    for rule in rules:
+        db.execute(
+            """
+            INSERT INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (opportunity_id, rule["rule_type"], rule["rule_value"], created_at),
+        )
+
+
 class GraphPublishingService:
     """
     Publishes a validated workflow_draft into an active graph version.
@@ -157,6 +188,13 @@ class GraphPublishingService:
         replace_detail_fields(db, opportunity_id, normalize_detail_fields(opp.detail_fields), ts)
         if parsed.applicant_form_fields:
             replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
+        visibility_rules = parsed.generator_visibility_rules or ["ug2024@plaksha.edu.in"]
+        _replace_opportunity_visibility_rules(
+            db,
+            opportunity_id,
+            _normalize_generator_visibility_rules(visibility_rules),
+            ts,
+        )
         return opportunity_id
 
     def _update_opportunity(self, db: sqlite3.Connection, opportunity_id: int, parsed: AIWorkflowDraftOutput) -> None:
@@ -194,6 +232,15 @@ class GraphPublishingService:
             ),
         )
         replace_detail_fields(db, opportunity_id, detail_fields, ts)
+        if parsed.applicant_form_fields:
+            replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
+        visibility_rules = parsed.generator_visibility_rules or ["ug2024@plaksha.edu.in"]
+        _replace_opportunity_visibility_rules(
+            db,
+            opportunity_id,
+            _normalize_generator_visibility_rules(visibility_rules),
+            ts,
+        )
 
     def _next_version(self, db: sqlite3.Connection, opportunity_id: int) -> int:
         row = db.execute(

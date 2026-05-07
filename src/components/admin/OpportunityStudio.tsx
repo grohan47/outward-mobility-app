@@ -885,7 +885,7 @@ export default function OpportunityStudio({
   }
 
   return (
-    <div className="relative -m-6 flex min-h-[calc(100vh-96px)] flex-col bg-white">
+    <div className="relative -m-6 flex h-[calc(100vh-96px)] flex-col overflow-hidden bg-white">
       <header className="border-b border-slate-200 bg-white">
         {activeImpact.length > 0 && mode === "edit" && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

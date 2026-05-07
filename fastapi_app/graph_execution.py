@@ -137,8 +137,23 @@ class GraphExecutionService:
                     """,
                     (ts, int(task["application_id"]), task_id),
                 )
-                self._mark_application_rejected(db, int(task["application_id"]))
-                return TransitionResult(success=True, application_status="REJECTED")
+                next_task_ids = self._advance_from_node(
+                    db,
+                    application,
+                    int(task["graph_version_id"]),
+                    str(task["node_key"]),
+                    completed_task_id=task_id,
+                    decision=REJECT,
+                )
+                if not next_task_ids:
+                    self._mark_application_rejected(db, int(task["application_id"]))
+
+                updated = self._get_application(db, int(task["application_id"]))
+                return TransitionResult(
+                    success=True,
+                    next_task_ids=next_task_ids,
+                    application_status=updated["final_status"],
+                )
 
             if normalized_decision == REQUEST_CHANGES:
                 db.execute(
@@ -214,6 +229,53 @@ class GraphExecutionService:
                 next_task_ids=next_task_ids,
                 application_status=updated["final_status"],
             )
+
+    def resubmit_after_rework(self, db: sqlite3.Connection, application_id: int) -> int:
+        with db:
+            task = db.execute(
+                """
+                SELECT
+                  t.id AS task_id,
+                  COALESCE(n.display_name, t.node_key) AS display_name
+                FROM application_workflow_tasks t
+                JOIN graph_nodes n
+                  ON n.graph_version_id = t.graph_version_id
+                 AND n.node_key = t.node_key
+                WHERE t.application_id = ?
+                  AND t.status = 'returned'
+                ORDER BY t.acted_at DESC, t.id DESC
+                LIMIT 1
+                """,
+                (application_id,),
+            ).fetchone()
+            if not task:
+                raise ValueError("Application has no returned workflow task to resubmit")
+
+            ts = _now_iso()
+            db.execute(
+                """
+                UPDATE application_workflow_tasks
+                SET status = 'active',
+                    acted_at = NULL,
+                    decision = NULL,
+                    comment_summary = NULL
+                WHERE id = ?
+                """,
+                (int(task["task_id"]),),
+            )
+            db.execute(
+                """
+                UPDATE applications
+                SET current_stage_label = ?,
+                    current_step_order = 1,
+                    return_to_step_order = NULL,
+                    return_to_stage_label = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (task["display_name"], ts, application_id),
+            )
+            return int(task["task_id"])
 
     def get_inbox(self, db: sqlite3.Connection, reviewer_email: str) -> list[TaskRow]:
         rows = db.execute(
@@ -373,6 +435,18 @@ class GraphExecutionService:
             """
             UPDATE applications
             SET final_status = 'APPROVED',
+                current_stage_label = 'Closed',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_now_iso(), application_id),
+        )
+
+    def _mark_application_rejected(self, db: sqlite3.Connection, application_id: int) -> None:
+        db.execute(
+            """
+            UPDATE applications
+            SET final_status = 'REJECTED',
                 current_stage_label = 'Closed',
                 updated_at = ?
             WHERE id = ?

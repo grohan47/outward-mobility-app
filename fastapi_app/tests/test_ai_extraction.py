@@ -20,16 +20,33 @@ from pathlib import Path
 import pytest
 from fastapi_app.ai_service import CLAUDE_MODEL
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY") or not CLAUDE_MODEL,
-    reason="Requires ANTHROPIC_API_KEY and CLAUDE_MODEL to be set",
-)
+_AI_PROVIDER_MISSING = not os.environ.get("ANTHROPIC_API_KEY") or not CLAUDE_MODEL
+_AI_PROVIDER_REQUIRED_REASON = "Requires ANTHROPIC_API_KEY and CLAUDE_MODEL to be set"
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "demo_emails"
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _skip_integration_without_provider(request: pytest.FixtureRequest) -> None:
+    if request.node.get_closest_marker("integration") and _AI_PROVIDER_MISSING:
+        pytest.skip(_AI_PROVIDER_REQUIRED_REASON)
+
+
+class _MockProvider:
+    def __init__(self, response):
+        self._response = response
+
+    def complete(self, system: str, user: str, timeout: int) -> str:
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+
+_VISIBILITY_OMITTED = object()
+
 
 def _make_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -57,6 +74,55 @@ def _make_db() -> sqlite3.Connection:
 
 def _load_email(filename: str) -> str:
     return (FIXTURES_DIR / filename).read_text()
+
+
+def _valid_ai_output_json(generator_visibility_rules=_VISIBILITY_OMITTED) -> str:
+    payload = {
+        "opportunity": {
+            "title": "Singapore AI Exchange",
+            "description": "Research exchange at NTU Singapore.",
+            "detail_fields": [
+                {
+                    "field_key": "application_deadline",
+                    "label": "Application deadline",
+                    "value": "2026-06-15",
+                    "value_type": "date",
+                    "display_order": 1,
+                    "is_student_visible": True,
+                }
+            ],
+            "ai_summary_bullets": ["Research exchange at NTU Singapore."],
+            "eligibility_criteria": "Open to Plaksha students.",
+            "funding_available": False,
+            "visibility": "plaksha_only",
+        },
+        "graph": {
+            "nodes": [
+                {"node_key": "start", "node_type": "start", "display_name": "Start"},
+                {
+                    "node_key": "oge_review",
+                    "node_type": "reviewer",
+                    "display_name": "OGE Review",
+                    "reviewer_email": "oge@plaksha.edu.in",
+                    "allowed_actions": ["approve", "request_changes", "comment"],
+                    "metadata": {"sla_hours": 72},
+                },
+                {"node_key": "end", "node_type": "end", "display_name": "End"},
+            ],
+            "edges": [
+                {"from_node_key": "start", "to_node_key": "oge_review"},
+                {"from_node_key": "oge_review", "to_node_key": "end"},
+            ],
+        },
+        "applicant_form_fields": ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
+        "clarifying_questions": [],
+        "confidence": 0.9,
+        "warnings": [],
+        "is_fallback": False,
+    }
+    if generator_visibility_rules is not _VISIBILITY_OMITTED:
+        payload["generator_visibility_rules"] = generator_visibility_rules
+    return json.dumps(payload)
 
 
 def _generate(email_text: str) -> dict:
@@ -109,6 +175,48 @@ def _assert_has_deadline(parsed) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+def test_parsed_ai_output_preserves_seeded_generator_visibility_rules():
+    from fastapi_app.ai_workflow import AIWorkflowDraftService
+    from fastapi_app.graph_models import AIWorkflowDraftOutput
+
+    db = _make_db()
+    service = AIWorkflowDraftService(
+        provider=_MockProvider(_valid_ai_output_json(["professors@plaksha.edu.in"]))
+    )
+
+    row = service.generate_draft(db, "test@plaksha.edu.in", "Faculty research opportunity")
+    parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
+
+    assert parsed.generator_visibility_rules == ["professors@plaksha.edu.in"]
+
+
+def test_parsed_ai_output_defaults_generator_visibility_rules_to_ug2024():
+    from fastapi_app.ai_workflow import AIWorkflowDraftService
+    from fastapi_app.graph_models import AIWorkflowDraftOutput
+
+    db = _make_db()
+    service = AIWorkflowDraftService(provider=_MockProvider(_valid_ai_output_json()))
+
+    row = service.generate_draft(db, "test@plaksha.edu.in", "General student opportunity")
+    parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
+
+    assert parsed.generator_visibility_rules == ["ug2024@plaksha.edu.in"]
+
+
+def test_fallback_draft_includes_default_generator_visibility_rules():
+    from fastapi_app.ai_workflow import AIWorkflowDraftService
+    from fastapi_app.graph_models import AIWorkflowDraftOutput
+
+    db = _make_db()
+    service = AIWorkflowDraftService(provider=_MockProvider(RuntimeError("provider unavailable")))
+
+    row = service.generate_draft(db, "test@plaksha.edu.in", "General student opportunity")
+    parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
+
+    assert parsed.is_fallback is True
+    assert parsed.generator_visibility_rules == ["ug2024@plaksha.edu.in"]
+
 
 @pytest.mark.integration
 def test_daad_wise_scholarship_extraction():
