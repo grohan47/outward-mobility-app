@@ -50,10 +50,7 @@ export type WorkflowStep = {
   canViewComments: boolean;
 };
 
-export type GeneratorVisibilityRuleType = "EMAIL" | "GROUP_EMAIL";
-
 export type GeneratorVisibilityRule = {
-  ruleType: GeneratorVisibilityRuleType;
   ruleValue: string;
 };
 

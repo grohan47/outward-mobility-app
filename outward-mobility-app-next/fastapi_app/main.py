@@ -1526,6 +1526,11 @@ class OpportunityDetailFieldPayload(BaseModel):
     is_student_visible: bool | None = None
 
 
+class VisibilityRulePayload(BaseModel):
+    ruleType: str | None = None
+    ruleValue: str
+
+
 class OpportunityPatchBody(BaseModel):
     title: str | None = None
     description: str | None = None
@@ -1538,7 +1543,7 @@ class OpportunityPatchBody(BaseModel):
     formFields: list[str] | None = None
     customFields: list[CustomFormFieldPayload] | None = None
     workflowSteps: list["WorkflowStepPayload"] | None = None
-    generatorVisibilityRules: list["VisibilityRulePayload"] | None = None
+    generatorVisibilityRules: list[VisibilityRulePayload] | None = None
     detailFields: list[OpportunityDetailFieldPayload] | None = None
     aiSummaryBullets: list[str] | None = None
     useDefaultTemplate: bool | None = None
@@ -1569,7 +1574,7 @@ class OpportunityCreatePayload(BaseModel):
     detailFields: list[OpportunityDetailFieldPayload] = Field(default_factory=list)
     aiSummaryBullets: list[str] = Field(default_factory=list)
     workflowSteps: list[WorkflowStepPayload]
-    generatorVisibilityRules: list["VisibilityRulePayload"] = Field(default_factory=list)
+    generatorVisibilityRules: list[VisibilityRulePayload] = Field(default_factory=list)
     useDefaultTemplate: bool | None = False
 
 
@@ -1622,11 +1627,6 @@ class SLATestReminderBody(BaseModel):
 
 class SLABreachAcknowledgeBody(BaseModel):
     notes: str | None = None
-
-
-class VisibilityRulePayload(BaseModel):
-    ruleType: Literal["EMAIL", "GROUP_EMAIL"]
-    ruleValue: str
 
 
 class ApplicationCreateBody(BaseModel):
@@ -1839,14 +1839,14 @@ def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[st
     seen: set[tuple[str, str]] = set()
     for raw_rule in rules or []:
         rule = raw_rule if isinstance(raw_rule, VisibilityRulePayload) else VisibilityRulePayload(**raw_rule)
-        rule_type = rule.ruleType.strip().upper()
+        rule_type = (rule.ruleType or "EMAIL").strip().upper()
         rule_value = rule.ruleValue.strip().lower()
         if not rule_value:
             continue
-        if not valid_plaksha_email(rule_value):
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", rule_value):
             raise HTTPException(
                 status_code=400,
-                detail=f'Visibility rule "{rule_value}" must be a valid @plaksha.edu.in email address.',
+                detail=f'Visibility rule "{rule_value}" must be a valid email address.',
             )
         key = (rule_type, rule_value)
         if key in seen:
@@ -2206,8 +2206,8 @@ def normalize_workflow_steps(
 
     normalized_steps: list[WorkflowStepPayload] = []
     for step in workflow_steps:
-        if not step.reviewerEmail.lower().endswith(PLAKSHA_DOMAIN):
-            raise HTTPException(status_code=400, detail=f"Reviewer email must end with {PLAKSHA_DOMAIN}")
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", step.reviewerEmail.strip().lower()):
+            raise HTTPException(status_code=400, detail=f"Reviewer email must be a valid email address")
         if not step.name.strip():
             raise HTTPException(status_code=400, detail="Workflow step name cannot be empty")
         normalized_steps.append(

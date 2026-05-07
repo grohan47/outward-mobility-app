@@ -153,7 +153,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
   const [customFields, setCustomFields] = useState<CustomFieldDraft[]>([]);
   const [detailFields, setDetailFields] = useState<OpportunityDetailField[]>([]);
   const [generatorVisibilityRules, setGeneratorVisibilityRules] = useState<GeneratorVisibilityRule[]>([
-    { ruleType: "GROUP_EMAIL", ruleValue: "" },
+    { ruleValue: "" },
   ]);
   const [graphNodes, setGraphNodes] = useState<StudioGraphNode[]>([]);
   const [graphEdges, setGraphEdges] = useState<StudioGraphEdge[]>([]);
@@ -241,10 +241,9 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
         setGeneratorVisibilityRules(
           Array.isArray(detailData.generator_visibility_rules) && detailData.generator_visibility_rules.length > 0
             ? detailData.generator_visibility_rules.map((rule: any) => ({
-                ruleType: rule.ruleType === "EMAIL" ? "EMAIL" : "GROUP_EMAIL",
-                ruleValue: String(rule.ruleValue || ""),
+                ruleValue: String(rule.ruleValue || rule.value || ""),
               }))
-            : [{ ruleType: "GROUP_EMAIL", ruleValue: "" }]
+            : [{ ruleValue: "" }]
         );
         setGraphNodes((graphData.nodes || []).map(normalizeGraphNode));
         setGraphEdges((graphData.edges || []).map(normalizeGraphEdge));

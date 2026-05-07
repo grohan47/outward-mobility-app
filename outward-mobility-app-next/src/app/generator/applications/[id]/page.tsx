@@ -89,7 +89,7 @@ export default function ApplicationDetailView() {
     setDeleting(true);
     try {
       // Frontend -> API: DELETE /api/applications/:id
-      const res = await fetch(`/api/applications/${data.application.id}`, {
+      const res = await fetch(`/api/applications/${data!.application.id}`, {
         method: "DELETE",
       });
       const body = await res.json();
@@ -113,7 +113,7 @@ export default function ApplicationDetailView() {
     setResubmitting(true);
     try {
       // Frontend -> API: POST /api/applications/:id/student-response
-      const res = await fetch(`/api/applications/${data.application.id}/student-response`, {
+      const res = await fetch(`/api/applications/${data!.application.id}/student-response`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: studentResponse.trim() }),

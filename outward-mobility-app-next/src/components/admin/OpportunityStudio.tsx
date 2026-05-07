@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/ui/Icon";
+import { parseApiError } from "@/lib/api-error";
 import StudioGraph from "./StudioGraph";
 import StudioInspector from "./StudioInspector";
 import type {
@@ -99,8 +100,8 @@ function mergeDetailFields(current: OpportunityDetailField[], incoming: Opportun
 
 type StudioStep = "details" | "form" | "pipeline";
 
-function validPlakshaEmail(email: string): boolean {
-  return email.trim().toLowerCase().endsWith("@plaksha.edu.in");
+function validEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
 function slugify(value: string): string {
@@ -262,7 +263,7 @@ export default function OpportunityStudio({
   const [selectedFields, setSelectedFields] = useState<string[]>(initialSelectedFields);
   const [customFields, setCustomFields] = useState<CustomFieldDraft[]>(initialCustomFields);
   const [visibilityRules, setVisibilityRules] = useState<GeneratorVisibilityRule[]>(
-    initialGeneratorVisibilityRules.length > 0 ? initialGeneratorVisibilityRules : [{ ruleType: "GROUP_EMAIL", ruleValue: "" }]
+    initialGeneratorVisibilityRules.length > 0 ? initialGeneratorVisibilityRules : [{ ruleValue: "" }]
   );
   const fallbackGraph = useMemo(() => workflowStepsToGraph(defaultPipeline), [defaultPipeline]);
   const [graphNodes, setGraphNodes] = useState<StudioGraphNode[]>(
@@ -708,7 +709,7 @@ export default function OpportunityStudio({
         body: JSON.stringify({ prompt: aiPrompt.trim() }),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body?.detail || "AI generation failed.");
+      if (!response.ok) throw new Error(parseApiError(body, "AI generation failed."));
       const draft = normalizeDraftRow(body.draft);
       setCurrentDraftId(Number(body.draft_id || body.draft?.id || 0) || null);
       setDraftOutput(draft);
@@ -752,7 +753,7 @@ export default function OpportunityStudio({
         body: JSON.stringify({ answers }),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body?.detail || "Unable to record clarification answers.");
+      if (!response.ok) throw new Error(parseApiError(body, "Unable to record clarification answers."));
       if (body?.draft) {
         setDraftOutput(normalizeDraftRow(body.draft));
       }
@@ -774,7 +775,7 @@ export default function OpportunityStudio({
         body: JSON.stringify(buildDraftPayload()),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body?.detail || "Unable to validate workflow draft.");
+      if (!response.ok) throw new Error(parseApiError(body, "Unable to validate workflow draft."));
       const warnings = Array.isArray(body?.warnings) ? body.warnings.map(String) : validateGraph(graphNodes, graphEdges);
       setPublishReady(Boolean(body?.publish_ready));
       setNotice(warnings.length === 0 ? "Validation passed." : "Validation found issues on the graph.");
@@ -826,7 +827,7 @@ export default function OpportunityStudio({
       const draftId = draftBody.draft_id;
       const publishResponse = await fetch(`/api/admin/workflow-drafts/${draftId}/publish`, { method: "POST" });
       const publishBody = await publishResponse.json();
-      if (!publishResponse.ok) throw new Error(publishBody?.detail || "Unable to publish workflow.");
+      if (!publishResponse.ok) throw new Error(parseApiError(publishBody, "Unable to publish workflow."));
       const refreshed = await fetch(`/api/admin/workflow-drafts/${draftId}`).then((response) => response.json());
       const targetOpportunityId = refreshed?.draft?.opportunity_id || opportunityId;
       if (targetOpportunityId) {
@@ -852,7 +853,7 @@ export default function OpportunityStudio({
       body: JSON.stringify(buildDraftPayload()),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body?.detail || "Unable to save workflow draft.");
+    if (!response.ok) throw new Error(parseApiError(body, "Unable to save workflow draft."));
     setCurrentDraftId(Number(body?.draft_id || body?.draft?.id || 0) || null);
     if (body?.draft) {
       setDraftOutput(normalizeDraftRow(body.draft));
@@ -888,7 +889,7 @@ export default function OpportunityStudio({
       }),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body?.detail || "Unable to persist opportunity configuration.");
+    if (!response.ok) throw new Error(parseApiError(body, "Unable to persist opportunity configuration."));
     return body;
   }
 
@@ -1524,27 +1525,26 @@ function ApplicationFormScreen({
             </p>
             <div className="space-y-2">
               {visibilityRules.map((rule, index) => (
-                <div key={`${rule.ruleType}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
-                  <select
-                    className="min-h-[40px] rounded-lg border border-slate-200 bg-white p-2 text-sm"
-                    value={rule.ruleType}
-                    onChange={(event) =>
-                      setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleType: event.target.value as GeneratorVisibilityRule["ruleType"] } : item)))
-                    }
-                  >
-                    <option value="GROUP_EMAIL">Group</option>
-                    <option value="EMAIL">Email</option>
-                  </select>
+                <div key={index} className="flex gap-2">
                   <input
-                    className="min-h-[40px] rounded-lg border border-slate-200 p-2 text-sm"
+                    className="min-h-[40px] flex-1 rounded-lg border border-slate-200 p-2 text-sm"
                     value={rule.ruleValue}
-                    onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
-                    placeholder={rule.ruleType === "GROUP_EMAIL" ? "ug2024@plaksha.edu.in" : "student@plaksha.edu.in"}
+                    onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ruleValue: event.target.value } : item)))}
+                    placeholder="email@example.com"
                   />
+                  {visibilityRules.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setVisibilityRules((prev) => prev.filter((_, ruleIndex) => ruleIndex !== index))}
+                      className="min-h-[40px] rounded-lg px-2 text-slate-400 hover:text-red-500"
+                    >
+                      <Icon name="close" className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
-            <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleType: "EMAIL", ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
+            <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
               <Icon name="add" className="h-[18px] w-[18px]" />
               Add Rule
             </button>
@@ -1948,8 +1948,8 @@ function validateGraph(nodes: StudioGraphNode[], edges: StudioGraphEdge[]) {
   if (nodes.filter((node) => node.node_type === "start").length !== 1) warnings.push("Graph needs exactly one start node.");
   if (nodes.filter((node) => node.node_type === "end").length < 1) warnings.push("Graph needs at least one end node.");
   for (const node of nodes.filter((item) => item.node_type === "reviewer")) {
-    if (!node.reviewer_email || !validPlakshaEmail(node.reviewer_email)) {
-      warnings.push(`${node.display_name || node.node_key} needs a @plaksha.edu.in reviewer email.`);
+    if (!node.reviewer_email || !validEmail(node.reviewer_email)) {
+      warnings.push(`${node.display_name || node.node_key} needs a valid reviewer email.`);
     }
     if (!Number(node.metadata?.sla_hours || 0)) {
       warnings.push(`${node.display_name || node.node_key} needs an SLA.`);
