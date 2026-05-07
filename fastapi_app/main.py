@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - dependency is optional in stripped env
 DB_PATH = Path(__file__).resolve().parent.parent / "server" / "db" / "prism.sqlite"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 SESSION_COOKIE = "prism_session"
-PLAKSHA_DOMAIN = "@plaksha.edu.in"
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 CANONICAL_TABLES = {
     "users",
@@ -116,8 +116,8 @@ def parse_iso(value: str | None) -> datetime | None:
         return None
 
 
-def valid_plaksha_email(email: str) -> bool:
-    return email.strip().lower().endswith(PLAKSHA_DOMAIN)
+def valid_email(email: str) -> bool:
+    return bool(EMAIL_REGEX.match(email.strip().lower()))
 
 
 def parse_options_json(raw: str | None) -> list[str]:
@@ -1593,10 +1593,10 @@ def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[st
         rule_value = rule.ruleValue.strip().lower()
         if not rule_value:
             continue
-        if not valid_plaksha_email(rule_value):
+        if not valid_email(rule_value):
             raise HTTPException(
                 status_code=400,
-                detail=f'Visibility rule "{rule_value}" must be a valid @plaksha.edu.in email address.',
+                detail=f'Visibility rule "{rule_value}" must be a valid email address.',
             )
         key = (rule_type, rule_value)
         if key in seen:

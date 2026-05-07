@@ -98,8 +98,8 @@ function mergeDetailFields(current: OpportunityDetailField[], incoming: Opportun
 
 type StudioStep = "details" | "form" | "pipeline";
 
-function validPlakshaEmail(email: string): boolean {
-  return email.trim().toLowerCase().endsWith("@plaksha.edu.in");
+function validEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
 function slugify(value: string): string {
@@ -1545,7 +1545,7 @@ function ApplicationFormScreen({
                     className="min-h-[40px] rounded-lg border border-slate-200 p-2 text-sm"
                     value={rule.ruleValue}
                     onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
-                    placeholder="ug2024@plaksha.edu.in"
+                    placeholder="e.g. ug2024@university.edu"
                   />
                 </div>
               ))}
@@ -1952,8 +1952,8 @@ function validateGraph(nodes: StudioGraphNode[], edges: StudioGraphEdge[]) {
   if (nodes.filter((node) => node.node_type === "start").length !== 1) warnings.push("Graph needs exactly one start node.");
   if (nodes.filter((node) => node.node_type === "end").length < 1) warnings.push("Graph needs at least one end node.");
   for (const node of nodes.filter((item) => item.node_type === "reviewer")) {
-    if (!node.reviewer_email || !validPlakshaEmail(node.reviewer_email)) {
-      warnings.push(`${node.display_name || node.node_key} needs a @plaksha.edu.in reviewer email.`);
+    if (!node.reviewer_email || !validEmail(node.reviewer_email)) {
+      warnings.push(`${node.display_name || node.node_key} needs a valid reviewer email.`);
     }
     if (!Number(node.metadata?.sla_hours || 0)) {
       warnings.push(`${node.display_name || node.node_key} needs an SLA.`);
