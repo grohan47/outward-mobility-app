@@ -1303,6 +1303,189 @@ class GraphPublishingRouteTests(unittest.TestCase):
         self.assertIsInstance(result["breached"], int)
         self.assertIsInstance(result["items"], list)
 
+    def test_graph_workflow_progression_via_legacy_endpoints(self):
+        """Verify that legacy approve/reject/request_changes endpoints
+        correctly advance graph-backed applications through the graph."""
+        # ── Publish a graph-backed opportunity with 3 stages ──
+        output = AIWorkflowDraftOutput(
+            opportunity=OpportunityDraftModel(
+                title="Graph Workflow Progression Test",
+                description="Test that decisions propagate through the graph.",
+                host_institution="Test University",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="step_a",
+                        node_type="reviewer",
+                        display_name="Step A",
+                        reviewer_email="oge@plaksha.edu.in",
+                        allowed_actions=["approve", "request_changes", "reject"],
+                    ),
+                    GraphNodeModel(
+                        node_key="step_b",
+                        node_type="reviewer",
+                        display_name="Step B",
+                        reviewer_email="student-life@plaksha.edu.in",
+                        allowed_actions=["approve", "reject"],
+                    ),
+                    GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="step_a"),
+                    GraphEdgeModel(from_node_key="step_a", to_node_key="step_b"),
+                    GraphEdgeModel(from_node_key="step_b", to_node_key="end"),
+                ],
+            ),
+            applicant_form_fields=[],
+            clarifying_questions=[],
+            confidence=0.9,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        admin = self.session_for("oge@plaksha.edu.in")
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'ready', ?, '[]', '{}', '[]', 0.9, 1, ?, ?, ?)
+                """,
+                (output.model_dump_json(), "oge@plaksha.edu.in", ts, ts),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+
+        resp = admin_publish_workflow_draft(draft_id, session=admin)
+        gv_id = resp["graph_version_id"]
+
+        # Find the created opportunity and make it visible to Rohan.
+        with db_conn() as conn:
+            draft = conn.execute("SELECT opportunity_id FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+            opportunity_id = draft["opportunity_id"]
+            conn.execute(
+                "INSERT OR IGNORE INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at) VALUES (?, 'EMAIL', 'rohan@plaksha.edu.in', ?)",
+                (opportunity_id, ts),
+            )
+            conn.commit()
+
+        # ── Submit an application as Rohan ──
+        student = self.session_for("rohan@plaksha.edu.in")
+        app_resp = create_application(
+            ApplicationCreateBody(opportunityId=opportunity_id, formData={}),
+            session=student,
+        )
+        app_id = app_resp["application"]["id"]
+
+        # Verify the graph task was created and is active at step_a
+        with db_conn() as conn:
+            tasks = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ? ORDER BY id",
+                (app_id,),
+            ).fetchall()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["node_key"], "step_a")
+        self.assertEqual(tasks[0]["status"], "active")
+
+        # ── Approve at Step A via legacy endpoint ──
+        reviewer_a = self.session_for("oge@plaksha.edu.in")
+        approve_resp = approve_application(
+            app_id,
+            DecisionBody(remarks="Looks good at Step A"),
+            session=reviewer_a,
+        )
+        app_data = approve_resp["application"]
+        self.assertEqual(app_data["current_stage_label"], "Step B")
+        self.assertIsNone(app_data["final_status"])
+
+        # Verify graph tasks: step_a completed, step_b active
+        with db_conn() as conn:
+            tasks = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ? ORDER BY id",
+                (app_id,),
+            ).fetchall()
+        self.assertEqual(len(tasks), 2)
+        task_a = next(t for t in tasks if t["node_key"] == "step_a")
+        task_b = next(t for t in tasks if t["node_key"] == "step_b")
+        self.assertEqual(task_a["status"], "completed")
+        self.assertEqual(task_a["decision"], "approve")
+        self.assertEqual(task_b["status"], "active")
+
+        # ── Approve at Step B → application should be APPROVED ──
+        reviewer_b = self.session_for("student-life@plaksha.edu.in")
+        approve_resp2 = approve_application(
+            app_id,
+            DecisionBody(remarks="All clear at Step B"),
+            session=reviewer_b,
+        )
+        app_data2 = approve_resp2["application"]
+        self.assertEqual(app_data2["final_status"], "APPROVED")
+
+        # ── Now test request_changes → student_response flow ──
+        # Create a second application to test rework.
+        app_resp2 = create_application(
+            ApplicationCreateBody(opportunityId=opportunity_id, formData={}),
+            session=student,
+        )
+        app_id2 = app_resp2["application"]["id"]
+
+        # Request changes at Step A → should go to Student Rework
+        rc_resp = request_changes(
+            app_id2,
+            DecisionBody(remarks="Please fix your SOP"),
+            session=reviewer_a,
+        )
+        self.assertEqual(rc_resp["application"]["current_stage_label"], "Student Rework")
+
+        with db_conn() as conn:
+            task = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ? AND node_key = 'step_a'",
+                (app_id2,),
+            ).fetchone()
+        self.assertEqual(task["status"], "returned")
+
+        # Student responds → should reactivate back to Step A
+        sr_resp = submit_student_response(
+            app_id2,
+            StudentResponseBody(text="I have fixed my SOP."),
+            session=student,
+        )
+        self.assertEqual(sr_resp["application"]["current_stage_label"], "Step A")
+
+        with db_conn() as conn:
+            task = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ? AND node_key = 'step_a'",
+                (app_id2,),
+            ).fetchone()
+        self.assertEqual(task["status"], "active")
+
+        # ── Test reject via legacy endpoint ──
+        # Create a third application
+        app_resp3 = create_application(
+            ApplicationCreateBody(opportunityId=opportunity_id, formData={}),
+            session=student,
+        )
+        app_id3 = app_resp3["application"]["id"]
+
+        reject_resp = reject_application(
+            app_id3,
+            DecisionBody(reason="Does not meet requirements"),
+            session=reviewer_a,
+        )
+        self.assertEqual(reject_resp["application"]["final_status"], "REJECTED")
+
+        with db_conn() as conn:
+            task = conn.execute(
+                "SELECT * FROM application_workflow_tasks WHERE application_id = ? AND node_key = 'step_a'",
+                (app_id3,),
+            ).fetchone()
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["decision"], "reject")
+
 
 if __name__ == "__main__":
     unittest.main()

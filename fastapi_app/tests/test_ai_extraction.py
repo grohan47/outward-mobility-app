@@ -1,7 +1,7 @@
 """
 Integration tests — validate AI extraction against demo email fixtures.
 
-Requires: ANTHROPIC_API_KEY set in environment.
+Requires: ANTHROPIC_API_KEY and CLAUDE_MODEL set.
 Run with:  pytest fastapi_app/tests/test_ai_extraction.py -v -m integration
 
 Each test calls the real Claude API and validates that the output:
@@ -13,10 +13,17 @@ Each test calls the real Claude API and validates that the output:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
+from fastapi_app.ai_service import CLAUDE_MODEL
+
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("ANTHROPIC_API_KEY") or not CLAUDE_MODEL,
+    reason="Requires ANTHROPIC_API_KEY and CLAUDE_MODEL to be set",
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "demo_emails"
 

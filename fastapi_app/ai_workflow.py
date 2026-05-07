@@ -159,17 +159,20 @@ class LLMProvider(Protocol):
 
 
 class ClaudeProvider:
-    """Anthropic SDK provider. Requires: pip install anthropic"""
-
-    MODEL = "claude-sonnet-4-6"
+    """Anthropic SDK provider with structured output. Requires: pip install anthropic"""
 
     def complete(self, system: str, user: str, timeout: int) -> str:
         import anthropic
+        from fastapi_app.ai_service import CLAUDE_MODEL, CLAUDE_TEMPERATURE
 
-        client = anthropic.Anthropic()
+        if not CLAUDE_MODEL:
+            raise RuntimeError("CLAUDE_MODEL is not set — fill it in fastapi_app/ai_service.py")
+
+        client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
         msg = client.messages.create(
-            model=self.MODEL,
+            model=CLAUDE_MODEL,
             max_tokens=4096,
+            temperature=CLAUDE_TEMPERATURE,
             system=system,
             messages=[{"role": "user", "content": user}],
         )

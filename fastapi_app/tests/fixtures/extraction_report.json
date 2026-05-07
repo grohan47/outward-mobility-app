@@ -1,0 +1,192 @@
+[
+  {
+    "file": "01_daad_wise_scholarship.txt",
+    "status": "ok",
+    "title": "Draft Opportunity",
+    "confidence": 0.0,
+    "is_fallback": true,
+    "graph_nodes": [
+      {
+        "key": "start",
+        "type": "start",
+        "sla_hours": null
+      },
+      {
+        "key": "oge_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "end",
+        "type": "end",
+        "sla_hours": null
+      }
+    ],
+    "applicant_form_fields": [
+      "full_name",
+      "student_id",
+      "email",
+      "cgpa",
+      "statement_of_purpose"
+    ],
+    "detail_field_keys": [],
+    "clarifying_questions": [],
+    "warnings": [
+      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+    ],
+    "funding_available": false,
+    "eligibility_criteria": null
+  },
+  {
+    "file": "02_mitacs_globalink.txt",
+    "status": "ok",
+    "title": "Draft Opportunity",
+    "confidence": 0.0,
+    "is_fallback": true,
+    "graph_nodes": [
+      {
+        "key": "start",
+        "type": "start",
+        "sla_hours": null
+      },
+      {
+        "key": "oge_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "end",
+        "type": "end",
+        "sla_hours": null
+      }
+    ],
+    "applicant_form_fields": [
+      "full_name",
+      "student_id",
+      "email",
+      "cgpa",
+      "statement_of_purpose"
+    ],
+    "detail_field_keys": [],
+    "clarifying_questions": [],
+    "warnings": [
+      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+    ],
+    "funding_available": false,
+    "eligibility_criteria": null
+  },
+  {
+    "file": "03_nus_soc_semester_exchange.txt",
+    "status": "ok",
+    "title": "Draft Opportunity",
+    "confidence": 0.0,
+    "is_fallback": true,
+    "graph_nodes": [
+      {
+        "key": "start",
+        "type": "start",
+        "sla_hours": null
+      },
+      {
+        "key": "oge_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "end",
+        "type": "end",
+        "sla_hours": null
+      }
+    ],
+    "applicant_form_fields": [
+      "full_name",
+      "student_id",
+      "email",
+      "cgpa",
+      "statement_of_purpose"
+    ],
+    "detail_field_keys": [],
+    "clarifying_questions": [],
+    "warnings": [
+      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+    ],
+    "funding_available": false,
+    "eligibility_criteria": null
+  },
+  {
+    "file": "04_eth_zurich_excellence_masters.txt",
+    "status": "ok",
+    "title": "Draft Opportunity",
+    "confidence": 0.0,
+    "is_fallback": true,
+    "graph_nodes": [
+      {
+        "key": "start",
+        "type": "start",
+        "sla_hours": null
+      },
+      {
+        "key": "oge_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "end",
+        "type": "end",
+        "sla_hours": null
+      }
+    ],
+    "applicant_form_fields": [
+      "full_name",
+      "student_id",
+      "email",
+      "cgpa",
+      "statement_of_purpose"
+    ],
+    "detail_field_keys": [],
+    "clarifying_questions": [],
+    "warnings": [
+      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+    ],
+    "funding_available": false,
+    "eligibility_criteria": null
+  },
+  {
+    "file": "05_penn_wharton_leadership.txt",
+    "status": "ok",
+    "title": "Draft Opportunity",
+    "confidence": 0.0,
+    "is_fallback": true,
+    "graph_nodes": [
+      {
+        "key": "start",
+        "type": "start",
+        "sla_hours": null
+      },
+      {
+        "key": "oge_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "end",
+        "type": "end",
+        "sla_hours": null
+      }
+    ],
+    "applicant_form_fields": [
+      "full_name",
+      "student_id",
+      "email",
+      "cgpa",
+      "statement_of_purpose"
+    ],
+    "detail_field_keys": [],
+    "clarifying_questions": [],
+    "warnings": [
+      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+    ],
+    "funding_available": false,
+    "eligibility_criteria": null
+  }
+]

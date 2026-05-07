@@ -115,6 +115,31 @@ class GraphExecutionService:
                 if missing:
                     raise ValueError(f"Missing required reviewer inputs: {', '.join(missing)}")
 
+            if normalized_decision == REJECT:
+                db.execute(
+                    """
+                    UPDATE application_workflow_tasks
+                    SET status = 'completed',
+                        acted_at = ?,
+                        decision = ?,
+                        comment_summary = ?,
+                        reviewer_data_json = ?
+                    WHERE id = ?
+                    """,
+                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
+                )
+                # Cancel all other active tasks for this application.
+                db.execute(
+                    """
+                    UPDATE application_workflow_tasks
+                    SET status = 'cancelled', acted_at = ?
+                    WHERE application_id = ? AND status = 'active' AND id != ?
+                    """,
+                    (ts, int(task["application_id"]), task_id),
+                )
+                self._mark_application_rejected(db, int(task["application_id"]))
+                return TransitionResult(success=True, application_status="REJECTED")
+
             if normalized_decision == REQUEST_CHANGES:
                 db.execute(
                     """
@@ -148,11 +173,14 @@ class GraphExecutionService:
                     """
                     UPDATE applications
                     SET current_stage_label = 'Student Rework',
+                        current_step_order = 0,
+                        return_to_step_order = 1,
+                        return_to_stage_label = ?,
                         final_status = NULL,
                         updated_at = ?
                     WHERE id = ?
                     """,
-                    (ts, int(task["application_id"])),
+                    (node["display_name"] or task["node_key"], ts, int(task["application_id"])),
                 )
                 return TransitionResult(success=True, application_status="STUDENT_REWORK")
 
@@ -345,18 +373,6 @@ class GraphExecutionService:
             """
             UPDATE applications
             SET final_status = 'APPROVED',
-                current_stage_label = 'Closed',
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (_now_iso(), application_id),
-        )
-
-    def _mark_application_rejected(self, db: sqlite3.Connection, application_id: int) -> None:
-        db.execute(
-            """
-            UPDATE applications
-            SET final_status = 'REJECTED',
                 current_stage_label = 'Closed',
                 updated_at = ?
             WHERE id = ?

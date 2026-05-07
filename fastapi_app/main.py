@@ -14,6 +14,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from fastapi_app.ai_service import ai_approval_assist, ai_nomination_insights, ai_thread_summary
 from fastapi_app.ai_workflow import AIWorkflowDraftService
 from fastapi_app.graph_execution import GraphExecutionService
 from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, OpportunityDraftModel
@@ -1020,29 +1021,22 @@ def seed_data(conn: sqlite3.Connection) -> None:
             row,
         )
 
+    # ── Harvard 4+1 Opportunity (graph-backed) ──
     opp_rows = [
         (
             1,
-            "TUD_FALL_2026",
-            "TU Delft Exchange",
-            "Semester abroad at TU Delft.",
-            "https://images.unsplash.com/photo-1523050854058-8df90110c9f1",
-            "Fall 2026",
-            "TU Delft, Netherlands",
-            "2026-06-30",
-            4,
-            "published",
-        ),
-        (
-            2,
-            "NUS_SPRING_2026",
-            "NUS Singapore Exchange",
-            "Exchange at National University of Singapore.",
-            "https://images.unsplash.com/photo-1546412414-8035e1776c9a",
-            "Spring 2026",
-            "NUS, Singapore",
-            "2026-08-15",
-            6,
+            "HARV_4PLUS1_2027",
+            "Harvard 4+1 Program",
+            "The Harvard 4+1 accelerated master's programme allows exceptional "
+            "undergraduate students to earn a Master of Engineering degree at Harvard "
+            "John A. Paulson School of Engineering and Applied Sciences in a single "
+            "additional year. Students will benefit from Harvard's world-class faculty, "
+            "cutting-edge research labs, and Boston's innovation ecosystem.",
+            "https://images.unsplash.com/photo-1562774053-701939374585",
+            "Fall 2027",
+            "Harvard University, USA",
+            "2027-02-28",
+            5,
             "published",
         ),
     ]
@@ -1053,17 +1047,19 @@ def seed_data(conn: sqlite3.Connection) -> None:
               id, code, title, description, cover_image_url, term, destination, deadline, seats, status, ai_summary_json, ai_summary_source_hash, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (*opp, json.dumps([f"{opp[2]} is open for {opp[5]}.", f"Destination: {opp[6]}."]), None, now, now),
+            (*opp, json.dumps([
+                "Harvard 4+1 master's programme for Fall 2027.",
+                "Only 5 seats available — highly competitive.",
+                "Application deadline: February 28, 2027.",
+            ]), None, now, now),
         )
 
     seed_detail_fields = {
         1: [
-            {"field_key": "host_institution", "label": "Host Institution", "value": "TU Delft", "value_type": "text", "display_order": 1, "is_student_visible": 1},
-            {"field_key": "funding", "label": "Funding", "value": "Travel grant review after nomination", "value_type": "text", "display_order": 2, "is_student_visible": 1},
-        ],
-        2: [
-            {"field_key": "host_institution", "label": "Host Institution", "value": "National University of Singapore", "value_type": "text", "display_order": 1, "is_student_visible": 1},
-            {"field_key": "eligibility", "label": "Eligibility", "value": "Open to eligible undergraduate students", "value_type": "text", "display_order": 2, "is_student_visible": 1},
+            {"field_key": "host_institution", "label": "Host Institution", "value": "Harvard University", "value_type": "text", "display_order": 1, "is_student_visible": 1},
+            {"field_key": "program_type", "label": "Program Type", "value": "4+1 Accelerated Master's", "value_type": "text", "display_order": 2, "is_student_visible": 1},
+            {"field_key": "funding", "label": "Funding", "value": "Partial tuition waiver + RA positions available", "value_type": "text", "display_order": 3, "is_student_visible": 1},
+            {"field_key": "eligibility", "label": "Eligibility", "value": "CGPA ≥ 8.5, strong research profile, faculty recommendation required", "value_type": "text", "display_order": 4, "is_student_visible": 1},
         ],
     }
     for opportunity_id, fields in seed_detail_fields.items():
@@ -1107,7 +1103,6 @@ def seed_data(conn: sqlite3.Connection) -> None:
     visibility_rules = [
         (1, "GROUP_EMAIL", "ug2024@plaksha.edu.in"),
         (1, "EMAIL", "john.doe@plaksha.edu.in"),
-        (2, "GROUP_EMAIL", "professors@plaksha.edu.in"),
     ]
     for opportunity_id, rule_type, rule_value in visibility_rules:
         conn.execute(
@@ -1131,19 +1126,6 @@ def seed_data(conn: sqlite3.Connection) -> None:
             "transcript_upload",
             "recommendation_upload",
         ],
-        2: [
-            "full_name",
-            "student_id",
-            "email",
-            "phone",
-            "program",
-            "cgpa",
-            "prior_exchange_experience",
-            "disciplinary_history",
-            "statement_of_purpose",
-            "resume_upload",
-            "transcript_upload",
-        ],
     }
     for opp_id, fields in required_fields_by_opp.items():
         for order, field_key in enumerate(fields, start=1):
@@ -1155,148 +1137,51 @@ def seed_data(conn: sqlite3.Connection) -> None:
                 (opp_id, field_key, order),
             )
 
-    pipeline_template = [
-        {
-            "step_order": 1,
-            "step_name": "OGE Intake Review",
-            "reviewer_email": "oge@plaksha.edu.in",
-            "reviewer_display_name": "Rajesh Kumar",
-            "sla_hours": 24,
-            "can_view_comments": 1,
-            "allowed_actions": ["approve", "request_changes", "reject", "comment"],
-            "required_inputs": [
-                {
-                    "input_key": "oge_intake_notes",
-                    "input_label": "OGE Intake Notes",
-                    "input_type": "text",
-                    "options": [],
-                }
-            ],
-        },
-        {
-            "step_order": 2,
-            "step_name": "Student Life Review",
-            "reviewer_email": "student-life@plaksha.edu.in",
-            "reviewer_display_name": "Ananya Iyer",
-            "sla_hours": 48,
-            "can_view_comments": 0,
-            "allowed_actions": ["approve", "request_changes", "comment"],
-            "required_inputs": [
-                {
-                    "input_key": "student_life_flags",
-                    "input_label": "Student Life Flags",
-                    "input_type": "multiselect",
-                    "options": [
-                        "No infractions",
-                        "Late hostel fee warning",
-                        "Library dues pending",
-                        "Disciplinary committee referral",
-                    ],
-                }
-            ],
-        },
-        {
-            "step_order": 3,
-            "step_name": "Program Chair Review",
-            "reviewer_email": "program-chair@plaksha.edu.in",
-            "reviewer_display_name": "Prof. Rajesh Gupta",
-            "sla_hours": 72,
-            "can_view_comments": 0,
-            "allowed_actions": ["approve", "request_changes", "comment"],
-            "required_inputs": [
-                {
-                    "input_key": "program_fit_score",
-                    "input_label": "Program Fit Score (/10)",
-                    "input_type": "number",
-                    "options": [],
-                }
-            ],
-        },
-        {
-            "step_order": 4,
-            "step_name": "Dean Final Approval",
-            "reviewer_email": "dean@plaksha.edu.in",
-            "reviewer_display_name": "Dr. Sarah Jenkins",
-            "sla_hours": 48,
-            "can_view_comments": 1,
-            "allowed_actions": ["approve", "reject", "comment"],
-            "required_inputs": [
-                {
-                    "input_key": "dean_recommendation",
-                    "input_label": "Dean Recommendation",
-                    "input_type": "dropdown",
-                    "options": ["Strongly Recommend", "Recommend", "Do Not Recommend"],
-                }
-            ],
-        },
+    # ── Graph version for Harvard 4+1 ──
+    gv_cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO graph_versions (opportunity_id, version, status, created_by_email, created_at)
+        VALUES (1, 1, 'active', 'oge@plaksha.edu.in', ?)
+        """,
+        (now,),
+    )
+    gv_id = int(gv_cursor.lastrowid or conn.execute("SELECT id FROM graph_versions WHERE opportunity_id = 1 LIMIT 1").fetchone()["id"])
+
+    graph_nodes = [
+        ("start", "start", "Start", None, None, None, None),
+        ("oge_review", "reviewer", "OGE Intake Review", "oge@plaksha.edu.in", '["all"]', '["approve", "request_changes", "reject", "comment"]', json.dumps({"sla_hours": 24})),
+        ("student_life", "reviewer", "Student Life Review", "student-life@plaksha.edu.in", '["all"]', '["approve", "request_changes", "comment"]', json.dumps({"sla_hours": 48})),
+        ("program_chair", "reviewer", "Program Chair Review", "program-chair@plaksha.edu.in", '["all"]', '["approve", "request_changes", "comment"]', json.dumps({"sla_hours": 72})),
+        ("dean_approval", "reviewer", "Dean Final Approval", "dean@plaksha.edu.in", '["all"]', '["approve", "reject", "comment"]', json.dumps({"sla_hours": 48})),
+        ("end", "end", "End", None, None, None, None),
     ]
+    for node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata in graph_nodes:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO graph_nodes (graph_version_id, node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (gv_id, node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata),
+        )
 
-    for opp_id in [1, 2]:
-        prior_input_keys: list[str] = []
-        for step in pipeline_template:
-            step_cursor = conn.execute(
-                """
-                INSERT OR IGNORE INTO opportunity_pipeline_steps
-                (opportunity_id, step_order, step_name, reviewer_email, reviewer_display_name, sla_hours, can_view_comments, allowed_actions_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    opp_id,
-                    step["step_order"],
-                    step["step_name"],
-                    step["reviewer_email"],
-                    step["reviewer_display_name"],
-                    step["sla_hours"],
-                    step.get("can_view_comments", 0),
-                    json.dumps(step["allowed_actions"]),
-                    now,
-                ),
-            )
+    graph_edges = [
+        ("start", "oge_review"),
+        ("oge_review", "student_life"),
+        ("student_life", "program_chair"),
+        ("program_chair", "dean_approval"),
+        ("dean_approval", "end"),
+    ]
+    for from_key, to_key in graph_edges:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO graph_edges (graph_version_id, from_node_key, to_node_key)
+            VALUES (?, ?, ?)
+            """,
+            (gv_id, from_key, to_key),
+        )
 
-            step_row_id = int(step_cursor.lastrowid)
-            if step_row_id == 0:
-                existing_step = conn.execute(
-                    """
-                    SELECT id FROM opportunity_pipeline_steps
-                    WHERE opportunity_id = ? AND step_order = ?
-                    """,
-                    (opp_id, step["step_order"]),
-                ).fetchone()
-                if not existing_step:
-                    continue
-                step_row_id = int(existing_step["id"])
-
-            # Seed demo opportunities with conservative visibility:
-            # downstream reviewer-added fields are hidden unless admin explicitly enables them.
-            visible_keys = dedupe_preserve_order(required_fields_by_opp[opp_id])
-            for key in visible_keys:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO opportunity_step_field_access (pipeline_step_id, field_key)
-                    VALUES (?, ?)
-                    """,
-                    (step_row_id, key),
-                )
-
-            for idx, required_input in enumerate(step["required_inputs"], start=1):
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO opportunity_step_required_inputs
-                    (pipeline_step_id, input_key, input_label, input_type, options_json, is_required, display_order)
-                    VALUES (?, ?, ?, ?, ?, 1, ?)
-                    """,
-                    (
-                        step_row_id,
-                        required_input["input_key"],
-                        required_input["input_label"],
-                        required_input["input_type"],
-                        json.dumps(required_input["options"]),
-                        idx,
-                    ),
-                )
-                prior_input_keys.append(required_input["input_key"])
-
-    submitted_rohan_tud = {
+    # ── Sample application: Rohan applying to Harvard 4+1 ──
+    submitted_rohan_harvard = {
         "full_name": "Rohan",
         "student_id": "PL-2022-ROH",
         "email": "rohan@plaksha.edu.in",
@@ -1304,122 +1189,37 @@ def seed_data(conn: sqlite3.Connection) -> None:
         "cgpa": 8.5,
         "passport_number": "N1234567",
         "language_score": 8.0,
-        "statement_of_purpose": "I want to study advanced robotics systems at TU Delft.",
+        "statement_of_purpose": "I want to pursue a master's at Harvard SEAS, focusing on AI systems and robotics.",
+        "transcript_upload": "https://drive.google.com/file/rohan_transcript",
+        "recommendation_upload": "https://drive.google.com/file/rohan_recommendation",
     }
-    submitted_sid_tud = {
-        "full_name": "Siddharth",
-        "student_id": "PL-2022-SID",
-        "email": "siddharth@plaksha.edu.in",
-        "program": "Electronics Engineering",
-        "cgpa": 9.2,
-        "passport_number": "P9988776",
-        "language_score": 8.5,
-        "statement_of_purpose": "TU Delft aligns with my embedded AI and chip design goals.",
-    }
-    submitted_rohan_nus = {
-        "full_name": "Rohan",
-        "student_id": "PL-2022-ROH",
-        "email": "rohan@plaksha.edu.in",
-        "phone": "+91-9000000001",
-        "program": "Computer Science",
-        "cgpa": 8.5,
-        "prior_exchange_experience": "None",
-        "disciplinary_history": "None declared",
-        "statement_of_purpose": "NUS has strong AI systems labs and startup exposure.",
-    }
-    submitted_sid_nus = {
-        "full_name": "Siddharth",
-        "student_id": "PL-2022-SID",
-        "email": "siddharth@plaksha.edu.in",
-        "phone": "+91-9000000002",
-        "program": "Electronics Engineering",
-        "cgpa": 9.2,
-        "prior_exchange_experience": "One short summer school",
-        "disciplinary_history": "Library dues cleared",
-        "statement_of_purpose": "I aim to work on NUS interdisciplinary hardware-AI projects.",
-    }
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO applications
+        (id, student_profile_id, opportunity_id, current_step_order, current_stage_label,
+         graph_version_id, final_status, submitted_data_json, submitted_at, created_at, updated_at)
+        VALUES (1, 1, 1, 1, 'OGE Intake Review', ?, NULL, ?, ?, ?, ?)
+        """,
+        (gv_id, json.dumps(submitted_rohan_harvard), now, now, now),
+    )
+    # Instantiate graph tasks for Rohan's application.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO application_workflow_tasks
+        (application_id, graph_version_id, node_key, assigned_reviewer_email, status, assigned_at)
+        VALUES (1, ?, 'oge_review', 'oge@plaksha.edu.in', 'active', ?)
+        """,
+        (gv_id, now),
+    )
 
-    app_rows = [
-        (1, 1, 1, 2, "Student Life Review", None, json.dumps(submitted_rohan_tud), now),
-        (2, 2, 1, 3, "Program Chair Review", None, json.dumps(submitted_sid_tud), now),
-        (3, 1, 2, 1, "OGE Intake Review", None, json.dumps(submitted_rohan_nus), now),
-        (4, 2, 2, 4, "Dean Final Approval", None, json.dumps(submitted_sid_nus), now),
-    ]
-    for app in app_rows:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO applications
-            (id, student_profile_id, opportunity_id, current_step_order, current_stage_label, final_status, submitted_data_json, submitted_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (*app, now, now),
-        )
-
-    seeded_reviews = [
-        (2, 1, "oge@plaksha.edu.in", ADMIN_ROLE, "APPROVE", "Documents complete.", {"oge_intake_notes": "All baseline docs verified."}),
-        (
-            2,
-            2,
-            "student-life@plaksha.edu.in",
-            REVIEWER_ROLE,
-            "APPROVE",
-            "No serious issues flagged.",
-            {"student_life_flags": ["No infractions"]},
-        ),
-        (4, 1, "oge@plaksha.edu.in", ADMIN_ROLE, "APPROVE", "Eligible for NUS nomination.", {"oge_intake_notes": "Nomination-ready."}),
-        (
-            4,
-            2,
-            "student-life@plaksha.edu.in",
-            REVIEWER_ROLE,
-            "APPROVE",
-            "Minor historical dues, now resolved.",
-            {"student_life_flags": ["Library dues pending"]},
-        ),
-        (
-            4,
-            3,
-            "program-chair@plaksha.edu.in",
-            REVIEWER_ROLE,
-            "APPROVE",
-            "Strong fit with host curriculum.",
-            {"program_fit_score": 9},
-        ),
-    ]
-    for application_id, step_order, reviewer_email, reviewer_role, decision, remarks, required_inputs in seeded_reviews:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO application_reviews
-            (application_id, step_order, reviewer_email, reviewer_role, decision, remarks, required_inputs_json, visibility_scope, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'INTERNAL', ?)
-            """,
-            (
-                application_id,
-                step_order,
-                reviewer_email,
-                reviewer_role,
-                decision,
-                remarks,
-                json.dumps(required_inputs),
-                now,
-            ),
-        )
-
-    created_events = [
-        (1, "rohan@plaksha.edu.in", "Student Life Review"),
-        (2, "siddharth@plaksha.edu.in", "Program Chair Review"),
-        (3, "rohan@plaksha.edu.in", "OGE Intake Review"),
-        (4, "siddharth@plaksha.edu.in", "Dean Final Approval"),
-    ]
-    for application_id, actor_email, step_name in created_events:
-        conn.execute(
-            """
-            INSERT INTO timeline_events
-            (application_id, event_type, event_payload_json, actor_email, created_at)
-            VALUES (?, 'APPLICATION_CREATED', ?, ?, ?)
-            """,
-            (application_id, json.dumps({"current_stage": step_name}), actor_email, now),
-        )
+    conn.execute(
+        """
+        INSERT INTO timeline_events
+        (application_id, event_type, event_payload_json, actor_email, created_at)
+        VALUES (1, 'APPLICATION_CREATED', ?, ?, ?)
+        """,
+        (json.dumps({"current_stage": "OGE Intake Review"}), "rohan@plaksha.edu.in", now),
+    )
 
     conn.commit()
 
@@ -2719,7 +2519,40 @@ def get_current_pipeline_step(conn: sqlite3.Connection, application_row: sqlite3
     ).fetchone()
 
 
+def get_active_graph_task(
+    conn: sqlite3.Connection,
+    application_id: int,
+    reviewer_email: str | None = None,
+) -> sqlite3.Row | None:
+    """Find the active graph workflow task for an application."""
+    if reviewer_email:
+        return conn.execute(
+            """
+            SELECT * FROM application_workflow_tasks
+            WHERE application_id = ? AND status = 'active'
+              AND LOWER(assigned_reviewer_email) = LOWER(?)
+            ORDER BY id ASC LIMIT 1
+            """,
+            (application_id, reviewer_email.strip().lower()),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT * FROM application_workflow_tasks
+        WHERE application_id = ? AND status = 'active'
+        ORDER BY id ASC LIMIT 1
+        """,
+        (application_id,),
+    ).fetchone()
+
+
 def ensure_reviewer_assigned(conn: sqlite3.Connection, application_row: sqlite3.Row, session: SessionUser) -> sqlite3.Row:
+    # Graph-backed applications: check via active graph task.
+    if application_row["graph_version_id"]:
+        task = get_active_graph_task(conn, int(application_row["id"]), session.email)
+        if not task:
+            raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
+        return task
+    # Legacy pipeline fallback.
     step = get_current_pipeline_step(conn, application_row)
     if not step:
         raise HTTPException(status_code=400, detail="No pipeline step configured for current application stage.")
@@ -2752,6 +2585,11 @@ def ensure_application_access_for_user(
             raise HTTPException(status_code=403, detail="Forbidden")
         return app_row
     if session.role in REVIEWER_ROLES:
+        if app_row["graph_version_id"]:
+            task = get_active_graph_task(conn, application_id, session.email)
+            if not task:
+                raise HTTPException(status_code=403, detail="You are not assigned to this application right now.")
+            return app_row
         step = get_current_pipeline_step(conn, app_row)
         if not step or step["reviewer_email"].lower() != session.email.lower():
             raise HTTPException(status_code=403, detail="You are not assigned to this application right now.")
@@ -3128,19 +2966,23 @@ def opportunity_ai_nomination_insights(opportunity_id: int, session: SessionUser
             """,
             (opportunity_id,),
         ).fetchall()
-    return build_nomination_insights_payload(opp, required_fields)
+    return ai_nomination_insights(
+        opportunity_title=str(opp["title"]),
+        opportunity_description=str(opp["description"] or ""),
+        field_labels=[str(row["label"]) for row in required_fields],
+    )
 
 
 @app.get("/api/applications/{application_id}/ai-thread-summary")
 def application_ai_thread_summary(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
     detail = application_detail(application_id, session=session)
-    return build_thread_summary_payload(detail)
+    return ai_thread_summary(detail)
 
 
 @app.get("/api/applications/{application_id}/ai-approval-assist")
 def application_ai_approval_assist(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
     detail = application_detail(application_id, session=session)
-    return build_approval_assist_payload(detail)
+    return ai_approval_assist(detail)
 
 
 @app.get("/api/admin/opportunities")
@@ -3649,10 +3491,41 @@ def admin_delete_opportunity(
         if application_ids:
             placeholders = ", ".join("?" for _ in application_ids)
             params = tuple(application_ids)
+            
+            task_rows = conn.execute(f"SELECT id FROM application_workflow_tasks WHERE application_id IN ({placeholders})", params).fetchall()
+            task_ids = [int(row["id"]) for row in task_rows]
+            if task_ids:
+                t_placeholders = ", ".join("?" for _ in task_ids)
+                t_params = tuple(task_ids)
+                conn.execute(f"DELETE FROM sla_reminders_sent WHERE task_id IN ({t_placeholders})", t_params)
+                conn.execute(f"DELETE FROM sla_breaches WHERE task_id IN ({t_placeholders})", t_params)
+            
+            conn.execute(f"UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id IN ({placeholders})", params)
+            conn.execute(f"DELETE FROM application_workflow_tasks WHERE application_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM timeline_events WHERE application_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM application_comments WHERE application_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM application_reviews WHERE application_id IN ({placeholders})", params)
             conn.execute("DELETE FROM applications WHERE opportunity_id = ?", (opportunity_id,))
+
+        graph_rows = conn.execute("SELECT id FROM graph_versions WHERE opportunity_id = ?", (opportunity_id,)).fetchall()
+        graph_ids = [int(row["id"]) for row in graph_rows]
+        if graph_ids:
+            g_placeholders = ", ".join("?" for _ in graph_ids)
+            g_params = tuple(graph_ids)
+            
+            node_rows = conn.execute(f"SELECT id FROM graph_nodes WHERE graph_version_id IN ({g_placeholders})", g_params).fetchall()
+            node_ids = [int(row["id"]) for row in node_rows]
+            if node_ids:
+                n_placeholders = ", ".join("?" for _ in node_ids)
+                n_params = tuple(node_ids)
+                conn.execute(f"DELETE FROM sla_policies WHERE graph_node_id IN ({n_placeholders})", n_params)
+                
+            conn.execute(f"DELETE FROM graph_edges WHERE graph_version_id IN ({g_placeholders})", g_params)
+            conn.execute(f"DELETE FROM graph_nodes WHERE graph_version_id IN ({g_placeholders})", g_params)
+            conn.execute("DELETE FROM graph_versions WHERE opportunity_id = ?", (opportunity_id,))
+
+        conn.execute("DELETE FROM workflow_drafts WHERE opportunity_id = ?", (opportunity_id,))
+        conn.execute("DELETE FROM user_scope_roles WHERE scope_type = 'opportunity' AND scope_id = ?", (opportunity_id,))
 
         conn.execute("DELETE FROM opportunities WHERE id = ?", (opportunity_id,))
 
@@ -3946,6 +3819,30 @@ def approve_application(
         if app_row["final_status"]:
             raise HTTPException(status_code=400, detail="Application already closed")
 
+        # ── Graph-backed path ──
+        if app_row["graph_version_id"]:
+            task = get_active_graph_task(conn, application_id, session.email)
+            if not task:
+                raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
+            from_stage = task["node_key"]
+            try:
+                result = GraphExecutionService().transition(
+                    conn, int(task["id"]), "approve", session.email,
+                    comment=body.remarks,
+                    reviewer_data=body.requiredInputs,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            updated_app = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+            write_review_and_timeline(
+                conn, application_id, 0, session, "APPROVE", body.remarks, body.requiredInputs,
+                {"decision": "APPROVE", "from_stage": from_stage, "to_stage": updated_app["current_stage_label"], "final_status": result.application_status},
+            )
+            conn.commit()
+            return {"application": dict(updated_app) if updated_app else None}
+
+        # ── Legacy pipeline path ──
         current_step = ensure_reviewer_assigned(conn, app_row, session)
         validate_required_inputs_for_step(conn, int(current_step["id"]), body.requiredInputs)
 
@@ -4029,6 +3926,29 @@ def request_changes(
         if app_row["final_status"]:
             raise HTTPException(status_code=400, detail="Application already closed")
 
+        # ── Graph-backed path ──
+        if app_row["graph_version_id"]:
+            task = get_active_graph_task(conn, application_id, session.email)
+            if not task:
+                raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
+            from_stage = task["node_key"]
+            try:
+                GraphExecutionService().transition(
+                    conn, int(task["id"]), "request_changes", session.email,
+                    comment=body.remarks,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            write_review_and_timeline(
+                conn, application_id, 0, session, "REQUEST_CHANGES", body.remarks, body.requiredInputs,
+                {"decision": "REQUEST_CHANGES", "from_stage": from_stage, "to_stage": "Student Rework", "final_status": None},
+            )
+            conn.commit()
+            updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+            return {"application": dict(updated) if updated else None}
+
+        # ── Legacy pipeline path ──
         current_step = ensure_reviewer_assigned(conn, app_row, session)
         first_step = conn.execute(
             "SELECT step_order, step_name FROM opportunity_pipeline_steps WHERE opportunity_id = ? ORDER BY step_order ASC LIMIT 1",
@@ -4135,6 +4055,35 @@ def submit_student_response(
             raise HTTPException(status_code=400, detail="Application already closed")
         if int(app_row["current_step_order"]) != 0:
             raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
+
+        # ── Graph-backed path ──
+        if app_row["graph_version_id"]:
+            ts = now_iso()
+            comment_text = body.text.strip()
+            conn.execute(
+                """
+                INSERT INTO application_comments (application_id, author_email, text, visibility, created_at)
+                VALUES (?, ?, ?, 'internal', ?)
+                """,
+                (application_id, session.email, comment_text, ts),
+            )
+            try:
+                GraphExecutionService().resubmit_after_rework(conn, application_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+            conn.execute(
+                """
+                INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
+                VALUES (?, 'STUDENT_RESPONSE_SUBMITTED', ?, ?, ?)
+                """,
+                (application_id, json.dumps({"decision": "STUDENT_RESPONSE_SUBMITTED", "to_stage": updated["current_stage_label"]}), session.email, ts),
+            )
+            conn.commit()
+            return {"application": dict(updated) if updated else None}
+
+        # ── Legacy pipeline path ──
         if app_row["return_to_step_order"] is None or not app_row["return_to_stage_label"]:
             raise HTTPException(status_code=400, detail="Return step information is missing.")
 
@@ -4198,6 +4147,29 @@ def reject_application(
         if app_row["final_status"]:
             raise HTTPException(status_code=400, detail="Application already closed")
 
+        # ── Graph-backed path ──
+        if app_row["graph_version_id"]:
+            task = get_active_graph_task(conn, application_id, session.email)
+            if not task:
+                raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
+            from_stage = task["node_key"]
+            try:
+                GraphExecutionService().transition(
+                    conn, int(task["id"]), "reject", session.email,
+                    comment=body.reason or body.remarks,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            write_review_and_timeline(
+                conn, application_id, 0, session, "REJECT", body.reason or body.remarks, body.requiredInputs,
+                {"decision": "REJECT", "from_stage": from_stage, "to_stage": "Closed", "final_status": "REJECTED"},
+            )
+            conn.commit()
+            updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+            return {"application": dict(updated) if updated else None}
+
+        # ── Legacy pipeline path ──
         current_step = ensure_reviewer_assigned(conn, app_row, session)
         allowed_actions = json.loads(current_step["allowed_actions_json"])
         if "reject" not in allowed_actions:
