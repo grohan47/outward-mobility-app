@@ -1,4 +1,4 @@
--- applications.graph_version_id is added idempotently by apply_schema_migrations().
+-- applications.graph_version_id and applications.workflow_notes are added idempotently by apply_schema_migrations().
 -- SQLite does not support portable ADD COLUMN IF NOT EXISTS syntax.
 
 CREATE TABLE IF NOT EXISTS workflow_drafts (

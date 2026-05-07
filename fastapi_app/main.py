@@ -500,7 +500,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
     required_columns: dict[str, set[str]] = {
         "opportunity_pipeline_steps": {"sla_hours", "can_view_comments"},
         "opportunity_step_required_inputs": {"options_json", "display_order"},
-        "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id"},
+        "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id", "workflow_notes"},
         "form_field_catalog": {"field_hint", "options_json"},
         "application_workflow_tasks": {"reviewer_data_json"},
         "opportunities": {"ai_summary_json", "ai_summary_source_hash"},
@@ -534,6 +534,8 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
 
     if "applications" in list_tables(conn) and "graph_version_id" not in table_columns(conn, "applications"):
         conn.execute("ALTER TABLE applications ADD COLUMN graph_version_id INTEGER REFERENCES graph_versions(id)")
+    if "applications" in list_tables(conn) and "workflow_notes" not in table_columns(conn, "applications"):
+        conn.execute("ALTER TABLE applications ADD COLUMN workflow_notes TEXT")
     if "application_workflow_tasks" in list_tables(conn) and "reviewer_data_json" not in table_columns(conn, "application_workflow_tasks"):
         conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
     if "graph_edges" in list_tables(conn) and "action" not in table_columns(conn, "graph_edges"):
@@ -748,6 +750,7 @@ CREATE TABLE applications (
   return_to_stage_label TEXT,
   graph_version_id INTEGER REFERENCES graph_versions(id),
   final_status TEXT,
+  workflow_notes TEXT,
   submitted_data_json TEXT,
   submitted_at TEXT,
   created_at TEXT NOT NULL,
@@ -931,6 +934,7 @@ def seed_data(conn: sqlite3.Connection) -> None:
         (12, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", 1),
         (13, "oge@plaksha.edu.in", "Rajesh Kumar", 1),
         (14, "dean@plaksha.edu.in", "Dr. Sarah Jenkins", 1),
+        (15, "vc@plaksha.edu.in", "Vice Chancellor", 1),
     ]
     for user in user_rows:
         conn.execute(
@@ -949,6 +953,7 @@ def seed_data(conn: sqlite3.Connection) -> None:
         ("student-life@plaksha.edu.in", REVIEWER_ROLE),
         ("program-chair@plaksha.edu.in", REVIEWER_ROLE),
         ("dean@plaksha.edu.in", REVIEWER_ROLE),
+        ("vc@plaksha.edu.in", REVIEWER_ROLE),
         ("oge@plaksha.edu.in", REVIEWER_ROLE),
         ("oge@plaksha.edu.in", ADMIN_ROLE),
     ]
