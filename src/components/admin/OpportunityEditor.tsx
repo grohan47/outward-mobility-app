@@ -114,8 +114,8 @@ function normalizeGraphNode(raw: any): StudioGraphNode {
     allowed_actions: Array.isArray(raw.allowed_actions)
       ? raw.allowed_actions
       : typeof raw.allowed_actions === "string"
-        ? parseJson<string[]>(raw.allowed_actions, ["approve", "request_changes", "comment"])
-        : ["approve", "request_changes", "comment"],
+        ? parseJson<string[]>(raw.allowed_actions, ["approve", "reject", "request_changes", "comment"])
+        : ["approve", "reject", "request_changes", "comment"],
     metadata: {
       required_inputs: Array.isArray((metadata as any).required_inputs) ? (metadata as any).required_inputs : [],
       sla_hours: Number((metadata as any).sla_hours || raw.sla_hours || 72),
@@ -138,6 +138,7 @@ function normalizeGraphEdge(raw: any): StudioGraphEdge {
     to_node_key: String(raw.to_node_key),
     condition_json: typeof raw.condition_json === "string" ? parseJson<Record<string, unknown> | null>(raw.condition_json, null) : raw.condition_json || null,
     label: raw.label ? String(raw.label) : null,
+    action: raw.action ? raw.action : null,
   };
 }
 

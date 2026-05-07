@@ -9,6 +9,7 @@ from fastapi_app.graph_models import TaskRow, TransitionResult
 
 
 APPROVE = "approve"
+REJECT = "reject"
 REQUEST_CHANGES = "request_changes"
 
 
@@ -55,11 +56,15 @@ class GraphExecutionService:
         reviewer -> conditional: evaluate whitelisted edge predicates
         reviewer -> end: mark application approved
 
+      transition(task, reject)
+        active reviewer task -> rejected -> configured reject route or closed/rejected
+
       transition(task, request_changes)
         active reviewer task -> returned -> application waits in Student Rework
+        unless a request_changes edge explicitly routes to another reviewer/task
     """
 
-    VALID_DECISIONS = {APPROVE, REQUEST_CHANGES}
+    VALID_DECISIONS = {APPROVE, REJECT, REQUEST_CHANGES}
 
     def instantiate(self, db: sqlite3.Connection, application_id: int, graph_version_id: int) -> list[int]:
         with db:
@@ -101,6 +106,9 @@ class GraphExecutionService:
             application = self._get_application(db, int(task["application_id"]))
             node = self._get_node(db, int(task["graph_version_id"]), str(task["node_key"]))
             ts = _now_iso()
+            allowed_actions = set(_json_list(node["allowed_actions"], ["approve", "reject", "request_changes", "comment"]))
+            if normalized_decision not in allowed_actions:
+                raise ValueError(f"Decision '{normalized_decision}' is not allowed for this reviewer task")
 
             if normalized_decision == APPROVE:
                 missing = self._missing_required_inputs(node, reviewer_data)
@@ -121,6 +129,21 @@ class GraphExecutionService:
                     """,
                     (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
                 )
+                next_task_ids = self._advance_from_node(
+                    db,
+                    application,
+                    int(task["graph_version_id"]),
+                    str(task["node_key"]),
+                    completed_task_id=task_id,
+                    decision=REQUEST_CHANGES,
+                )
+                if next_task_ids:
+                    updated = self._get_application(db, int(task["application_id"]))
+                    return TransitionResult(
+                        success=True,
+                        next_task_ids=next_task_ids,
+                        application_status=updated["final_status"],
+                    )
                 db.execute(
                     """
                     UPDATE applications
@@ -133,17 +156,18 @@ class GraphExecutionService:
                 )
                 return TransitionResult(success=True, application_status="STUDENT_REWORK")
 
+            completion_status = "rejected" if normalized_decision == REJECT else "completed"
             db.execute(
                 """
                 UPDATE application_workflow_tasks
-                SET status = 'completed',
+                SET status = ?,
                     acted_at = ?,
                     decision = ?,
                     comment_summary = ?,
                     reviewer_data_json = ?
                 WHERE id = ?
                 """,
-                (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
+                (completion_status, ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
             )
             next_task_ids = self._advance_from_node(
                 db,
@@ -151,7 +175,10 @@ class GraphExecutionService:
                 int(task["graph_version_id"]),
                 str(task["node_key"]),
                 completed_task_id=task_id,
+                decision=normalized_decision,
             )
+            if normalized_decision == REJECT and not next_task_ids:
+                self._mark_application_rejected(db, int(task["application_id"]))
 
             updated = self._get_application(db, int(task["application_id"]))
             return TransitionResult(
@@ -196,7 +223,7 @@ class GraphExecutionService:
                 student_name=str(row["student_name"]),
                 node_key=str(row["node_key"]),
                 display_name=str(row["display_name"]),
-                allowed_actions=_json_list(row["allowed_actions"], ["approve", "request_changes", "comment"]),
+                allowed_actions=_json_list(row["allowed_actions"], ["approve", "reject", "request_changes", "comment"]),
                 visible_sections=_json_list(row["visible_sections"], ["all"]),
                 assigned_at=str(row["assigned_at"]),
             )
@@ -210,6 +237,7 @@ class GraphExecutionService:
         graph_version_id: int,
         from_node_key: str,
         completed_task_id: int | None = None,
+        decision: str | None = None,
     ) -> list[int]:
         edges = db.execute(
             """
@@ -224,7 +252,7 @@ class GraphExecutionService:
         next_task_ids: list[int] = []
         data = _submitted_data(application)
         for edge in edges:
-            if edge["condition_json"] and not self._condition_matches(edge["condition_json"], data):
+            if not self._edge_matches_context(edge, data, decision):
                 continue
             next_task_ids.extend(
                 self._activate_node(
@@ -233,6 +261,7 @@ class GraphExecutionService:
                     graph_version_id,
                     str(edge["to_node_key"]),
                     completed_task_id=completed_task_id,
+                    decision=decision,
                 )
             )
         return next_task_ids
@@ -244,13 +273,17 @@ class GraphExecutionService:
         graph_version_id: int,
         node_key: str,
         completed_task_id: int | None = None,
+        decision: str | None = None,
     ) -> list[int]:
         node = self._get_node(db, graph_version_id, node_key)
         node_type = str(node["node_type"])
         if node_type == "reviewer":
             return self._create_reviewer_task(db, application, graph_version_id, node)
         if node_type == "end":
-            self._mark_application_approved(db, int(application["id"]))
+            if decision == REJECT or self._end_node_final_status(node) == "REJECTED":
+                self._mark_application_rejected(db, int(application["id"]))
+            else:
+                self._mark_application_approved(db, int(application["id"]))
             return []
         if node_type == "conditional":
             return self._advance_from_node(db, application, graph_version_id, node_key, completed_task_id)
@@ -312,6 +345,18 @@ class GraphExecutionService:
             """
             UPDATE applications
             SET final_status = 'APPROVED',
+                current_stage_label = 'Closed',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_now_iso(), application_id),
+        )
+
+    def _mark_application_rejected(self, db: sqlite3.Connection, application_id: int) -> None:
+        db.execute(
+            """
+            UPDATE applications
+            SET final_status = 'REJECTED',
                 current_stage_label = 'Closed',
                 updated_at = ?
             WHERE id = ?
@@ -413,7 +458,7 @@ class GraphExecutionService:
             WHERE application_id = ?
               AND graph_version_id = ?
               AND node_key IN ({placeholders})
-              AND status IN ('active', 'completed', 'returned')
+              AND status IN ('active', 'completed', 'returned', 'rejected')
             LIMIT 1
             """,
             (application_id, graph_version_id, *node_keys),
@@ -434,7 +479,7 @@ class GraphExecutionService:
             WHERE application_id = ?
               AND graph_version_id = ?
               AND node_key = ?
-              AND status IN ('active', 'completed')
+              AND status IN ('active', 'completed', 'rejected')
             LIMIT 1
             """,
             (application_id, graph_version_id, node_key),
@@ -447,6 +492,43 @@ class GraphExecutionService:
         except json.JSONDecodeError:
             return False
         return self._evaluate_condition(condition, data)
+
+    def _edge_matches_context(self, edge: sqlite3.Row, data: dict[str, Any], decision: str | None) -> bool:
+        action = str(edge["action"] or "always")
+        condition_raw = edge["condition_json"]
+        condition_matches = True
+        if condition_raw:
+            condition_matches = self._condition_matches(condition_raw, data)
+
+        if action == "condition_true":
+            if decision in {REJECT, REQUEST_CHANGES}:
+                return False
+            return condition_matches
+        if action == "condition_false":
+            if decision in {REJECT, REQUEST_CHANGES}:
+                return False
+            return not condition_matches
+        if action == "approve":
+            return decision == APPROVE and condition_matches
+        if action == "reject":
+            return decision == REJECT and condition_matches
+        if action == "request_changes":
+            return decision == REQUEST_CHANGES and condition_matches
+
+        # Legacy/null edges are unconditional during graph traversal and approve transitions.
+        # They must not fire for reject/request_changes unless explicitly configured above.
+        if decision in {REJECT, REQUEST_CHANGES}:
+            return False
+        return condition_matches
+
+    def _end_node_final_status(self, node: sqlite3.Row) -> str | None:
+        raw_meta = node["metadata"] or "{}"
+        try:
+            meta = json.loads(raw_meta)
+        except json.JSONDecodeError:
+            return None
+        value = meta.get("final_status") if isinstance(meta, dict) else None
+        return str(value).upper() if value else None
 
     def _evaluate_condition(self, condition: dict[str, Any], data: dict[str, Any]) -> bool:
         op = condition.get("op")
@@ -469,8 +551,22 @@ class GraphExecutionService:
 
         if op == "equals":
             return actual == expected
+        if op == "not_equals":
+            return actual != expected
         if op == "in":
             return isinstance(expected, list) and actual in expected
+        if op == "not_in":
+            return isinstance(expected, list) and actual not in expected
+        if op == "contains":
+            if isinstance(actual, list):
+                return expected in actual
+            if isinstance(actual, str):
+                return str(expected) in actual
+            return False
+        if op == "exists":
+            return field in data and actual not in {None, ""}
+        if op == "empty":
+            return field not in data or actual in {None, "", []}
         if op in {"gt", "lt", "gte", "lte"}:
             return self._compare_numbers(actual, expected, op)
         return False

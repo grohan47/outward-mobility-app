@@ -3,12 +3,12 @@ import { AppHeader } from "@/components/layouts/AppHeader";
 import { Sidebar } from "@/components/layouts/Sidebar";
 import { redirect } from "next/navigation";
 
-export default function AdminLayout({
+export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = requireSession();
+  const session = await requireSession();
 
   if (session.role !== "ADMIN") {
     redirect("/select-workspace");

@@ -48,7 +48,7 @@ type TimelineRecord = {
 };
 
 type DetailPayload = {
-  application: {
+  application?: {
     id: number;
     current_step_order: number;
     current_stage_label: string;
@@ -58,10 +58,10 @@ type DetailPayload = {
   opportunity?: { title?: string };
   student_user?: { full_name?: string };
   student_profile?: { student_id?: string; official_cgpa?: number; program?: string };
-  reviews: ReviewRecord[];
-  comments: Array<{ id: number; author_email: string; text: string; created_at: string }>;
-  timeline: TimelineRecord[];
-  pipeline_steps: PipelineStep[];
+  reviews?: ReviewRecord[];
+  comments?: Array<{ id: number; author_email: string; text: string; created_at: string }>;
+  timeline?: TimelineRecord[];
+  pipeline_steps?: PipelineStep[];
   application_file?: Record<string, unknown>;
   field_labels?: Record<string, string>;
   permissions?: { can_view_comments?: boolean };
@@ -117,22 +117,38 @@ export default function ReviewerApplicationDetail() {
       .catch(() => setLoading(false));
   }, [params.id]);
 
+  const application = useMemo(
+    () => ({
+      id: Number(data?.application?.id || 0),
+      current_step_order: Number(data?.application?.current_step_order || 0),
+      current_stage_label: data?.application?.current_stage_label || "In review",
+      final_status: data?.application?.final_status || null,
+      submitted_data_json: data?.application?.submitted_data_json || null,
+    }),
+    [data]
+  );
+
+  const pipelineSteps = useMemo(() => (Array.isArray(data?.pipeline_steps) ? data.pipeline_steps : []), [data?.pipeline_steps]);
+  const reviews = useMemo(() => (Array.isArray(data?.reviews) ? data.reviews : []), [data?.reviews]);
+  const timeline = useMemo(() => (Array.isArray(data?.timeline) ? data.timeline : []), [data?.timeline]);
+  const comments = useMemo(() => (Array.isArray(data?.comments) ? data.comments : []), [data?.comments]);
+
   const applicationFile = useMemo(() => {
     if (data?.application_file && typeof data.application_file === "object") {
       return data.application_file as Record<string, unknown>;
     }
-    if (!data?.application.submitted_data_json) return {};
+    if (!application.submitted_data_json) return {};
     try {
-      return JSON.parse(data.application.submitted_data_json) as Record<string, unknown>;
+      return JSON.parse(application.submitted_data_json) as Record<string, unknown>;
     } catch {
       return {};
     }
-  }, [data]);
+  }, [application.submitted_data_json, data]);
 
   const currentStep = useMemo(() => {
     if (!data) return null;
-    return data.pipeline_steps.find((step) => step.step_order === data.application.current_step_order) || null;
-  }, [data]);
+    return pipelineSteps.find((step) => step.step_order === application.current_step_order) || null;
+  }, [application.current_step_order, data, pipelineSteps]);
 
   const requiredInputs = currentStep?.required_inputs || [];
   const canViewComments = Boolean(data?.permissions?.can_view_comments);
@@ -149,16 +165,16 @@ export default function ReviewerApplicationDetail() {
 
   const priorSteps = useMemo(() => {
     if (!data) return [];
-    return data.pipeline_steps.filter((step) => step.step_order < data.application.current_step_order);
-  }, [data]);
+    return pipelineSteps.filter((step) => step.step_order < application.current_step_order);
+  }, [application.current_step_order, data, pipelineSteps]);
 
   const sendBackTargets = useMemo(() => {
-    if (!data || data.application.current_step_order <= 0) return [];
+    if (!data || application.current_step_order <= 0) return [];
     return [
       { stepOrder: 0, label: "Student (Generator)" },
       ...priorSteps.map((step) => ({ stepOrder: step.step_order, label: step.step_name })),
     ];
-  }, [data, priorSteps]);
+  }, [application.current_step_order, data, priorSteps]);
 
   async function handleAction(endpoint: "approve" | "request-changes" | "reject") {
     if (!data || !user) return;
@@ -177,7 +193,7 @@ export default function ReviewerApplicationDetail() {
       }
 
       // Frontend -> API: POST /api/applications/:id/{approve|request-changes|reject}
-      const res = await fetch(`/api/applications/${data.application.id}/${endpoint}`, {
+      const res = await fetch(`/api/applications/${application.id}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -215,7 +231,7 @@ export default function ReviewerApplicationDetail() {
             Back to Inbox
           </button>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">
-            Application #{data.application.id} <span className="text-slate-400">- {data.student_user?.full_name}</span>
+            Application #{application.id} <span className="text-slate-400">- {data.student_user?.full_name}</span>
           </h1>
           <p className="text-slate-500 mt-1">{data.opportunity?.title}</p>
         </div>
@@ -251,7 +267,7 @@ export default function ReviewerApplicationDetail() {
               <span className="material-symbols-outlined">rule</span>
               <span className="font-bold text-sm tracking-wide">Current Stage</span>
             </div>
-            <p className="text-indigo-900/80 text-xs leading-relaxed font-semibold">{data.application.current_stage_label}</p>
+            <p className="text-indigo-900/80 text-xs leading-relaxed font-semibold">{application.current_stage_label}</p>
           </Card>
         </div>
 
@@ -409,10 +425,10 @@ export default function ReviewerApplicationDetail() {
           <Card>
             <CardHeader title="Timeline" />
             <div className="p-4 border-t border-slate-100 space-y-4">
-              {data.timeline.length === 0 && <p className="text-sm text-slate-500">No events recorded yet.</p>}
-              {data.timeline.map((event, index) => (
+              {timeline.length === 0 && <p className="text-sm text-slate-500">No events recorded yet.</p>}
+              {timeline.map((event, index) => (
                 <div key={event.id} className="relative pl-7 pb-2">
-                  {index < data.timeline.length - 1 && <div className="absolute left-[7px] top-5 h-[calc(100%-0.2rem)] w-0.5 bg-slate-200" />}
+                  {index < timeline.length - 1 && <div className="absolute left-[7px] top-5 h-[calc(100%-0.2rem)] w-0.5 bg-slate-200" />}
                   <div className="absolute left-0 top-1.5 h-4 w-4 rounded-full border-2 border-primary bg-white" />
                   <p className="text-sm font-semibold text-slate-900">{event.event_type.replace(/_/g, " ")}</p>
                   <p className="text-xs text-slate-500">{new Date(event.created_at).toLocaleString()}</p>
@@ -430,8 +446,8 @@ export default function ReviewerApplicationDetail() {
             <Card>
               <CardHeader title="Review History" />
               <div className="space-y-4 p-4 border-t border-slate-100">
-                {data.reviews.length === 0 && <p className="text-slate-400 italic text-sm">No review entries yet.</p>}
-                {data.reviews.map((review) => (
+                {reviews.length === 0 && <p className="text-slate-400 italic text-sm">No review entries yet.</p>}
+                {reviews.map((review) => (
                   <div key={review.id} className="pb-4 border-b border-slate-100 last:border-0 last:pb-0">
                     <p className="text-sm font-bold text-slate-900">{review.reviewer_name || review.reviewer_role}</p>
                     <p className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">{review.decision}</p>
@@ -458,10 +474,10 @@ export default function ReviewerApplicationDetail() {
       </div>
 
       <ApplicationChatWidget
-        applicationId={data.application.id}
-        contextLabel={`#${data.application.id} · ${data.opportunity?.title || "Application thread"}`}
+        applicationId={application.id}
+        contextLabel={`#${application.id} · ${data.opportunity?.title || "Application thread"}`}
         studentName={data.student_user?.full_name || "Student"}
-        pipelineSteps={data.pipeline_steps}
+        pipelineSteps={pipelineSteps}
       />
     </div>
   );

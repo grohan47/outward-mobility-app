@@ -12,6 +12,7 @@ import type {
   ImpactApplication,
   OpportunityData,
   OpportunityDetailField,
+  StudioEdgeAction,
   StudioGraphEdge,
   StudioGraphNode,
   WorkflowStep,
@@ -123,7 +124,7 @@ function defaultReviewerNode(label = "New Reviewer"): StudioGraphNode {
     display_name: label,
     reviewer_email: "",
     visible_sections: ["all"],
-    allowed_actions: ["approve", "request_changes", "comment"],
+    allowed_actions: ["approve", "reject", "request_changes", "comment"],
     metadata: { required_inputs: [], sla_hours: 72, can_view_comments: false },
   };
 }
@@ -152,6 +153,49 @@ function endNode(): StudioGraphNode {
   };
 }
 
+function rejectedEndNode(): StudioGraphNode {
+  return {
+    node_key: nodeKey("rejected_end"),
+    node_type: "end",
+    display_name: "Rejected End",
+    reviewer_email: null,
+    visible_sections: ["all"],
+    allowed_actions: [],
+    metadata: { required_inputs: [], final_status: "REJECTED" },
+  };
+}
+
+function conditionNode(label = "If / Else"): StudioGraphNode {
+  return {
+    node_key: nodeKey("condition"),
+    node_type: "conditional",
+    display_name: label,
+    reviewer_email: null,
+    visible_sections: ["all"],
+    allowed_actions: [],
+    metadata: { required_inputs: [] },
+  };
+}
+
+function joinNode(label = "Join / Merge"): StudioGraphNode {
+  return {
+    node_key: nodeKey("join"),
+    node_type: "join_all",
+    display_name: label,
+    reviewer_email: null,
+    visible_sections: ["all"],
+    allowed_actions: [],
+    metadata: { required_inputs: [] },
+  };
+}
+
+function defaultRouteAction(source?: StudioGraphNode | null): StudioEdgeAction {
+  if (!source || source.node_type === "start" || source.node_type === "conditional" || source.node_type === "join_all" || source.node_type === "join_any") {
+    return "always";
+  }
+  return "approve";
+}
+
 function workflowStepsToGraph(steps: WorkflowStep[]): { nodes: StudioGraphNode[]; edges: StudioGraphEdge[] } {
   if (steps.length === 0) return { nodes: [], edges: [] };
   const reviewers = steps.map((step, index) => ({
@@ -160,7 +204,7 @@ function workflowStepsToGraph(steps: WorkflowStep[]): { nodes: StudioGraphNode[]
     display_name: step.reviewerName || step.name,
     reviewer_email: step.reviewerEmail,
     visible_sections: step.visibleFields.length > 0 ? step.visibleFields : ["all"],
-    allowed_actions: ["approve", "request_changes", "comment"],
+    allowed_actions: ["approve", "reject", "request_changes", "comment"],
     metadata: {
       required_inputs: step.requiredInputs.map((input) => {
         const inputType = input.inputType === "dropdown" || input.inputType === "multiselect" ? "select" : input.inputType === "number" ? "number" : "text";
@@ -180,6 +224,7 @@ function workflowStepsToGraph(steps: WorkflowStep[]): { nodes: StudioGraphNode[]
   const edges = nodes.slice(0, -1).map((node, index) => ({
     from_node_key: node.node_key,
     to_node_key: nodes[index + 1].node_key,
+    action: node.node_type === "reviewer" ? "approve" as const : "always" as const,
   }));
   return { nodes, edges };
 }
@@ -225,8 +270,10 @@ export default function OpportunityStudio({
   const [graphEdges, setGraphEdges] = useState<StudioGraphEdge[]>(initialGraphEdges.length > 0 ? initialGraphEdges : mode === "edit" ? fallbackGraph.edges : []);
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeKey, setSelectedEdgeKey] = useState<string | null>(null);
+  const [connectSourceKey, setConnectSourceKey] = useState<string | null>(null);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
+  const [currentDraftId, setCurrentDraftId] = useState<number | null>(null);
   const [draftOutput, setDraftOutput] = useState<DraftOutput | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [answering, setAnswering] = useState(false);
@@ -267,7 +314,7 @@ export default function OpportunityStudio({
     ? graphEdges.find((edge) => `${edge.from_node_key}->${edge.to_node_key}` === selectedEdgeKey) || null
     : null;
   const openQuestions = (draftOutput?.clarifying_questions || []).filter((question) => !answers[question]?.trim());
-  const validationWarnings = validateGraph(graphNodes);
+  const validationWarnings = validateGraph(graphNodes, graphEdges);
   const fallbackUsed = Boolean(draftOutput?.is_fallback);
   const activeImpact = activeApplications.filter((item) => !item.final_status);
 
@@ -281,14 +328,15 @@ export default function OpportunityStudio({
     pushHistory();
     setGraphNodes(nodes);
     setGraphEdges(edges);
+    setConnectSourceKey(null);
   }
 
   function addReviewer() {
     const reviewer = defaultReviewerNode("New Reviewer");
     if (graphNodes.length === 0) {
       commitGraph([startNode(), reviewer, endNode()], [
-        { from_node_key: "start", to_node_key: reviewer.node_key },
-        { from_node_key: reviewer.node_key, to_node_key: "end" },
+        { from_node_key: "start", to_node_key: reviewer.node_key, action: "always" },
+        { from_node_key: reviewer.node_key, to_node_key: "end", action: "approve" },
       ]);
       setSelectedNodeKey(reviewer.node_key);
       setMobileTab("inspector");
@@ -300,8 +348,8 @@ export default function OpportunityStudio({
     const remaining = graphEdges.filter((edge) => edge.from_node_key !== source);
     const edges = [
       ...remaining,
-      { from_node_key: source, to_node_key: reviewer.node_key },
-      ...(outgoing.length > 0 ? outgoing.map((edge) => ({ ...edge, from_node_key: reviewer.node_key })) : [{ from_node_key: reviewer.node_key, to_node_key: "end" }]),
+      { from_node_key: source, to_node_key: reviewer.node_key, action: source === "start" ? "always" as const : "approve" as const },
+      ...(outgoing.length > 0 ? outgoing.map((edge) => ({ ...edge, from_node_key: reviewer.node_key })) : [{ from_node_key: reviewer.node_key, to_node_key: "end", action: "approve" as const }]),
     ];
     commitGraph([...graphNodes, reviewer], dedupeEdges(edges));
     setSelectedNodeKey(reviewer.node_key);
@@ -336,10 +384,10 @@ export default function OpportunityStudio({
     const targetKeys = outgoing.length > 0 ? outgoing.map((edge) => edge.to_node_key) : ["end"];
     const edges = [
       ...remaining,
-      ...parentKeys.map((parent) => ({ from_node_key: parent, to_node_key: parallel.node_key })),
-      { from_node_key: selected.node_key, to_node_key: merge.node_key },
-      { from_node_key: parallel.node_key, to_node_key: merge.node_key },
-      ...targetKeys.map((target) => ({ from_node_key: merge.node_key, to_node_key: target })),
+      ...parentKeys.map((parent) => ({ from_node_key: parent, to_node_key: parallel.node_key, action: parent === "start" ? "always" as const : "approve" as const })),
+      { from_node_key: selected.node_key, to_node_key: merge.node_key, action: "approve" as const },
+      { from_node_key: parallel.node_key, to_node_key: merge.node_key, action: "approve" as const },
+      ...targetKeys.map((target) => ({ from_node_key: merge.node_key, to_node_key: target, action: "always" as const })),
     ];
     commitGraph([...graphNodes, parallel, merge], dedupeEdges(edges));
     setSelectedNodeKey(parallel.node_key);
@@ -356,11 +404,209 @@ export default function OpportunityStudio({
     setGraphEdges((prev) =>
       prev.map((edge) =>
         edge.from_node_key === from && edge.to_node_key === to
-          ? { ...edge, condition_json: edge.condition_json || { field: "", op: "equals", value: "" }, label: edge.label || "Condition" }
+          ? { ...edge, action: edge.action?.startsWith("condition") ? edge.action : "condition_true", condition_json: edge.condition_json || { field: "", op: "equals", value: "" }, label: edge.label || "Condition" }
           : edge
       )
     );
     setMobileTab("inspector");
+  }
+
+  function addConditionalBranch() {
+    const defaultCondition = {
+      field: selectedApplicationFields[0]?.field_key || "",
+      op: selectedApplicationFields[0]?.input_type === "number" ? "gt" : "equals",
+      value: selectedApplicationFields[0]?.input_type === "number" ? 200000 : "",
+    };
+    const gate = conditionNode("If / Else");
+    const conditionalReviewer = defaultReviewerNode("Conditional Review");
+    let fromKey: string | null = null;
+    let toKey: string | null = null;
+    let incomingAction: StudioEdgeAction | null | undefined = null;
+
+    if (selectedEdgeKey) {
+      const [selectedFrom, selectedTo] = selectedEdgeKey.split("->");
+      const selectedRoute = graphEdges.find((edge) => edge.from_node_key === selectedFrom && edge.to_node_key === selectedTo);
+      fromKey = selectedFrom;
+      toKey = selectedTo;
+      incomingAction = selectedRoute?.action;
+    } else if (selectedNodeKey) {
+      const selectedNode = graphNodes.find((node) => node.node_key === selectedNodeKey);
+      if (!selectedNode || selectedNode.node_type === "end") {
+        setError("Select a route or a non-terminal node before adding a conditional branch.");
+        return;
+      }
+      fromKey = selectedNode.node_key;
+      toKey = graphEdges.find((edge) => edge.from_node_key === selectedNode.node_key)?.to_node_key || graphNodes.find((node) => node.node_type === "end")?.node_key || "end";
+    }
+
+    if (!fromKey || !toKey) {
+      setError("Select an existing route or node before adding a conditional branch.");
+      return;
+    }
+
+    const fromNode = graphNodes.find((node) => node.node_key === fromKey);
+    const hasTargetEnd = graphNodes.some((node) => node.node_key === toKey);
+    const targetEnd = hasTargetEnd ? [] : [endNode()];
+    const withoutSelectedRoute = graphEdges.filter((edge) => !(edge.from_node_key === fromKey && edge.to_node_key === toKey));
+    const nextEdges: StudioGraphEdge[] = [
+      ...withoutSelectedRoute,
+      { from_node_key: fromKey, to_node_key: gate.node_key, action: incomingAction || defaultRouteAction(fromNode), label: "Evaluate condition" },
+      { from_node_key: gate.node_key, to_node_key: conditionalReviewer.node_key, action: "condition_true", condition_json: defaultCondition, label: "If true" },
+      { from_node_key: gate.node_key, to_node_key: toKey, action: "condition_false", condition_json: defaultCondition, label: "If false" },
+      { from_node_key: conditionalReviewer.node_key, to_node_key: toKey, action: "approve", label: "Approve and continue" },
+    ];
+
+    commitGraph([...graphNodes, ...targetEnd, gate, conditionalReviewer], dedupeEdges(nextEdges));
+    setSelectedEdgeKey(`${gate.node_key}->${conditionalReviewer.node_key}`);
+    setSelectedNodeKey(null);
+    setNotice("Conditional branch added. Configure the field rule and reviewer in the inspector.");
+    setMobileTab("inspector");
+  }
+
+  function addJoin() {
+    const selected = graphNodes.find((node) => node.node_key === selectedNodeKey);
+    if (!selected || selected.node_type === "end") {
+      setError("Select a non-terminal graph node before adding a join.");
+      return;
+    }
+    const join = joinNode();
+    const outgoing = graphEdges.filter((edge) => edge.from_node_key === selected.node_key);
+    const targetKeys = outgoing.length > 0 ? outgoing.map((edge) => edge.to_node_key) : [graphNodes.find((node) => node.node_type === "end")?.node_key || "end"];
+    const targetEnd = graphNodes.some((node) => node.node_key === "end") ? [] : [endNode()];
+    const remaining = graphEdges.filter((edge) => edge.from_node_key !== selected.node_key);
+    const nextEdges: StudioGraphEdge[] = [
+      ...remaining,
+      { from_node_key: selected.node_key, to_node_key: join.node_key, action: defaultRouteAction(selected), label: "Join after approval" },
+      ...targetKeys.map((target) => ({ from_node_key: join.node_key, to_node_key: target, action: "always" as const, label: "Continue after merge" })),
+    ];
+    commitGraph([...graphNodes, ...targetEnd, join], dedupeEdges(nextEdges));
+    setSelectedNodeKey(join.node_key);
+    setSelectedEdgeKey(null);
+    setNotice("Join / merge node added. Use Connect to route other branches into it.");
+  }
+
+  function addRejectRoute() {
+    const selected = graphNodes.find((node) => node.node_key === selectedNodeKey);
+    if (!selected || selected.node_type !== "reviewer") {
+      setError("Select a reviewer node before adding a reject route.");
+      return;
+    }
+    const existingRejectEnd = graphNodes.find((node) => node.node_type === "end" && node.metadata?.final_status === "REJECTED");
+    const rejectEnd = existingRejectEnd || rejectedEndNode();
+    const nextNodes = existingRejectEnd ? graphNodes : [...graphNodes, rejectEnd];
+    const nextEdges = dedupeEdges([
+      ...graphEdges,
+      { from_node_key: selected.node_key, to_node_key: rejectEnd.node_key, action: "reject", label: "Deny / reject" },
+    ]);
+    commitGraph(nextNodes, nextEdges);
+    setSelectedEdgeKey(`${selected.node_key}->${rejectEnd.node_key}`);
+    setSelectedNodeKey(null);
+    setNotice("Reject route added. A denied application will close on the rejected path.");
+  }
+
+  function startConnectMode() {
+    const connectableCount = graphNodes.filter((node) => node.node_type !== "end").length;
+    if (connectableCount < 1 || graphNodes.length < 2) {
+      setError("Add at least two graph nodes before creating a connection.");
+      return;
+    }
+    setError(null);
+    setSelectedEdgeKey(null);
+    setConnectSourceKey((prev) => {
+      if (prev) {
+        setNotice("Connect mode cleared.");
+        return null;
+      }
+      setNotice("Connect mode started. Select the source node, then the destination node.");
+      return "__pending__";
+    });
+  }
+
+  function handleNodeSelection(nodeKey: string | null) {
+    if (!nodeKey) {
+      setSelectedNodeKey(null);
+      if (connectSourceKey && connectSourceKey !== "__pending__") {
+        setNotice("Connect mode cancelled.");
+        setConnectSourceKey(null);
+      }
+      return;
+    }
+
+    const node = graphNodes.find((item) => item.node_key === nodeKey) || null;
+    setSelectedNodeKey(nodeKey);
+    setSelectedEdgeKey(null);
+
+    if (!connectSourceKey) return;
+
+    if (connectSourceKey === "__pending__") {
+      if (!node || node.node_type === "end") {
+        setError("The first connection point must be a non-terminal source node.");
+        return;
+      }
+      setConnectSourceKey(nodeKey);
+      setNotice(`Connect mode: selected ${node.display_name || node.node_key}. Now choose a different destination node.`);
+      return;
+    }
+
+    if (connectSourceKey === nodeKey) {
+      setError("Select a different reviewer to complete the connection.");
+      return;
+    }
+    if (!node) {
+      setError("Select a valid destination node.");
+      setConnectSourceKey(null);
+      return;
+    }
+
+    const edgeExists = graphEdges.some((edge) => edge.from_node_key === connectSourceKey && edge.to_node_key === nodeKey);
+    if (edgeExists) {
+      setError("These graph nodes are already connected.");
+      setConnectSourceKey(null);
+      return;
+    }
+
+    if (node.node_type === "start") {
+      setError("A route cannot point back into Start.");
+      setConnectSourceKey(null);
+      return;
+    }
+
+    const source = graphNodes.find((item) => item.node_key === connectSourceKey);
+    commitGraph(graphNodes, dedupeEdges([...graphEdges, { from_node_key: connectSourceKey, to_node_key: nodeKey, action: defaultRouteAction(source) }]));
+    setSelectedEdgeKey(`${connectSourceKey}->${nodeKey}`);
+    setNotice("Reviewer connection added.");
+  }
+
+  function moveNode(nodeKeyToMove: string, position: { x: number; y: number }) {
+    pushHistory();
+    setGraphNodes((prev) =>
+      prev.map((node) =>
+        node.node_key === nodeKeyToMove
+          ? {
+              ...node,
+              metadata: {
+                ...node.metadata,
+                canvas_position: {
+                  x: Math.round(position.x),
+                  y: Math.round(position.y),
+                },
+              },
+            }
+          : node
+      )
+    );
+  }
+
+  function resetGraphLayout() {
+    pushHistory();
+    setGraphNodes((prev) =>
+      prev.map((node) => {
+        const nextMetadata = { ...node.metadata };
+        delete nextMetadata.canvas_position;
+        return { ...node, metadata: nextMetadata };
+      })
+    );
+    setNotice("Graph returned to auto layout.");
   }
 
   function updateNode(nodeKeyToUpdate: string, patch: Partial<StudioGraphNode>) {
@@ -379,7 +625,7 @@ export default function OpportunityStudio({
     if (!node || node.node_type !== "reviewer") return;
     const incoming = graphEdges.filter((edge) => edge.to_node_key === nodeKeyToRemove);
     const outgoing = graphEdges.filter((edge) => edge.from_node_key === nodeKeyToRemove);
-    const bridged = incoming.flatMap((inEdge) => outgoing.map((outEdge) => ({ from_node_key: inEdge.from_node_key, to_node_key: outEdge.to_node_key })));
+    const bridged = incoming.flatMap((inEdge) => outgoing.map((outEdge) => ({ from_node_key: inEdge.from_node_key, to_node_key: outEdge.to_node_key, action: inEdge.action || outEdge.action || "always" })));
     commitGraph(
       graphNodes.filter((item) => item.node_key !== nodeKeyToRemove),
       dedupeEdges([...graphEdges.filter((edge) => edge.from_node_key !== nodeKeyToRemove && edge.to_node_key !== nodeKeyToRemove), ...bridged])
@@ -405,6 +651,39 @@ export default function OpportunityStudio({
     setGraphEdges(next.edges);
   }
 
+  function buildDraftPayload() {
+    return {
+      opportunityId: opportunityId ? Number(opportunityId) : undefined,
+      opportunity: {
+        code: opportunity.code || undefined,
+        title: opportunity.title || "Untitled Opportunity",
+        description: opportunity.description || "No description provided.",
+        cover_image_url: opportunity.cover_image_url || undefined,
+        term: opportunity.term || undefined,
+        destination: opportunity.destination || undefined,
+        deadline: opportunity.deadline || undefined,
+        seats: Number(opportunity.seats || 0) || undefined,
+        host_institution: opportunity.destination || undefined,
+        program_type: opportunity.term || undefined,
+        detail_fields: detailFields.map((field, index) => ({
+          field_key: field.field_key || `detail_${index + 1}`,
+          label: field.label,
+          value: field.value,
+          value_type: field.value_type || "text",
+          display_order: index + 1,
+          is_student_visible: field.is_student_visible,
+        })),
+        ai_summary_bullets: opportunity.ai_summary_bullets || [],
+        visibility: "plaksha_only",
+      },
+      graph: { nodes: graphNodes, edges: graphEdges },
+      clarifyingQuestions: openQuestions,
+      warnings: draftOutput?.warnings || [],
+      confidence: draftOutput?.confidence ?? 0.78,
+      isFallback: fallbackUsed,
+    };
+  }
+
   async function generateDraft() {
     setError(null);
     setNotice(null);
@@ -423,6 +702,7 @@ export default function OpportunityStudio({
       const body = await response.json();
       if (!response.ok) throw new Error(body?.detail || "AI generation failed.");
       const draft = normalizeDraftRow(body.draft);
+      setCurrentDraftId(Number(body.draft_id || body.draft?.id || 0) || null);
       setDraftOutput(draft);
       const draftDetails = [
         ...(draft.opportunity.detail_fields || []),
@@ -451,20 +731,54 @@ export default function OpportunityStudio({
   }
 
   async function submitAnswers() {
+    if (!currentDraftId) {
+      setError("Generate a draft first before submitting clarification answers.");
+      return;
+    }
     setAnswering(true);
-    setNotice("Answers recorded. Ask PRISM to fill again if you want it to revise the draft.");
-    setAnswering(false);
+    setError(null);
+    try {
+      const response = await fetch(`/api/admin/workflow-drafts/${currentDraftId}/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.detail || "Unable to record clarification answers.");
+      if (body?.draft) {
+        setDraftOutput(normalizeDraftRow(body.draft));
+      }
+      setNotice("Clarification answers recorded on the draft.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to record clarification answers.");
+    } finally {
+      setAnswering(false);
+    }
   }
 
-  function validateForPublish() {
+  async function validateForPublish() {
     setValidating(true);
-    const warnings = validateGraph(graphNodes);
-    setTimeout(() => {
-      setPublishReady(warnings.length === 0 && !fallbackUsed && openQuestions.length === 0);
-      setValidating(false);
+    setError(null);
+    try {
+      const response = await fetch("/api/admin/workflow-drafts/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildDraftPayload()),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.detail || "Unable to validate workflow draft.");
+      const warnings = Array.isArray(body?.warnings) ? body.warnings.map(String) : validateGraph(graphNodes, graphEdges);
+      setPublishReady(Boolean(body?.publish_ready));
       setNotice(warnings.length === 0 ? "Validation passed." : "Validation found issues on the graph.");
-    }, 250);
-    return warnings;
+      return warnings;
+    } catch (err) {
+      const warnings = validateGraph(graphNodes, graphEdges);
+      setPublishReady(warnings.length === 0 && !fallbackUsed && openQuestions.length === 0);
+      setError(err instanceof Error ? err.message : "Unable to validate workflow draft.");
+      return warnings;
+    } finally {
+      setValidating(false);
+    }
   }
 
   async function saveDraftOnly() {
@@ -490,7 +804,7 @@ export default function OpportunityStudio({
       setShowImpactModal(true);
       return;
     }
-    const warnings = validateForPublish();
+    const warnings = await validateForPublish();
     if (warnings.length > 0 || fallbackUsed || openQuestions.length > 0) {
       setError(fallbackUsed ? "Fallback drafts must be edited and regenerated before publishing." : openQuestions.length > 0 ? "Answer all clarifying questions before publishing." : "Resolve validation warnings before publishing.");
       return;
@@ -527,32 +841,14 @@ export default function OpportunityStudio({
     const response = await fetch("/api/admin/workflow-drafts/manual", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        opportunityId: opportunityId ? Number(opportunityId) : undefined,
-        opportunity: {
-          code: opportunity.code || undefined,
-          title: opportunity.title || "Untitled Opportunity",
-          description: opportunity.description || "No description provided.",
-          detail_fields: detailFields.map((field, index) => ({
-            field_key: field.field_key || `detail_${index + 1}`,
-            label: field.label,
-            value: field.value,
-            value_type: field.value_type || "text",
-            display_order: index + 1,
-            is_student_visible: field.is_student_visible,
-          })),
-          ai_summary_bullets: opportunity.ai_summary_bullets || [],
-          visibility: "plaksha_only",
-        },
-        graph: { nodes: graphNodes, edges: graphEdges },
-        clarifyingQuestions: openQuestions,
-        warnings: draftOutput?.warnings || [],
-        confidence: draftOutput?.confidence ?? 0.78,
-        isFallback: fallbackUsed,
-      }),
+      body: JSON.stringify(buildDraftPayload()),
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body?.detail || "Unable to save workflow draft.");
+    setCurrentDraftId(Number(body?.draft_id || body?.draft?.id || 0) || null);
+    if (body?.draft) {
+      setDraftOutput(normalizeDraftRow(body.draft));
+    }
     return body;
   }
 
@@ -644,7 +940,7 @@ export default function OpportunityStudio({
           </button>
           {studioStep === "pipeline" ? (
             <>
-              <button type="button" onClick={validateForPublish} disabled={validating} className="min-h-[40px] rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+              <button type="button" onClick={() => void validateForPublish()} disabled={validating} className="min-h-[40px] rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
                 {validating ? "Validating..." : publishReady ? "Validated" : "Validate"}
               </button>
               <button type="button" onClick={() => void publishWorkflow()} disabled={publishing} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm disabled:opacity-50">
@@ -706,10 +1002,20 @@ export default function OpportunityStudio({
         <div className="hidden flex-1 lg:grid lg:grid-cols-[220px_1fr_280px]">
           <PipelineRail
             opportunity={opportunity}
+            nodes={graphNodes}
+            edges={graphEdges}
+            selectedNode={selectedNode}
+            selectedEdge={selectedEdge}
             validationWarnings={validationWarnings}
             openQuestions={openQuestions.length}
             publishReady={publishReady}
             onBack={() => setStudioStep("form")}
+            onAddReviewer={addReviewer}
+            onAddParallel={addParallelGroup}
+            onAddConditionalBranch={addConditionalBranch}
+            onAddJoin={addJoin}
+            onAddRejectRoute={addRejectRoute}
+            onStartConnect={startConnectMode}
           />
           <main className="flex min-w-0 flex-col">
             <StudioGraph
@@ -718,11 +1024,18 @@ export default function OpportunityStudio({
               selectedNodeKey={selectedNodeKey}
               selectedEdgeKey={selectedEdgeKey}
               validationWarnings={validationWarnings}
-              onSelectNode={setSelectedNodeKey}
+              connectMode={Boolean(connectSourceKey)}
+              onSelectNode={handleNodeSelection}
               onSelectEdge={setSelectedEdgeKey}
               onAddReviewer={addReviewer}
               onAddParallel={addParallelGroup}
+              onAddConditionalBranch={addConditionalBranch}
+              onAddJoin={addJoin}
+              onAddRejectRoute={addRejectRoute}
+              onStartConnect={startConnectMode}
               onAddCondition={addCondition}
+              onMoveNode={moveNode}
+              onResetLayout={resetGraphLayout}
               onUndo={undo}
               onRedo={redo}
             />
@@ -730,6 +1043,7 @@ export default function OpportunityStudio({
           <StudioInspector
             node={selectedNode}
             edge={selectedEdge}
+            nodes={graphNodes}
             availableFields={selectedApplicationFields}
             validationWarnings={validationWarnings}
             onClose={() => {
@@ -753,14 +1067,21 @@ export default function OpportunityStudio({
               selectedNodeKey={selectedNodeKey}
               selectedEdgeKey={selectedEdgeKey}
               validationWarnings={validationWarnings}
+              connectMode={Boolean(connectSourceKey)}
               onSelectNode={(key) => {
-                setSelectedNodeKey(key);
+                handleNodeSelection(key);
                 if (key) setMobileTab("inspector");
               }}
               onSelectEdge={setSelectedEdgeKey}
               onAddReviewer={addReviewer}
               onAddParallel={addParallelGroup}
+              onAddConditionalBranch={addConditionalBranch}
+              onAddJoin={addJoin}
+              onAddRejectRoute={addRejectRoute}
+              onStartConnect={startConnectMode}
               onAddCondition={addCondition}
+              onMoveNode={moveNode}
+              onResetLayout={resetGraphLayout}
               onUndo={undo}
               onRedo={redo}
             />
@@ -769,6 +1090,7 @@ export default function OpportunityStudio({
             <StudioInspector
               node={selectedNode}
               edge={selectedEdge}
+              nodes={graphNodes}
               availableFields={selectedApplicationFields}
               validationWarnings={validationWarnings}
               onClose={() => setMobileTab("graph")}
@@ -1337,8 +1659,8 @@ function AIAssistantPanel({
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-amber-800">Warnings</p>
             <div className="space-y-1">
-              {draftOutput.warnings.slice(0, 3).map((warning) => (
-                <p key={warning} className="text-sm leading-5 text-amber-900">{warning}</p>
+              {draftOutput.warnings.slice(0, 3).map((warning, index) => (
+                <p key={`${index}-${warning}`} className="text-sm leading-5 text-amber-900">{warning}</p>
               ))}
             </div>
           </div>
@@ -1350,22 +1672,47 @@ function AIAssistantPanel({
 
 function PipelineRail({
   opportunity,
+  nodes,
+  edges,
+  selectedNode,
+  selectedEdge,
   validationWarnings,
   openQuestions,
   publishReady,
   onBack,
+  onAddReviewer,
+  onAddParallel,
+  onAddConditionalBranch,
+  onAddJoin,
+  onAddRejectRoute,
+  onStartConnect,
 }: {
   opportunity: OpportunityData;
+  nodes: StudioGraphNode[];
+  edges: StudioGraphEdge[];
+  selectedNode: StudioGraphNode | null;
+  selectedEdge: StudioGraphEdge | null;
   validationWarnings: string[];
   openQuestions: number;
   publishReady: boolean;
   onBack: () => void;
+  onAddReviewer: () => void;
+  onAddParallel: () => void;
+  onAddConditionalBranch: () => void;
+  onAddJoin: () => void;
+  onAddRejectRoute: () => void;
+  onStartConnect: () => void;
 }) {
+  const reviewerCount = nodes.filter((node) => node.node_type === "reviewer").length;
+  const conditionCount = nodes.filter((node) => node.node_type === "conditional").length;
+  const joinCount = nodes.filter((node) => node.node_type === "join_all" || node.node_type === "join_any").length;
+
   return (
-    <aside className="overflow-y-auto border-r border-slate-200 bg-white p-4">
+    <aside className="overflow-y-auto border-r border-slate-200 bg-[#f8fafc]">
+      <div className="border-b border-slate-200 bg-white p-4">
       <button type="button" onClick={onBack} className="mb-5 inline-flex min-h-[40px] items-center gap-2 rounded-lg px-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">
         <span className="material-symbols-outlined text-[18px]">arrow_back</span>
-        Details
+        Form
       </button>
 
       <RailSection title="Setup">
@@ -1374,9 +1721,78 @@ function PipelineRail({
           <p className="text-slate-500">{opportunity.code || "Code auto-generated"}</p>
         </div>
       </RailSection>
+      </div>
 
+      <div className="border-b border-slate-200 bg-white p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Workflow Elements</h3>
+          <span className={`rounded-full px-2 py-1 text-[11px] font-bold ${validationWarnings.length ? "bg-red-100 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+            {validationWarnings.length || 0} Problems
+          </span>
+        </div>
+        <div className="space-y-2">
+          <PaletteButton icon="person_add" label="Reviewer" description="Add a stakeholder approval task." onClick={onAddReviewer} />
+          <PaletteButton icon="verified" label="Approval" description="Reviewer node with approve/reject/actions." onClick={onAddReviewer} />
+          <PaletteButton
+            icon="rule"
+            label="If / Else Condition"
+            description={selectedEdge ? "Split the selected route into true/else paths." : "Insert a field-based routing gate."}
+            onClick={onAddConditionalBranch}
+            disabled={!selectedEdge && (!selectedNode || selectedNode.node_type === "end")}
+          />
+          <PaletteButton
+            icon="call_split"
+            label="Parallel Review"
+            description="Add a sibling reviewer and merge point."
+            onClick={onAddParallel}
+            disabled={!selectedNode || selectedNode.node_type !== "reviewer"}
+          />
+          <PaletteButton
+            icon="merge_type"
+            label="Join / Merge"
+            description="Bring branches back together safely."
+            onClick={onAddJoin}
+            disabled={!selectedNode || selectedNode.node_type === "end"}
+          />
+          <PaletteButton
+            icon="block"
+            label="Deny / Reject End"
+            description="Add a reject path from the selected reviewer."
+            onClick={onAddRejectRoute}
+            disabled={!selectedNode || selectedNode.node_type !== "reviewer"}
+          />
+          <PaletteButton
+            icon="link"
+            label="Connect"
+            description="Select source and destination nodes to draw an arrow."
+            onClick={onStartConnect}
+            disabled={nodes.length < 2}
+          />
+        </div>
+      </div>
+
+      <div className="border-b border-slate-200 bg-white p-4">
+        <RailSection title="Topology">
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <TopologyMetric label="Reviewers" value={reviewerCount} />
+            <TopologyMetric label="Routes" value={edges.length} />
+            <TopologyMetric label="Conditions" value={conditionCount} />
+            <TopologyMetric label="Joins" value={joinCount} />
+          </div>
+        </RailSection>
+      </div>
+
+      <div className="p-4">
       <RailSection title="Warnings">
-        {validationWarnings.length === 0 ? <p className="text-sm text-slate-400">None</p> : validationWarnings.map((warning) => <p key={warning} className="mb-1 text-sm text-red-700">{warning}</p>)}
+        {validationWarnings.length === 0 ? (
+          <p className="text-sm text-slate-400">None</p>
+        ) : (
+          validationWarnings.map((warning, index) => (
+            <p key={`${index}-${warning}`} className="mb-1 text-sm text-red-700">
+              {warning}
+            </p>
+          ))
+        )}
       </RailSection>
 
       <RailSection title="Checklist">
@@ -1384,7 +1800,48 @@ function PipelineRail({
         <ChecklistRow done={openQuestions === 0} label={openQuestions === 0 ? "No questions" : `${openQuestions} open questions`} />
         <ChecklistRow done={validationWarnings.length === 0} label={validationWarnings.length === 0 ? "No warnings" : "Warnings remain"} />
       </RailSection>
+      </div>
     </aside>
+  );
+}
+
+function PaletteButton({
+  icon,
+  label,
+  description,
+  disabled,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  description: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="group flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-slate-300 hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
+    >
+      <span className="material-symbols-outlined mt-0.5 rounded-lg bg-slate-100 p-1.5 text-[18px] text-slate-600 group-hover:text-primary-dark">
+        {icon}
+      </span>
+      <span>
+        <span className="block text-sm font-bold text-slate-800">{label}</span>
+        <span className="mt-0.5 block text-xs leading-5 text-slate-500">{description}</span>
+      </span>
+    </button>
+  );
+}
+
+function TopologyMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="mt-1 text-lg font-bold text-slate-800">{value}</p>
+    </div>
   );
 }
 
@@ -1469,8 +1926,11 @@ function ImpactModal({
   );
 }
 
-function validateGraph(nodes: StudioGraphNode[]) {
+function validateGraph(nodes: StudioGraphNode[], edges: StudioGraphEdge[]) {
   const warnings: string[] = [];
+  const nodeKeys = new Set(nodes.map((node) => node.node_key));
+  const edgeKeys = new Set<string>();
+  const adjacency = new Map<string, string[]>();
   if (nodes.length === 0) warnings.push("Add at least one reviewer node.");
   if (nodes.filter((node) => node.node_type === "start").length !== 1) warnings.push("Graph needs exactly one start node.");
   if (nodes.filter((node) => node.node_type === "end").length < 1) warnings.push("Graph needs at least one end node.");
@@ -1482,7 +1942,73 @@ function validateGraph(nodes: StudioGraphNode[]) {
       warnings.push(`${node.display_name || node.node_key} needs an SLA.`);
     }
   }
-  return warnings;
+  for (const edge of edges) {
+    const routeKey = `${edge.from_node_key}->${edge.to_node_key}`;
+    if (edgeKeys.has(routeKey)) {
+      warnings.push(`Duplicate route ${edge.from_node_key} -> ${edge.to_node_key} is not allowed.`);
+    }
+    edgeKeys.add(routeKey);
+    if (edge.from_node_key === edge.to_node_key) {
+      warnings.push(`Route ${edge.from_node_key} cannot point to itself.`);
+    }
+    const from = nodes.find((item) => item.node_key === edge.from_node_key);
+    const to = nodes.find((item) => item.node_key === edge.to_node_key);
+    if (!from || !to) {
+      warnings.push(`Route ${edge.from_node_key} -> ${edge.to_node_key} references a missing node.`);
+      continue;
+    }
+    adjacency.set(edge.from_node_key, [...(adjacency.get(edge.from_node_key) || []), edge.to_node_key]);
+    if ((edge.action === "condition_true" || edge.action === "condition_false") && !edge.condition_json?.field) {
+      warnings.push(`Conditional route to ${to.display_name || to.node_key} needs an application field.`);
+    }
+    if ((edge.action === "condition_true" || edge.action === "condition_false") && !edge.condition_json?.op) {
+      warnings.push(`Conditional route to ${to.display_name || to.node_key} needs an operator.`);
+    }
+    const op = edge.condition_json?.op;
+    if (edge.condition_json && op !== "exists" && op !== "empty" && !Object.prototype.hasOwnProperty.call(edge.condition_json, "value")) {
+      warnings.push(`Conditional route to ${to.display_name || to.node_key} needs a comparison value.`);
+    }
+    if (from.node_type === "reviewer" && edge.action === "always") {
+      warnings.push(`${from.display_name || from.node_key} has an always route; use approve, reject, request changes, or a condition to avoid accidental reviewer bypass.`);
+    }
+  }
+  const start = nodes.find((node) => node.node_type === "start");
+  if (start) {
+    const reachable = new Set<string>();
+    const stack = [start.node_key];
+    while (stack.length > 0) {
+      const key = stack.pop() as string;
+      if (reachable.has(key)) continue;
+      reachable.add(key);
+      for (const next of adjacency.get(key) || []) stack.push(next);
+    }
+    for (const node of nodes) {
+      if (!reachable.has(node.node_key)) {
+        warnings.push(`${node.display_name || node.node_key} is not reachable from Start.`);
+      }
+    }
+  }
+  for (const node of nodes.filter((item) => item.node_type !== "end")) {
+    if (!pathCanReachEnd(node.node_key, nodes, adjacency)) {
+      warnings.push(`${node.display_name || node.node_key} does not have a route to an end state.`);
+    }
+  }
+  return Array.from(new Set(warnings));
+}
+
+function pathCanReachEnd(nodeKey: string, nodes: StudioGraphNode[], adjacency: Map<string, string[]>) {
+  const nodeByKey = new Map(nodes.map((node) => [node.node_key, node]));
+  const seen = new Set<string>();
+  const stack = [nodeKey];
+  while (stack.length > 0) {
+    const key = stack.pop() as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const node = nodeByKey.get(key);
+    if (node?.node_type === "end") return true;
+    for (const next of adjacency.get(key) || []) stack.push(next);
+  }
+  return false;
 }
 
 function dedupeEdges(edges: StudioGraphEdge[]) {

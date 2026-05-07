@@ -79,6 +79,7 @@ export default function ApplicationDetailView() {
     );
   }
 
+  const applicationId = data.application.id;
   const stages = data.pipeline_steps.map((step) => ({ code: `STEP_${step.step_order}`, label: step.step_name }));
   const waitingOnStudent = !data.application.final_status && Number(data.application.current_step_order) === 0;
 
@@ -88,7 +89,7 @@ export default function ApplicationDetailView() {
     setDeleting(true);
     try {
       // Frontend -> API: DELETE /api/applications/:id
-      const res = await fetch(`/api/applications/${data.application.id}`, {
+      const res = await fetch(`/api/applications/${applicationId}`, {
         method: "DELETE",
       });
       const body = await res.json();
@@ -112,7 +113,7 @@ export default function ApplicationDetailView() {
     setResubmitting(true);
     try {
       // Frontend -> API: POST /api/applications/:id/student-response
-      const res = await fetch(`/api/applications/${data.application.id}/student-response`, {
+      const res = await fetch(`/api/applications/${applicationId}/student-response`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: studentResponse.trim() }),

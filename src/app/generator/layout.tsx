@@ -3,12 +3,12 @@ import { AppHeader } from "@/components/layouts/AppHeader";
 import { Sidebar } from "@/components/layouts/Sidebar";
 import { redirect } from "next/navigation";
 
-export default function GeneratorLayout({
+export default async function GeneratorLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = requireSession();
+  const session = await requireSession();
 
   if (session.role !== "GENERATOR") {
     redirect("/select-workspace");

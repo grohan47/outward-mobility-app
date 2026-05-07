@@ -73,6 +73,14 @@ export type OpportunityData = {
 
 export type StudioNodeType = "start" | "reviewer" | "join_all" | "join_any" | "conditional" | "end";
 
+export type StudioEdgeAction =
+  | "always"
+  | "approve"
+  | "reject"
+  | "request_changes"
+  | "condition_true"
+  | "condition_false";
+
 export type StudioRequiredInput = {
   input_key: string;
   label: string;
@@ -101,6 +109,7 @@ export type StudioGraphEdge = {
   to_node_key: string;
   condition_json?: Record<string, unknown> | null;
   label?: string | null;
+  action?: StudioEdgeAction | null;
 };
 
 export type DraftOutput = {

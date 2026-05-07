@@ -10,7 +10,7 @@ export async function loginAction() {
 }
 
 export async function logoutAction() {
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   cookieStore.delete(SESSION_COOKIE);
   redirect("/");
 }

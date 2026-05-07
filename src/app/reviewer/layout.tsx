@@ -3,12 +3,12 @@ import { AppHeader } from "@/components/layouts/AppHeader";
 import { Sidebar } from "@/components/layouts/Sidebar";
 import { redirect } from "next/navigation";
 
-export default function ReviewerLayout({
+export default async function ReviewerLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = requireSession();
+  const session = await requireSession();
 
   if (session.role !== "REVIEWER") {
     redirect("/select-workspace");

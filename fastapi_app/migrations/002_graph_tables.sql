@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS graph_nodes (
   display_name TEXT,
   reviewer_email TEXT,
   visible_sections TEXT DEFAULT '["all"]',
-  allowed_actions TEXT DEFAULT '["approve","request_changes","comment"]',
+  allowed_actions TEXT DEFAULT '["approve","reject","request_changes","comment"]',
   metadata TEXT DEFAULT '{}'
 );
 
@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS graph_edges (
   from_node_key TEXT NOT NULL,
   to_node_key TEXT NOT NULL,
   condition_json TEXT,
-  label TEXT
+  label TEXT,
+  action TEXT
 );
 
 CREATE TABLE IF NOT EXISTS application_workflow_tasks (

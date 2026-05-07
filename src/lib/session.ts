@@ -4,8 +4,8 @@ import type { SessionUser } from "./types";
 
 const SESSION_COOKIE = "prism_session";
 
-export function getSession(): SessionUser | null {
-  const cookieStore = cookies();
+export async function getSession(): Promise<SessionUser | null> {
+  const cookieStore = await cookies();
   const session = cookieStore.get(SESSION_COOKIE);
   if (!session?.value) return null;
 
@@ -16,8 +16,8 @@ export function getSession(): SessionUser | null {
   }
 }
 
-export function requireSession(): SessionUser {
-  const session = getSession();
+export async function requireSession(): Promise<SessionUser> {
+  const session = await getSession();
   if (!session) {
     redirect("/");
   }

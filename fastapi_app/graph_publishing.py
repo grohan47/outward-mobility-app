@@ -104,8 +104,8 @@ class GraphPublishingService:
                 db.execute(
                     """
                     INSERT INTO graph_edges
-                      (graph_version_id, from_node_key, to_node_key, condition_json, label)
-                    VALUES (?, ?, ?, ?, ?)
+                      (graph_version_id, from_node_key, to_node_key, condition_json, label, action)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         graph_version_id,
@@ -113,6 +113,7 @@ class GraphPublishingService:
                         edge.to_node_key,
                         json.dumps(edge.condition_json) if edge.condition_json else None,
                         edge.label,
+                        edge.action,
                     ),
                 )
 

@@ -79,18 +79,18 @@ class GraphExecutionServiceTests(unittest.TestCase):
                 node_type,
                 display_name or key.replace("_", " ").title(),
                 reviewer_email,
-                json.dumps(allowed_actions or ["approve", "request_changes", "comment"]),
+                json.dumps(allowed_actions or ["approve", "reject", "request_changes", "comment"]),
                 json.dumps(visible_sections or ["all"]),
             ),
         )
 
-    def _insert_edge(self, from_key: str, to_key: str, condition: dict | None = None):
+    def _insert_edge(self, from_key: str, to_key: str, condition: dict | None = None, action: str | None = None):
         self.conn.execute(
             """
-            INSERT INTO graph_edges (graph_version_id, from_node_key, to_node_key, condition_json)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO graph_edges (graph_version_id, from_node_key, to_node_key, condition_json, action)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (self.graph_version_id, from_key, to_key, json.dumps(condition) if condition else None),
+            (self.graph_version_id, from_key, to_key, json.dumps(condition) if condition else None, action),
         )
 
     def _task(self, task_id: int) -> sqlite3.Row:
@@ -210,6 +210,141 @@ class GraphExecutionServiceTests(unittest.TestCase):
 
         self.assertEqual(len(task_ids), 1)
         self.assertEqual(self._task(task_ids[0])["assigned_reviewer_email"], "scholarships@plaksha.edu.in")
+
+    def test_numeric_threshold_routes_to_vc_when_funding_exceeds_limit(self):
+        self.conn.execute(
+            "UPDATE applications SET submitted_data_json = ? WHERE id = 1",
+            (json.dumps({"research_grant_amount": 250000}),),
+        )
+        self._insert_node("start", "start")
+        self._insert_node("funding_gate", "conditional")
+        self._insert_node("vc_review", "reviewer", "vc@plaksha.edu.in", "Vice Chancellor Review")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "funding_gate")
+        self._insert_edge(
+            "funding_gate",
+            "vc_review",
+            {"op": "gt", "field": "research_grant_amount", "value": 200000},
+            action="condition_true",
+        )
+        self._insert_edge("vc_review", "end", action="approve")
+
+        task_ids = self.service.instantiate(self.conn, 1, self.graph_version_id)
+
+        self.assertEqual(len(task_ids), 1)
+        self.assertEqual(self._task(task_ids[0])["assigned_reviewer_email"], "vc@plaksha.edu.in")
+
+    def test_conditional_false_edge_routes_to_standard_reviewer(self):
+        self.conn.execute(
+            "UPDATE applications SET submitted_data_json = ? WHERE id = 1",
+            (json.dumps({"research_grant_amount": 50000}),),
+        )
+        self._insert_node("start", "start")
+        self._insert_node("funding_gate", "conditional")
+        self._insert_node("vc_review", "reviewer", "vc@plaksha.edu.in")
+        self._insert_node("oge_review", "reviewer", "oge@plaksha.edu.in")
+        self._insert_node("end", "end")
+        condition = {"op": "gt", "field": "research_grant_amount", "value": 200000}
+        self._insert_edge("start", "funding_gate")
+        self._insert_edge("funding_gate", "vc_review", condition, action="condition_true")
+        self._insert_edge("funding_gate", "oge_review", condition, action="condition_false")
+        self._insert_edge("vc_review", "end", action="approve")
+        self._insert_edge("oge_review", "end", action="approve")
+
+        task_ids = self.service.instantiate(self.conn, 1, self.graph_version_id)
+
+        self.assertEqual(len(task_ids), 1)
+        self.assertEqual(self._task(task_ids[0])["assigned_reviewer_email"], "oge@plaksha.edu.in")
+
+    def test_reject_edge_routes_to_configured_stakeholder(self):
+        self._insert_node("start", "start")
+        self._insert_node("oge_review", "reviewer", "oge@plaksha.edu.in", "OGE Review")
+        self._insert_node("student_affairs", "reviewer", "student-affairs@plaksha.edu.in", "Student Affairs Follow-up")
+        self._insert_node("end", "end")
+        self._insert_edge("start", "oge_review")
+        self._insert_edge("oge_review", "end", action="approve")
+        self._insert_edge("oge_review", "student_affairs", action="reject")
+        self._insert_edge("student_affairs", "end", action="approve")
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+
+        result = self.service.transition(self.conn, task_id, "reject", "oge@plaksha.edu.in", "Not eligible.")
+
+        self.assertTrue(result.success)
+        self.assertEqual(len(result.next_task_ids), 1)
+        self.assertEqual(self._task(result.next_task_ids[0])["assigned_reviewer_email"], "student-affairs@plaksha.edu.in")
+        self.assertIsNone(self._application()["final_status"])
+
+    def test_reject_without_route_closes_application_as_rejected(self):
+        self._seed_linear_graph()
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+
+        result = self.service.transition(self.conn, task_id, "reject", "oge@plaksha.edu.in", "Not eligible.")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.application_status, "REJECTED")
+        self.assertEqual(self._application()["final_status"], "REJECTED")
+
+    def test_reject_edge_to_rejected_end_closes_application_as_rejected(self):
+        self._insert_node("start", "start")
+        self._insert_node("oge_review", "reviewer", "oge@plaksha.edu.in", "OGE Review")
+        self._insert_node("approved_end", "end")
+        self._insert_node_with_metadata("rejected_end", "end", metadata={"final_status": "REJECTED"})
+        self._insert_edge("start", "oge_review")
+        self._insert_edge("oge_review", "approved_end", action="approve")
+        self._insert_edge("oge_review", "rejected_end", action="reject")
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+
+        result = self.service.transition(self.conn, task_id, "reject", "oge@plaksha.edu.in", "Not eligible.")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.application_status, "REJECTED")
+        self.assertEqual(self._application()["final_status"], "REJECTED")
+
+    def test_condition_routes_do_not_fire_on_reject_decision(self):
+        self.conn.execute(
+            "UPDATE applications SET submitted_data_json = ? WHERE id = 1",
+            (json.dumps({"research_grant_amount": 250000}),),
+        )
+        self._insert_node("start", "start")
+        self._insert_node("oge_review", "reviewer", "oge@plaksha.edu.in", "OGE Review")
+        self._insert_node("vc_review", "reviewer", "vc@plaksha.edu.in", "Vice Chancellor Review")
+        self._insert_node_with_metadata("rejected_end", "end", metadata={"final_status": "REJECTED"})
+        self._insert_edge("start", "oge_review")
+        self._insert_edge(
+            "oge_review",
+            "vc_review",
+            {"op": "gt", "field": "research_grant_amount", "value": 200000},
+            action="condition_true",
+        )
+        self._insert_edge("oge_review", "rejected_end", action="reject")
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+
+        result = self.service.transition(self.conn, task_id, "reject", "oge@plaksha.edu.in", "Not eligible.")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.next_task_ids, [])
+        self.assertEqual(self._application()["final_status"], "REJECTED")
+        vc_tasks = self.conn.execute(
+            "SELECT COUNT(*) AS cnt FROM application_workflow_tasks WHERE node_key = 'vc_review'"
+        ).fetchone()
+        self.assertEqual(int(vc_tasks["cnt"]), 0)
+
+    def test_reject_is_blocked_when_node_does_not_allow_it(self):
+        self._insert_node("start", "start")
+        self._insert_node(
+            "oge_review",
+            "reviewer",
+            "oge@plaksha.edu.in",
+            "OGE Review",
+            allowed_actions=["approve", "request_changes", "comment"],
+        )
+        self._insert_node("end", "end")
+        self._insert_edge("start", "oge_review")
+        self._insert_edge("oge_review", "end")
+        task_id = self.service.instantiate(self.conn, 1, self.graph_version_id)[0]
+
+        with self.assertRaisesRegex(ValueError, "not allowed"):
+            self.service.transition(self.conn, task_id, "reject", "oge@plaksha.edu.in")
 
     def test_request_changes_returns_application_to_student_rework(self):
         self._seed_linear_graph()
@@ -337,7 +472,7 @@ class GraphExecutionServiceTests(unittest.TestCase):
                 node_type,
                 key.replace("_", " ").title(),
                 reviewer_email,
-                json.dumps(["approve", "request_changes", "comment"]),
+                json.dumps(["approve", "reject", "request_changes", "comment"]),
                 json.dumps(["all"]),
                 json.dumps(metadata or {}),
             ),

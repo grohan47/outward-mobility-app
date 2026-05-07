@@ -26,7 +26,7 @@ class GraphNodeModel(BaseModel):
     display_name: str | None = None
     reviewer_email: str | None = None
     visible_sections: list[str] = Field(default_factory=lambda: ["all"])
-    allowed_actions: list[str] = Field(default_factory=lambda: ["approve", "request_changes", "comment"])
+    allowed_actions: list[str] = Field(default_factory=lambda: ["approve", "reject", "request_changes", "comment"])
     metadata: NodeMetadata = Field(default_factory=NodeMetadata)
 
 
@@ -35,6 +35,14 @@ class GraphEdgeModel(BaseModel):
     to_node_key: str
     condition_json: dict[str, Any] | None = None
     label: str | None = None
+    action: Literal[
+        "always",
+        "approve",
+        "reject",
+        "request_changes",
+        "condition_true",
+        "condition_false",
+    ] | None = None
 
 
 class GraphModel(BaseModel):

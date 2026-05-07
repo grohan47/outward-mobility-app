@@ -527,6 +527,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         "form_field_catalog": {"field_hint", "options_json"},
         "application_workflow_tasks": {"reviewer_data_json"},
         "opportunities": {"ai_summary_json", "ai_summary_source_hash"},
+        "graph_edges": {"action"},
     }
     for table, columns in required_columns.items():
         if not columns.issubset(table_columns(conn, table)):
@@ -557,6 +558,8 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE applications ADD COLUMN graph_version_id INTEGER REFERENCES graph_versions(id)")
     if "application_workflow_tasks" in list_tables(conn) and "reviewer_data_json" not in table_columns(conn, "application_workflow_tasks"):
         conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
+    if "graph_edges" in list_tables(conn) and "action" not in table_columns(conn, "graph_edges"):
+        conn.execute("ALTER TABLE graph_edges ADD COLUMN action TEXT")
     if "opportunities" in list_tables(conn):
         opportunity_columns = table_columns(conn, "opportunities")
         if "ai_summary_json" not in opportunity_columns:
@@ -840,7 +843,7 @@ CREATE TABLE graph_nodes (
   display_name TEXT,
   reviewer_email TEXT,
   visible_sections TEXT DEFAULT '["all"]',
-  allowed_actions TEXT DEFAULT '["approve","request_changes","comment"]',
+  allowed_actions TEXT DEFAULT '["approve","reject","request_changes","comment"]',
   metadata TEXT DEFAULT '{}'
 );
 
@@ -850,7 +853,8 @@ CREATE TABLE graph_edges (
   from_node_key TEXT NOT NULL,
   to_node_key TEXT NOT NULL,
   condition_json TEXT,
-  label TEXT
+  label TEXT,
+  action TEXT
 );
 
 CREATE TABLE application_workflow_tasks (
@@ -1577,6 +1581,16 @@ class ClarificationAnswerBody(BaseModel):
 
 
 class WorkflowDraftManualBody(BaseModel):
+    opportunityId: int | None = None
+    opportunity: dict[str, Any]
+    graph: GraphModel
+    clarifyingQuestions: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    isFallback: bool = False
+
+
+class WorkflowDraftValidateBody(BaseModel):
     opportunityId: int | None = None
     opportunity: dict[str, Any]
     graph: GraphModel
@@ -3276,6 +3290,50 @@ def admin_create_manual_workflow_draft(
         row = conn.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
 
     return {"draft_id": draft_id, "draft": dict(row)}
+
+
+@app.post("/api/admin/workflow-drafts/validate")
+def admin_validate_workflow_draft(
+    body: WorkflowDraftValidateBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    parsed = AIWorkflowDraftOutput(
+        opportunity=OpportunityDraftModel(**body.opportunity),
+        graph=body.graph,
+        clarifying_questions=body.clarifyingQuestions,
+        confidence=body.confidence,
+        warnings=body.warnings,
+        is_fallback=body.isFallback,
+    )
+    validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
+    merged_warnings = list(dict.fromkeys([*parsed.warnings, *validation_errors]))
+    publish_ready = len(validation_errors) == 0 and len(parsed.clarifying_questions) == 0 and not parsed.is_fallback
+    return {
+        "warnings": merged_warnings,
+        "validation_errors": validation_errors,
+        "clarifying_questions": parsed.clarifying_questions,
+        "publish_ready": publish_ready,
+        "is_fallback": parsed.is_fallback,
+    }
+
+
+@app.get("/api/admin/workflow-drafts")
+def admin_list_workflow_drafts(
+    opportunity_id: int | None = None,
+    limit: int = 25,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    limit = max(1, min(100, int(limit)))
+    query = """
+        SELECT * FROM workflow_drafts
+        WHERE (? IS NULL OR opportunity_id = ?)
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+    """
+    with db_conn() as conn:
+        rows = conn.execute(query, (opportunity_id, opportunity_id, limit)).fetchall()
+    return {"items": [dict(row) for row in rows]}
 
 
 @app.get("/api/admin/workflow-drafts/{draft_id}")
