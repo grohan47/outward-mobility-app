@@ -169,6 +169,84 @@ def _strip_markdown_json(raw: str) -> str:
     return stripped
 
 
+def _normalize_ai_output(parsed: AIWorkflowDraftOutput) -> AIWorkflowDraftOutput:
+    """Normalize model variance into the app's canonical draft keys."""
+    parsed.opportunity.code = None
+    _ensure_application_deadline(parsed)
+    _ensure_resume_field_aliases(parsed)
+    return parsed
+
+
+def _ensure_application_deadline(parsed: AIWorkflowDraftOutput) -> None:
+    detail_fields = parsed.opportunity.detail_fields
+    if any(field.get("field_key") == "application_deadline" for field in detail_fields):
+        return
+
+    candidate = _best_deadline_field(detail_fields)
+    if candidate is None and parsed.opportunity.deadline:
+        candidate = {
+            "field_key": "deadline",
+            "label": "Application Deadline",
+            "value": parsed.opportunity.deadline,
+            "value_type": "date",
+            "display_order": len(detail_fields) + 1,
+            "is_student_visible": True,
+        }
+    if candidate is None:
+        return
+
+    canonical = dict(candidate)
+    canonical["field_key"] = "application_deadline"
+    canonical["label"] = "Application Deadline"
+    canonical.setdefault("value_type", "date")
+    canonical.setdefault("display_order", len(detail_fields) + 1)
+    canonical.setdefault("is_student_visible", True)
+    detail_fields.append(canonical)
+    if not parsed.opportunity.deadline and canonical.get("value"):
+        parsed.opportunity.deadline = str(canonical["value"])
+
+
+def _best_deadline_field(detail_fields: list[dict[str, Any]]) -> dict[str, Any] | None:
+    deadline_fields = [
+        field for field in detail_fields
+        if "deadline" in str(field.get("field_key", "")).lower() and field.get("value")
+    ]
+    if not deadline_fields:
+        return None
+
+    def score(field: dict[str, Any]) -> tuple[int, int]:
+        key = str(field.get("field_key", "")).lower()
+        label = str(field.get("label", "")).lower()
+        text = f"{key} {label}"
+        priority = 10
+        if "internal" in text or "plaksha" in text:
+            priority = 0
+        elif "nomination" in text or "endorsement" in text:
+            priority = 1
+        elif "application" in text:
+            priority = 2
+        elif "external" in text or "main portal" in text:
+            priority = 3
+        return priority, int(field.get("display_order") or 999)
+
+    return min(deadline_fields, key=score)
+
+
+def _ensure_resume_field_aliases(parsed: AIWorkflowDraftOutput) -> None:
+    fields = parsed.applicant_form_fields
+    field_set = set(fields)
+    has_resume_field = bool({"resume_upload", "resume_url"} & field_set)
+    if not has_resume_field:
+        return
+    if "resume_upload" not in field_set:
+        fields.append("resume_upload")
+    if "resume_url" not in field_set:
+        # Older evals and fallback generation used resume_url; the live catalog
+        # uses resume_upload. Keep both so publishing can use the catalog key
+        # while compatibility checks still see the legacy alias.
+        fields.append("resume_url")
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -192,14 +270,26 @@ class ClaudeProvider:
             raise RuntimeError("CLAUDE_MODEL is not set — fill it in fastapi_app/ai_service.py")
 
         client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        tool_def = {
+            "name": "generate_workflow_draft",
+            "description": "Return the complete PRISM workflow draft as structured JSON.",
+            "input_schema": AIWorkflowDraftOutput.model_json_schema(),
+        }
         msg = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=4096,
             temperature=CLAUDE_TEMPERATURE,
             system=system,
             messages=[{"role": "user", "content": user}],
+            tools=[tool_def],
+            tool_choice={"type": "tool", "name": "generate_workflow_draft"},
+            timeout=timeout,
         )
-        return msg.content[0].text
+        for block in msg.content:
+            if isinstance(block, anthropic.types.ToolUseBlock):
+                return json.dumps(block.input)
+
+        raise RuntimeError("Claude did not return the workflow draft tool output")
 
 
 class GeminiProvider:
@@ -295,6 +385,7 @@ class AIWorkflowDraftService:
                 raw = provider.complete(SYSTEM_PROMPT, prompt, self.TIMEOUT_SECONDS)
                 raw = _strip_markdown_json(raw)
                 parsed = AIWorkflowDraftOutput.model_validate_json(raw)
+                parsed = _normalize_ai_output(parsed)
                 errors = GraphPolicyValidator().validate_graph(parsed.graph)
                 parsed.warnings.extend(errors)
                 _log.info(

@@ -542,6 +542,18 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE graph_edges ADD COLUMN action TEXT")
     if "workflow_drafts" in list_tables(conn) and "original_prompt" not in table_columns(conn, "workflow_drafts"):
         conn.execute("ALTER TABLE workflow_drafts ADD COLUMN original_prompt TEXT")
+    if "users" in list_tables(conn):
+        user_columns = table_columns(conn, "users")
+        if "reviewer_onboarded" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN reviewer_onboarded INTEGER NOT NULL DEFAULT 1")
+        if "pronouns" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN pronouns TEXT")
+        if "department" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN department TEXT")
+        if "notify_email" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
+        if "notify_digest" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN notify_digest INTEGER NOT NULL DEFAULT 0")
     if "opportunities" in list_tables(conn):
         opportunity_columns = table_columns(conn, "opportunities")
         if "ai_summary_json" not in opportunity_columns:
@@ -583,6 +595,11 @@ CREATE TABLE users (
   email TEXT NOT NULL UNIQUE,
   full_name TEXT NOT NULL,
   is_active INTEGER NOT NULL DEFAULT 1,
+  reviewer_onboarded INTEGER NOT NULL DEFAULT 1,
+  pronouns TEXT,
+  department TEXT,
+  notify_email INTEGER NOT NULL DEFAULT 1,
+  notify_digest INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -1273,6 +1290,11 @@ class SessionUser(BaseModel):
     role: str
     roleDisplayName: str
     userId: int
+    reviewerOnboarded: bool = True
+    pronouns: str | None = None
+    department: str | None = None
+    notifyEmail: bool = True
+    notifyDigest: bool = False
     availableWorkspaces: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -1282,6 +1304,14 @@ class LoginBody(BaseModel):
 
 class WorkspaceSelectBody(BaseModel):
     role: str
+
+
+class ReviewerOnboardingBody(BaseModel):
+    displayName: str = Field(min_length=1, max_length=120)
+    pronouns: str | None = Field(default=None, max_length=80)
+    department: str | None = Field(default=None, max_length=120)
+    notifyEmail: bool = True
+    notifyDigest: bool = False
 
 
 class CommentCreateBody(BaseModel):
@@ -1446,7 +1476,7 @@ def role_dashboard_path(role_code: str) -> str:
 def get_user_identity(conn: sqlite3.Connection, email: str) -> sqlite3.Row | None:
     return conn.execute(
         """
-        SELECT id, email, full_name
+        SELECT id, email, full_name, reviewer_onboarded, pronouns, department, notify_email, notify_digest
         FROM users
         WHERE LOWER(email) = LOWER(?) AND is_active = 1
         LIMIT 1
@@ -1580,6 +1610,11 @@ def build_session_payload(
         "role": active_workspace["role"],
         "roleDisplayName": active_workspace["roleDisplayName"],
         "userId": user["id"],
+        "reviewerOnboarded": bool(user["reviewer_onboarded"]),
+        "pronouns": user["pronouns"],
+        "department": user["department"],
+        "notifyEmail": bool(user["notify_email"]),
+        "notifyDigest": bool(user["notify_digest"]),
         "availableWorkspaces": available_workspaces,
     }
 
@@ -1683,7 +1718,9 @@ def replace_opportunity_visibility_rules(
 def get_user_role(conn: sqlite3.Connection, email: str) -> dict[str, Any] | None:
     return conn.execute(
         """
-        SELECT u.id, u.email, u.full_name, r.code AS role_code, r.display_name AS role_display_name
+        SELECT u.id, u.email, u.full_name, u.reviewer_onboarded, u.pronouns, u.department,
+               u.notify_email, u.notify_digest,
+               r.code AS role_code, r.display_name AS role_display_name
         FROM users u
         JOIN user_roles ur ON ur.user_id = u.id
         JOIN roles r ON r.id = ur.role_id
@@ -1756,7 +1793,11 @@ def ensure_reviewer_account(
     else:
         display_name = (reviewer_name or "").strip() or derive_name_from_email(email)
         cursor = conn.execute(
-            "INSERT INTO users (email, full_name, is_active, created_at) VALUES (?, ?, 1, ?)",
+            """
+            INSERT INTO users
+              (email, full_name, is_active, reviewer_onboarded, notify_email, notify_digest, created_at)
+            VALUES (?, ?, 1, 0, 1, 0, ?)
+            """,
             (email, display_name, ts),
         )
         user_id = int(cursor.lastrowid)
@@ -2443,6 +2484,20 @@ def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
                 """,
                 (email,),
             ).fetchone()
+            if not assignment:
+                assignment = conn.execute(
+                    """
+                    SELECT gn.display_name AS reviewer_display_name,
+                           COALESCE(gn.display_name, gn.node_key) AS step_name
+                    FROM graph_nodes gn
+                    JOIN graph_versions gv ON gv.id = gn.graph_version_id
+                    WHERE gn.node_type = 'reviewer'
+                      AND LOWER(gn.reviewer_email) = LOWER(?)
+                    ORDER BY gv.id DESC, gn.id DESC
+                    LIMIT 1
+                    """,
+                    (email,),
+                ).fetchone()
             if assignment:
                 ensure_reviewer_account(
                     conn,
@@ -2516,6 +2571,55 @@ def auth_me(session: SessionUser = Depends(get_session)) -> dict[str, Any]:
 @app.get("/api/users/me")
 def users_me(session: SessionUser = Depends(get_session)) -> dict[str, Any]:
     return {"user": session.model_dump()}
+
+
+@app.post("/api/reviewer/onboarding")
+def complete_reviewer_onboarding(
+    body: ReviewerOnboardingBody,
+    response: Response,
+    session: SessionUser = Depends(require_roles(REVIEWER_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    display_name = " ".join(body.displayName.split())
+    pronouns = " ".join((body.pronouns or "").split()) or None
+    department = " ".join((body.department or "").split()) or None
+    with db_conn() as conn:
+        conn.execute(
+            """
+            UPDATE users
+            SET full_name = ?,
+                pronouns = ?,
+                department = ?,
+                notify_email = ?,
+                notify_digest = ?,
+                reviewer_onboarded = 1
+            WHERE id = ?
+            """,
+            (
+                display_name,
+                pronouns,
+                department,
+                1 if body.notifyEmail else 0,
+                1 if body.notifyDigest else 0,
+                session.userId,
+            ),
+        )
+        conn.commit()
+        user = get_user_identity(conn, session.email)
+        if not user:
+            raise HTTPException(status_code=404, detail="Account not found")
+        workspaces = get_user_workspaces(conn, session.email)
+        updated = build_session_payload(user, workspaces, active_role=REVIEWER_ROLE)
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=quote(json.dumps(updated), safe=""),
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=60 * 60 * 24,
+        path="/",
+    )
+    return {"user": updated}
 
 
 @app.get("/api/auth/demo-users")

@@ -2,9 +2,9 @@
   {
     "file": "01_daad_wise_scholarship.txt",
     "status": "ok",
-    "title": "Draft Opportunity",
-    "confidence": 0.0,
-    "is_fallback": true,
+    "title": "DAAD WISE Scholarship 2026 \u2013 Working Internships in Science & Engineering (Germany)",
+    "confidence": 0.92,
+    "is_fallback": false,
     "graph_nodes": [
       {
         "key": "start",
@@ -12,7 +12,27 @@
         "sla_hours": null
       },
       {
-        "key": "oge_review",
+        "key": "oaa_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "ug_academics_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "parallel_join",
+        "type": "join_all",
+        "sla_hours": null
+      },
+      {
+        "key": "program_chair_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "dean_approval",
         "type": "reviewer",
         "sla_hours": 72
       },
@@ -27,22 +47,37 @@
       "student_id",
       "email",
       "cgpa",
-      "statement_of_purpose"
+      "statement_of_purpose",
+      "resume_upload",
+      "language_score",
+      "resume_url"
     ],
-    "detail_field_keys": [],
+    "detail_field_keys": [
+      "program_duration",
+      "monthly_stipend",
+      "travel_grant",
+      "seats_allocated",
+      "host_institutions",
+      "internal_nomination_deadline",
+      "daad_portal_deadline",
+      "minimum_cgpa",
+      "eligible_batch",
+      "application_deadline"
+    ],
     "clarifying_questions": [],
     "warnings": [
-      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+      "No explicit approval chain found \u2014 applied Plaksha standard pathway. Review reviewer assignments before publishing.",
+      "Final-year students (UG 2022) are explicitly ineligible per programme requirements; ensure nomination form enforces this exclusion."
     ],
-    "funding_available": false,
-    "eligibility_criteria": null
+    "funding_available": true,
+    "eligibility_criteria": "Currently enrolled undergraduate engineering or science student with minimum CGPA 8.0/10, completed at least 2 years of study (not first-year), no active backlogs, and not a final-year student. English proficiency required; basic German is optional."
   },
   {
     "file": "02_mitacs_globalink.txt",
     "status": "ok",
-    "title": "Draft Opportunity",
-    "confidence": 0.0,
-    "is_fallback": true,
+    "title": "Mitacs Globalink Research Internship 2026 \u2013 Canada",
+    "confidence": 0.92,
+    "is_fallback": false,
     "graph_nodes": [
       {
         "key": "start",
@@ -50,7 +85,32 @@
         "sla_hours": null
       },
       {
+        "key": "oaa_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "ug_academics_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "parallel_join",
+        "type": "join_all",
+        "sla_hours": null
+      },
+      {
+        "key": "program_chair_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
         "key": "oge_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "dean_approval",
         "type": "reviewer",
         "sla_hours": 72
       },
@@ -65,22 +125,39 @@
       "student_id",
       "email",
       "cgpa",
-      "statement_of_purpose"
+      "statement_of_purpose",
+      "resume_upload",
+      "custom_research_focus",
+      "resume_url"
     ],
-    "detail_field_keys": [],
+    "detail_field_keys": [
+      "programme_duration",
+      "fellowship_amount",
+      "fellowship_coverage",
+      "tuition_fees",
+      "expected_seats",
+      "destination",
+      "host_institution",
+      "minimum_cgpa",
+      "research_areas",
+      "mitacs_deadline",
+      "application_deadline"
+    ],
     "clarifying_questions": [],
     "warnings": [
-      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+      "Plaksha internal endorsement deadline (January 31, 2026) is significantly earlier than Mitacs main portal deadline (February 28, 2026) \u2014 ensure students are aware of the urgent internal timeline.",
+      "Email specifies that two faculty reference letters must be sent directly by faculty to internship@plaksha.edu.in; this is outside the student application form and should be communicated separately to applicants.",
+      "Mitacs AI-matching algorithm requires students to identify 3\u20135 preferred project areas on the Mitacs portal; this step occurs after Plaksha endorsement and is not part of the internal workflow."
     ],
-    "funding_available": false,
-    "eligibility_criteria": null
+    "funding_available": true,
+    "eligibility_criteria": "Currently enrolled Plaksha UG students (all batches) with minimum CGPA 7.5/10 (3.0/4.0 scale), strong research interest in STEM, business, or social innovation, available for full 12-week duration (July\u2013September 2026), and Indian citizen or permanent resident status."
   },
   {
     "file": "03_nus_soc_semester_exchange.txt",
     "status": "ok",
-    "title": "Draft Opportunity",
-    "confidence": 0.0,
-    "is_fallback": true,
+    "title": "NUS School of Computing \u2013 Semester Exchange Placement AY2026/27 Sem 1",
+    "confidence": 0.92,
+    "is_fallback": false,
     "graph_nodes": [
       {
         "key": "start",
@@ -88,7 +165,27 @@
         "sla_hours": null
       },
       {
-        "key": "oge_review",
+        "key": "oaa_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "ug_academics_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "parallel_join",
+        "type": "join_all",
+        "sla_hours": null
+      },
+      {
+        "key": "program_chair_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "dean_approval",
         "type": "reviewer",
         "sla_hours": 72
       },
@@ -103,22 +200,41 @@
       "student_id",
       "email",
       "cgpa",
-      "statement_of_purpose"
+      "statement_of_purpose",
+      "resume_upload",
+      "resume_url"
     ],
-    "detail_field_keys": [],
+    "detail_field_keys": [
+      "host_institution",
+      "destination",
+      "program_type",
+      "term",
+      "seats",
+      "application_deadline",
+      "nomination_deadline",
+      "nus_submission_deadline",
+      "nus_confirmation_date",
+      "tuition_fee",
+      "living_expenses",
+      "cgpa_minimum",
+      "major_preference"
+    ],
     "clarifying_questions": [],
     "warnings": [
-      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+      "No explicit approval chain found \u2014 applied Plaksha standard pathway. Review reviewer assignments before publishing.",
+      "NUS has strict CGPA enforcement (7.5/10 minimum); ensure UG Academics verification is thorough. Nominees below threshold will be rejected at NUS portal stage.",
+      "Application deadline to OGE is March 5, 2026 (5 days before nomination deadline March 10). Ensure students submit early to allow internal review time.",
+      "Final-year BTech students are explicitly ineligible; OAA and UG Academics must verify student is not in final year before proceeding."
     ],
     "funding_available": false,
-    "eligibility_criteria": null
+    "eligibility_criteria": "UG students only (not final-year BTech students). CGPA minimum 7.5/10. Priority given to CS/CSE/EE majors or students with demonstrated CS coursework; other majors eligible if they demonstrate programming/CS competence in their statement. Must be enrolled at Plaksha for Semester 2, 2026/27 (cannot be taken as a gap semester)."
   },
   {
     "file": "04_eth_zurich_excellence_masters.txt",
     "status": "ok",
-    "title": "Draft Opportunity",
-    "confidence": 0.0,
-    "is_fallback": true,
+    "title": "ETH Zurich Excellence Scholarship & Opportunity Programme (ESOP) 2026 \u2013 Masters",
+    "confidence": 0.92,
+    "is_fallback": false,
     "graph_nodes": [
       {
         "key": "start",
@@ -126,7 +242,27 @@
         "sla_hours": null
       },
       {
-        "key": "oge_review",
+        "key": "oaa_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "ug_academics_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "parallel_join",
+        "type": "join_all",
+        "sla_hours": null
+      },
+      {
+        "key": "program_chair_review",
+        "type": "reviewer",
+        "sla_hours": 72
+      },
+      {
+        "key": "dean_approval",
         "type": "reviewer",
         "sla_hours": 72
       },
@@ -141,22 +277,37 @@
       "student_id",
       "email",
       "cgpa",
-      "statement_of_purpose"
+      "statement_of_purpose",
+      "resume_upload",
+      "custom_research_focus",
+      "resume_url"
     ],
-    "detail_field_keys": [],
+    "detail_field_keys": [
+      "eligible_batch",
+      "program_type",
+      "host_institution",
+      "eligible_programmes",
+      "scholarship_benefits",
+      "internal_nomination_deadline",
+      "eth_portal_deadline",
+      "academic_requirement",
+      "contact",
+      "application_deadline"
+    ],
     "clarifying_questions": [],
     "warnings": [
-      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+      "No explicit approval chain found \u2014 applied Plaksha standard pathway. Review reviewer assignments before publishing.",
+      "Email specifies Program Chair sign-off; confirm shashikant.pawar@plaksha.edu.in is the correct contact for all relevant STEM programmes (CS, EE, Robotics, Data Science, Mechanical Engineering)."
     ],
-    "funding_available": false,
-    "eligibility_criteria": null
+    "funding_available": true,
+    "eligibility_criteria": "Final-year undergraduate students (UG 2022) with outstanding academic record (top 5\u201310% of graduating class), demonstrated research or project experience in STEM, and who have applied or are applying to an eligible ETH master's programme (Computer Science, Electrical Engineering and Information Technology, Robotics Systems and Control, Data Science, or Mechanical Engineering)."
   },
   {
     "file": "05_penn_wharton_leadership.txt",
     "status": "ok",
-    "title": "Draft Opportunity",
-    "confidence": 0.0,
-    "is_fallback": true,
+    "title": "Penn Wharton Global Youth Leadership Initiative \u2013 Summer Cohort 2026",
+    "confidence": 0.92,
+    "is_fallback": false,
     "graph_nodes": [
       {
         "key": "start",
@@ -164,9 +315,29 @@
         "sla_hours": null
       },
       {
-        "key": "oge_review",
+        "key": "oaa_review",
         "type": "reviewer",
-        "sla_hours": 72
+        "sla_hours": 48
+      },
+      {
+        "key": "ug_academics_review",
+        "type": "reviewer",
+        "sla_hours": 48
+      },
+      {
+        "key": "parallel_join",
+        "type": "join_all",
+        "sla_hours": null
+      },
+      {
+        "key": "oge_leadership_review",
+        "type": "reviewer",
+        "sla_hours": 48
+      },
+      {
+        "key": "dean_approval",
+        "type": "reviewer",
+        "sla_hours": 48
       },
       {
         "key": "end",
@@ -179,14 +350,34 @@
       "student_id",
       "email",
       "cgpa",
-      "statement_of_purpose"
+      "statement_of_purpose",
+      "resume_upload",
+      "resume_url"
     ],
-    "detail_field_keys": [],
+    "detail_field_keys": [
+      "location",
+      "programme_dates",
+      "duration",
+      "format",
+      "seats",
+      "programme_fee",
+      "airfare_reimbursement",
+      "accommodation_meals",
+      "student_responsibility",
+      "net_cost",
+      "host_institution",
+      "application_deadline",
+      "wharton_submission_deadline",
+      "eligible_batch"
+    ],
     "clarifying_questions": [],
     "warnings": [
-      "AI generation unavailable \u2014 fallback draft used. Review and edit before publishing."
+      "Tight turnaround: Plaksha internal deadline is May 20, 2026 (5 days from email date); Wharton submission deadline is May 25. Ensure rapid communication with eligible students and expedited review cycles.",
+      "OGE will nominate 4\u20135 candidates; Wharton will conduct independent video screening and select 2. Communicate this selection process clearly to applicants.",
+      "English fluency is required but no formal test (IELTS/TOEFL) is mandated; Wharton will conduct a brief video screening. This is not a barrier for most Plaksha students.",
+      "Not open to final-year students (UG 2022); eligible cohorts are UG 2023, UG 2024, and UG 2025 only."
     ],
-    "funding_available": false,
-    "eligibility_criteria": null
+    "funding_available": true,
+    "eligibility_criteria": "Enrolled undergraduate student (not yet graduated, not final-year); minimum CGPA 7.0 (B+ equivalent); English fluency; demonstrated leadership, initiative, or entrepreneurial experience; good standing with OAA (no misconduct, no suspension). Open to all majors; interdisciplinary backgrounds valued."
   }
 ]

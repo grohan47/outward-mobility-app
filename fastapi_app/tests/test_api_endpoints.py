@@ -13,6 +13,7 @@ from fastapi_app.main import (
     CommentCreateBody,
     CustomFormFieldPayload,
     DecisionBody,
+    ReviewerOnboardingBody,
     LoginBody,
     OpportunityCreatePayload,
     OpportunityAIGenerateBody,
@@ -43,6 +44,7 @@ from fastapi_app.main import (
     admin_patch_opportunity,
     admin_publish_workflow_draft,
     admin_regenerate_workflow_draft,
+    complete_reviewer_onboarding,
     admin_send_sla_test_reminder,
     admin_sla_dashboard,
     admin_summary,
@@ -105,6 +107,11 @@ class ApiEndpointTests(unittest.TestCase):
             role=row["role_code"],
             roleDisplayName=row["role_display_name"],
             userId=int(row["id"]),
+            reviewerOnboarded=bool(row["reviewer_onboarded"]),
+            pronouns=row["pronouns"],
+            department=row["department"],
+            notifyEmail=bool(row["notify_email"]),
+            notifyDigest=bool(row["notify_digest"]),
         )
 
     def create_test_opportunity(self, code_prefix: str = "TEST") -> int:
@@ -689,6 +696,11 @@ class GraphPublishingRouteTests(unittest.TestCase):
             role=row["role_code"],
             roleDisplayName=row["role_display_name"],
             userId=int(row["id"]),
+            reviewerOnboarded=bool(row["reviewer_onboarded"]),
+            pronouns=row["pronouns"],
+            department=row["department"],
+            notifyEmail=bool(row["notify_email"]),
+            notifyDigest=bool(row["notify_digest"]),
         )
 
     def _seed_publish_ready_draft(self) -> int:
@@ -991,6 +1003,143 @@ class GraphPublishingRouteTests(unittest.TestCase):
         self.assertEqual(len(edges), 2)
         self.assertEqual(draft["status"], "published")
         self.assertIsNotNone(draft["opportunity_id"])
+
+    def test_publish_ignores_ai_code_and_generates_opaque_backend_code(self):
+        output = AIWorkflowDraftOutput(
+            opportunity=OpportunityDraftModel(
+                code="AI_SUPPLIED_CODE",
+                title="AI Duplicate Title",
+                description="The backend should own opaque opportunity code generation.",
+                host_institution="Test University",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="review",
+                        node_type="reviewer",
+                        display_name="OGE Review",
+                        reviewer_email="oge@plaksha.edu.in",
+                    ),
+                    GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="review"),
+                    GraphEdgeModel(from_node_key="review", to_node_key="end"),
+                ],
+            ),
+            applicant_form_fields=[],
+            clarifying_questions=[],
+            confidence=0.9,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'ready', ?, '[]', '{}', '[]', 0.9, 1, ?, ?, ?)
+                """,
+                (output.model_dump_json(), "oge@plaksha.edu.in", ts, ts),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+
+        admin = self.session_for("oge@plaksha.edu.in")
+        resp = admin_publish_workflow_draft(draft_id, session=admin)
+
+        with db_conn() as conn:
+            opportunity_id = conn.execute(
+                "SELECT opportunity_id FROM graph_versions WHERE id = ?",
+                (resp["graph_version_id"],),
+            ).fetchone()["opportunity_id"]
+            opp = conn.execute("SELECT code FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+
+        self.assertNotEqual(opp["code"], "AI_SUPPLIED_CODE")
+        self.assertTrue(opp["code"].startswith("OPP_"))
+
+    def test_publish_auto_creates_new_reviewer_pending_onboarding(self):
+        reviewer_email = f"new.reviewer.{datetime.now(timezone.utc).strftime('%H%M%S%f')}@plaksha.edu.in"
+        output = AIWorkflowDraftOutput(
+            opportunity=OpportunityDraftModel(
+                title="Reviewer Provisioning Test",
+                description="Publishing should create reviewer accounts.",
+                host_institution="Test University",
+            ),
+            graph=GraphModel(
+                nodes=[
+                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="external_reviewer",
+                        node_type="reviewer",
+                        display_name="External Reviewer",
+                        reviewer_email=reviewer_email,
+                    ),
+                    GraphNodeModel(node_key="end", node_type="end", display_name="End"),
+                ],
+                edges=[
+                    GraphEdgeModel(from_node_key="start", to_node_key="external_reviewer"),
+                    GraphEdgeModel(from_node_key="external_reviewer", to_node_key="end"),
+                ],
+            ),
+            applicant_form_fields=[],
+            clarifying_questions=[],
+            confidence=0.9,
+            warnings=[],
+            is_fallback=False,
+        )
+        ts = datetime.now(timezone.utc).isoformat()
+        with db_conn() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workflow_drafts
+                  (opportunity_id, status, draft_output, clarifying_questions,
+                   admin_answers, warnings, confidence, publish_ready,
+                   created_by_email, created_at, updated_at)
+                VALUES (NULL, 'ready', ?, '[]', '{}', '[]', 0.9, 1, ?, ?, ?)
+                """,
+                (output.model_dump_json(), "oge@plaksha.edu.in", ts, ts),
+            )
+            draft_id = int(cursor.lastrowid)
+            conn.commit()
+
+        admin = self.session_for("oge@plaksha.edu.in")
+        admin_publish_workflow_draft(draft_id, session=admin)
+
+        with db_conn() as conn:
+            user = conn.execute(
+                """
+                SELECT u.*, r.code AS role_code
+                FROM users u
+                JOIN user_roles ur ON ur.user_id = u.id
+                JOIN roles r ON r.id = ur.role_id
+                WHERE LOWER(u.email) = LOWER(?) AND r.code = 'REVIEWER'
+                """,
+                (reviewer_email,),
+            ).fetchone()
+
+        self.assertIsNotNone(user)
+        self.assertEqual(user["reviewer_onboarded"], 0)
+
+        reviewer_session = self.session_for(reviewer_email)
+        self.assertFalse(reviewer_session.reviewerOnboarded)
+
+        response = complete_reviewer_onboarding(
+            ReviewerOnboardingBody(
+                displayName="New Reviewer",
+                pronouns="they/them",
+                department="Faculty",
+                notifyEmail=True,
+                notifyDigest=True,
+            ),
+            Response(),
+            session=reviewer_session,
+        )
+        self.assertTrue(response["user"]["reviewerOnboarded"])
 
     def test_publish_rejected_for_fallback_draft(self):
         # ai-generate in test env produces a fallback draft (publish_ready=0).
@@ -1675,6 +1824,11 @@ class GoldenPathTests(unittest.TestCase):
             role=row["role_code"],
             roleDisplayName=row["role_display_name"],
             userId=int(row["id"]),
+            reviewerOnboarded=bool(row["reviewer_onboarded"]),
+            pronouns=row["pronouns"],
+            department=row["department"],
+            notifyEmail=bool(row["notify_email"]),
+            notifyDigest=bool(row["notify_digest"]),
         )
 
     def _active_task_keys(self, application_id: int) -> list[str]:

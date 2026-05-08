@@ -238,6 +238,16 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+async function parseResponseBody(response: Response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { detail: text };
+  }
+}
+
 export default function OpportunityStudio({
   mode,
   opportunityId,
@@ -798,10 +808,19 @@ export default function OpportunityStudio({
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.detail || "Unable to validate workflow draft.");
-      const warnings = Array.isArray(body?.warnings) ? body.warnings.map(String) : validateGraph(graphNodes, graphEdges);
+      const validationErrors = Array.isArray(body?.validation_errors)
+        ? body.validation_errors.map(String)
+        : validateGraph(graphNodes, graphEdges);
+      const advisoryWarnings = Array.isArray(body?.warnings) ? body.warnings.map(String) : [];
       setPublishReady(Boolean(body?.publish_ready));
-      setNotice(warnings.length === 0 ? "Validation passed." : "Validation found issues on the graph.");
-      return warnings;
+      setNotice(
+        validationErrors.length === 0
+          ? advisoryWarnings.length > 0
+            ? "Validation passed with advisory notes."
+            : "Validation passed."
+          : "Validation found issues on the graph."
+      );
+      return validationErrors;
     } catch (err) {
       const warnings = validateGraph(graphNodes, graphEdges);
       setPublishReady(warnings.length === 0 && !fallbackUsed && openQuestions.length === 0);
@@ -848,7 +867,7 @@ export default function OpportunityStudio({
       }
       const draftId = draftBody.draft_id;
       const publishResponse = await fetch(`/api/admin/workflow-drafts/${draftId}/publish`, { method: "POST" });
-      const publishBody = await publishResponse.json();
+      const publishBody = await parseResponseBody(publishResponse);
       if (!publishResponse.ok) throw new Error(publishBody?.detail || "Unable to publish workflow.");
       const refreshed = await fetch(`/api/admin/workflow-drafts/${draftId}`).then((response) => response.json());
       const targetOpportunityId = refreshed?.draft?.opportunity_id || opportunityId;

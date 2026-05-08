@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi_app.graph_models import AIWorkflowDraftOutput
 from fastapi_app.opportunity_details import (
-    generate_unique_opportunity_code,
     normalize_ai_summary_bullets,
     normalize_detail_fields,
     replace_detail_fields,
@@ -22,8 +20,58 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _slugify(text: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", text.strip().lower()).strip("_") or "opp"
+def _generate_backend_opportunity_code(db: sqlite3.Connection) -> str:
+    base = f"OPP_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    code = base
+    suffix = 2
+    while db.execute("SELECT 1 FROM opportunities WHERE code = ?", (code,)).fetchone():
+        code = f"{base}_{suffix}"
+        suffix += 1
+    return code
+
+
+def _derive_name_from_email(email: str) -> str:
+    local = email.split("@", 1)[0]
+    parts = [chunk for chunk in local.replace(".", " ").replace("_", " ").replace("-", " ").split() if chunk]
+    return " ".join(part.capitalize() for part in parts) or "Reviewer"
+
+
+def _ensure_reviewer_account(
+    db: sqlite3.Connection,
+    reviewer_email: str | None,
+    reviewer_name: str | None,
+    created_at: str,
+) -> None:
+    email = (reviewer_email or "").strip().lower()
+    if not email:
+        return
+
+    role = db.execute("SELECT id FROM roles WHERE code = 'REVIEWER'").fetchone()
+    if not role:
+        cursor = db.execute("INSERT INTO roles (code, display_name) VALUES ('REVIEWER', 'Reviewer')")
+        role_id = int(cursor.lastrowid)
+    else:
+        role_id = int(role["id"])
+
+    user = db.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+    if user:
+        user_id = int(user["id"])
+    else:
+        display_name = (reviewer_name or "").strip() or _derive_name_from_email(email)
+        cursor = db.execute(
+            """
+            INSERT INTO users
+              (email, full_name, is_active, reviewer_onboarded, notify_email, notify_digest, created_at)
+            VALUES (?, ?, 1, 0, 1, 0, ?)
+            """,
+            (email, display_name, created_at),
+        )
+        user_id = int(cursor.lastrowid)
+
+    db.execute(
+        "INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)",
+        (user_id, role_id, created_at),
+    )
 
 
 def _normalize_generator_visibility_rules(rules: list[str]) -> list[dict[str, str]]:
@@ -112,6 +160,8 @@ class GraphPublishingService:
             graph_version_id = int(cursor.lastrowid)
 
             for node in parsed.graph.nodes:
+                if node.node_type == "reviewer":
+                    _ensure_reviewer_account(db, node.reviewer_email, node.display_name, ts)
                 db.execute(
                     """
                     INSERT INTO graph_nodes
@@ -160,7 +210,7 @@ class GraphPublishingService:
     ) -> int:
         opp = parsed.opportunity
         ts = _now_iso()
-        code = opp.code or generate_unique_opportunity_code(db, opp.title)
+        code = _generate_backend_opportunity_code(db)
 
         cursor = db.execute(
             """

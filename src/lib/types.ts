@@ -220,6 +220,11 @@ export interface SessionUser {
   role: string;
   roleDisplayName: string;
   userId: number;
+  reviewerOnboarded?: boolean;
+  pronouns?: string | null;
+  department?: string | null;
+  notifyEmail?: boolean;
+  notifyDigest?: boolean;
   availableWorkspaces?: Array<{
     role: string;
     roleDisplayName: string;
