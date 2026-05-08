@@ -155,6 +155,20 @@ OTHER RULES:
 """
 
 
+def _strip_markdown_json(raw: str) -> str:
+    """Strip ```json ... ``` fences Claude sometimes wraps around JSON."""
+    stripped = raw.strip()
+    if "```" not in stripped:
+        return stripped
+    for part in stripped.split("```"):
+        candidate = part.strip()
+        if candidate.lower().startswith("json"):
+            candidate = candidate[4:].strip()
+        if candidate.startswith("{") or candidate.startswith("["):
+            return candidate
+    return stripped
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -279,6 +293,7 @@ class AIWorkflowDraftService:
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 raw = provider.complete(SYSTEM_PROMPT, prompt, self.TIMEOUT_SECONDS)
+                raw = _strip_markdown_json(raw)
                 parsed = AIWorkflowDraftOutput.model_validate_json(raw)
                 errors = GraphPolicyValidator().validate_graph(parsed.graph)
                 parsed.warnings.extend(errors)

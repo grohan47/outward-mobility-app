@@ -98,6 +98,15 @@ export default function AdminApplicationReviewPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
+  const [aiAssist, setAiAssist] = useState<{
+    recommendation: string;
+    rationale: string;
+    quality_checks: { field: string; label: string; status: string; note: string }[];
+    draft_remarks: string;
+    variables_extracted: Record<string, string>;
+    is_dummy_ai: boolean;
+  } | null>(null);
+  const [aiAssistLoading, setAiAssistLoading] = useState(false);
   const [remarks, setRemarks] = useState("");
   const [dynamicInputs, setDynamicInputs] = useState<Record<string, unknown>>({});
   const [targetStepOrder, setTargetStepOrder] = useState<number | null>(null);
@@ -213,6 +222,21 @@ export default function AdminApplicationReviewPage() {
     }
   }
 
+  async function fetchAiAssist() {
+    if (!data) return;
+    setAiAssistLoading(true);
+    try {
+      const res = await fetch(`/api/applications/${data.application.id}/ai-approval-assist`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail || "AI assist failed.");
+      setAiAssist(body);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "AI assist failed.");
+    } finally {
+      setAiAssistLoading(false);
+    }
+  }
+
   async function handleAction(endpoint: "approve" | "request-changes" | "reject") {
     if (!data || !user) return;
     setActionLoading(true);
@@ -308,6 +332,97 @@ export default function AdminApplicationReviewPage() {
             <p className="text-sm text-slate-700 leading-relaxed">{aiSummary}</p>
           ) : (
             <p className="text-sm text-slate-400 italic">Click Generate to have PRISM summarise this application.</p>
+          )}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="flex items-center justify-between px-6 pt-5 pb-2">
+          <div>
+            <p className="font-bold text-slate-900">AI Approval Assist</p>
+            <p className="text-xs text-slate-500 mt-0.5">PRISM analyses fields and prior reviews to recommend a decision and draft remarks.</p>
+          </div>
+          <Button size="sm" loading={aiAssistLoading} onClick={fetchAiAssist}>
+            {aiAssist ? "Refresh" : "Analyse"}
+          </Button>
+        </div>
+        <div className="px-6 pb-5 border-t border-slate-100 mt-3 pt-4 space-y-4">
+          {!aiAssist ? (
+            <p className="text-sm text-slate-400 italic">Click Analyse to have PRISM review this application and suggest a decision.</p>
+          ) : (
+            <>
+              {aiAssist.is_dummy_ai && (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-2 text-xs text-amber-700">
+                  AI unavailable — showing rule-based analysis. Configure ANTHROPIC_API_KEY for real insights.
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${
+                  aiAssist.recommendation === "APPROVE_OR_ADVANCE"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : aiAssist.recommendation === "REQUEST_CHANGES"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-slate-100 text-slate-600"
+                }`}>
+                  <span className="material-symbols-outlined text-[14px]">
+                    {aiAssist.recommendation === "APPROVE_OR_ADVANCE" ? "check_circle" : aiAssist.recommendation === "REQUEST_CHANGES" ? "flag" : "help"}
+                  </span>
+                  {aiAssist.recommendation.replace(/_/g, " ")}
+                </span>
+                <p className="text-sm text-slate-700 leading-relaxed">{aiAssist.rationale}</p>
+              </div>
+
+              {aiAssist.quality_checks.length > 0 && (
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Field Quality</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {aiAssist.quality_checks.map((check) => (
+                      <div key={check.field} className="flex items-start gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                        <span className={`material-symbols-outlined text-[16px] mt-0.5 ${
+                          check.status === "present" ? "text-emerald-500" : check.status === "weak" ? "text-amber-500" : "text-rose-500"
+                        }`}>
+                          {check.status === "present" ? "check_circle" : check.status === "weak" ? "warning" : "cancel"}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-700">{check.label || check.field}</p>
+                          <p className="text-xs text-slate-500 truncate">{check.note}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {aiAssist.draft_remarks && (
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Suggested Remarks</p>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 leading-relaxed">
+                    {aiAssist.draft_remarks}
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-2 text-xs font-semibold text-primary hover:underline"
+                    onClick={() => setRemarks(aiAssist.draft_remarks)}
+                  >
+                    Use as reviewer comment
+                  </button>
+                </div>
+              )}
+
+              {Object.keys(aiAssist.variables_extracted).length > 0 && (
+                <div>
+                  <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Extracted Variables</p>
+                  <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1">
+                    {Object.entries(aiAssist.variables_extracted).map(([key, val]) => (
+                      <div key={key} className="flex flex-col">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{key.replace(/_/g, " ")}</span>
+                        <span className="text-xs text-slate-700 font-medium truncate">{val}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </Card>

@@ -43,6 +43,10 @@ class ApprovalAssistResponse(BaseModel):
     rationale: str = Field(description="2-3 sentence explanation of the recommendation")
     field_assessments: list[FieldAssessment] = Field(description="Per-field quality assessment")
     draft_remarks: str = Field(description="Suggested approval/review remarks the reviewer can use or edit")
+    variables_extracted: dict[str, str] = Field(
+        default_factory=dict,
+        description="Key variables extracted from the application context as flat JSON key-value pairs (e.g. cgpa, destination, batch, sop_quality)"
+    )
 
 
 class NominationInsightsResponse(BaseModel):
@@ -242,7 +246,11 @@ def ai_approval_assist(detail: dict[str, Any]) -> dict[str, Any]:
             "You are PRISM, an AI assistant helping reviewers evaluate outward-mobility applications "
             "at Plaksha University. Analyse the submitted fields and prior reviews. Recommend whether "
             "to approve, request changes, or flag for further review. Provide per-field assessments "
-            "and draft suggested remarks. Be rigorous but fair."
+            "and draft suggested remarks. Be rigorous but fair.\n\n"
+            "Also extract key variables from the application context into the variables_extracted field "
+            "as flat string key-value pairs. Include: cgpa (numeric string), batch (e.g. 'UG 2023'), "
+            "destination (country/university if visible), sop_quality ('strong'/'adequate'/'weak'), "
+            "backlog_status ('clear'/'has_backlog'), and any other key facts visible in the data."
         ),
         user_prompt=user_prompt,
         response_model=ApprovalAssistResponse,
@@ -254,6 +262,7 @@ def ai_approval_assist(detail: dict[str, Any]) -> dict[str, Any]:
             "rationale": result.rationale,
             "quality_checks": [a.model_dump() for a in result.field_assessments],
             "draft_remarks": result.draft_remarks,
+            "variables_extracted": result.variables_extracted,
             "is_dummy_ai": False,
         }
 
@@ -274,10 +283,16 @@ def ai_approval_assist(detail: dict[str, Any]) -> dict[str, Any]:
         else f"{missing_count} visible field(s) look incomplete; consider send-back."
     )
 
+    variables_extracted: dict[str, str] = {}
+    for key, value in list(application_file.items())[:20]:
+        if value is not None and str(value).strip():
+            variables_extracted[key] = str(value)[:120]
+
     return {
         "recommendation": recommendation,
         "rationale": rationale,
         "quality_checks": checks,
+        "variables_extracted": variables_extracted,
         "is_dummy_ai": True,
     }
 

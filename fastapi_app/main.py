@@ -814,6 +814,7 @@ CREATE TABLE graph_versions (
   opportunity_id INTEGER NOT NULL REFERENCES opportunities(id),
   version INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'draft',
+  created_by_email TEXT,
   published_by_email TEXT,
   published_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
@@ -935,6 +936,9 @@ def seed_data(conn: sqlite3.Connection) -> None:
         (13, "oge@plaksha.edu.in", "Rajesh Kumar", 1),
         (14, "dean@plaksha.edu.in", "Dr. Sarah Jenkins", 1),
         (15, "vc@plaksha.edu.in", "Vice Chancellor", 1),
+        (16, "oaa@plaksha.edu.in", "Office of Academic Affairs", 1),
+        (17, "ug-academics@plaksha.edu.in", "UG Academics", 1),
+        (18, "shashikant.pawar@plaksha.edu.in", "Prof. Shashikant Pawar", 1),
     ]
     for user in user_rows:
         conn.execute(
@@ -956,6 +960,9 @@ def seed_data(conn: sqlite3.Connection) -> None:
         ("vc@plaksha.edu.in", REVIEWER_ROLE),
         ("oge@plaksha.edu.in", REVIEWER_ROLE),
         ("oge@plaksha.edu.in", ADMIN_ROLE),
+        ("oaa@plaksha.edu.in", REVIEWER_ROLE),
+        ("ug-academics@plaksha.edu.in", REVIEWER_ROLE),
+        ("shashikant.pawar@plaksha.edu.in", REVIEWER_ROLE),
     ]
     for email, role_code in role_assignments:
         user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
@@ -1006,45 +1013,50 @@ def seed_data(conn: sqlite3.Connection) -> None:
             row,
         )
 
-    # ── Harvard 4+1 Opportunity (graph-backed) ──
-    opp_rows = [
+    # ── NTU Singapore AI & Robotics Exchange (graph-backed, matches demo_fixture.json) ──
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO opportunities (
+          id, code, title, description, cover_image_url, term, destination, deadline, seats, status, ai_summary_json, ai_summary_source_hash, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
         (
             1,
-            "HARV_4PLUS1_2027",
-            "Harvard 4+1 Program",
-            "The Harvard 4+1 accelerated master's programme allows exceptional "
-            "undergraduate students to earn a Master of Engineering degree at Harvard "
-            "John A. Paulson School of Engineering and Applied Sciences in a single "
-            "additional year. Students will benefit from Harvard's world-class faculty, "
-            "cutting-edge research labs, and Boston's innovation ecosystem.",
-            "https://images.unsplash.com/photo-1562774053-701939374585",
-            "Fall 2027",
-            "Harvard University, USA",
-            "2027-02-28",
+            "NTU-AIR-SU2026",
+            "Summer 2026 AI & Robotics Research Exchange — NTU Singapore",
+            "Five-seat summer research exchange at Nanyang Technological University Singapore. "
+            "Students join NTU's AI and Robotics labs for two months, working alongside PhD researchers. "
+            "Covers programme fee; students fund travel and accommodation. Need-based travel grants available.",
+            "https://images.unsplash.com/photo-1546412414-8035e1776c9a",
+            "Summer 2026 (July 1 – August 31)",
+            "Singapore, NTU",
+            "2026-06-15",
             5,
             "published",
+            json.dumps([
+                "5-seat research exchange at NTU Singapore, July–August 2026.",
+                "Open to UG 2023 batch only. Minimum CGPA 7.5, no active backlogs.",
+                "Programme fee (SGD 1,200) covered by Plaksha. Travel grants available.",
+                "Application deadline: June 15, 2026. Nomination due to NTU: June 20.",
+                "Standard 4-stage Plaksha approval: OAA + UG Academics → Program Chair → Dean.",
+            ]),
+            None,
+            now,
+            now,
         ),
-    ]
-    for opp in opp_rows:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO opportunities (
-              id, code, title, description, cover_image_url, term, destination, deadline, seats, status, ai_summary_json, ai_summary_source_hash, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (*opp, json.dumps([
-                "Harvard 4+1 master's programme for Fall 2027.",
-                "Only 5 seats available — highly competitive.",
-                "Application deadline: February 28, 2027.",
-            ]), None, now, now),
-        )
+    )
 
     seed_detail_fields = {
         1: [
-            {"field_key": "host_institution", "label": "Host Institution", "value": "Harvard University", "value_type": "text", "display_order": 1, "is_student_visible": 1},
-            {"field_key": "program_type", "label": "Program Type", "value": "4+1 Accelerated Master's", "value_type": "text", "display_order": 2, "is_student_visible": 1},
-            {"field_key": "funding", "label": "Funding", "value": "Partial tuition waiver + RA positions available", "value_type": "text", "display_order": 3, "is_student_visible": 1},
-            {"field_key": "eligibility", "label": "Eligibility", "value": "CGPA ≥ 8.5, strong research profile, faculty recommendation required", "value_type": "text", "display_order": 4, "is_student_visible": 1},
+            {"field_key": "destination",          "label": "Destination",          "value": "Singapore, NTU",                        "value_type": "text",   "display_order": 1, "is_student_visible": 1},
+            {"field_key": "term",                 "label": "Programme Term",       "value": "July 1 – Aug 31 2026",                   "value_type": "text",   "display_order": 2, "is_student_visible": 1},
+            {"field_key": "application_deadline", "label": "Application Deadline", "value": "2026-06-15",                             "value_type": "date",   "display_order": 3, "is_student_visible": 1},
+            {"field_key": "seats",                "label": "Seats Available",      "value": "5",                                      "value_type": "number", "display_order": 4, "is_student_visible": 1},
+            {"field_key": "min_cgpa",             "label": "Minimum CGPA",         "value": "7.5",                                    "value_type": "number", "display_order": 5, "is_student_visible": 1},
+            {"field_key": "programme_fee",        "label": "Programme Fee",        "value": "SGD 1,200 (covered by Plaksha)",         "value_type": "text",   "display_order": 6, "is_student_visible": 1},
+            {"field_key": "estimated_cost",       "label": "Est. Personal Cost",   "value": "~SGD 1,800/month (travel + accommodation)", "value_type": "text", "display_order": 7, "is_student_visible": 1},
+            {"field_key": "eligible_batch",       "label": "Eligible Batch",       "value": "UG 2023 only",                           "value_type": "text",   "display_order": 8, "is_student_visible": 1},
+            {"field_key": "host_contact",         "label": "NTU Partner Contact",  "value": "partners@ntu.edu.sg",                    "value_type": "text",   "display_order": 9, "is_student_visible": 0},
         ],
     }
     for opportunity_id, fields in seed_detail_fields.items():
@@ -1103,13 +1115,9 @@ def seed_data(conn: sqlite3.Connection) -> None:
             "full_name",
             "student_id",
             "email",
-            "program",
             "cgpa",
-            "passport_number",
             "statement_of_purpose",
-            "language_score",
-            "transcript_upload",
-            "recommendation_upload",
+            "resume_upload",
         ],
     }
     for opp_id, fields in required_fields_by_opp.items():
@@ -1122,7 +1130,7 @@ def seed_data(conn: sqlite3.Connection) -> None:
                 (opp_id, field_key, order),
             )
 
-    # ── Graph version for Harvard 4+1 ──
+    # ── Graph version for NTU Singapore (matches demo_fixture.json) ──
     gv_cursor = conn.execute(
         """
         INSERT OR IGNORE INTO graph_versions (opportunity_id, version, status, created_by_email, created_at)
@@ -1132,13 +1140,19 @@ def seed_data(conn: sqlite3.Connection) -> None:
     )
     gv_id = int(gv_cursor.lastrowid or conn.execute("SELECT id FROM graph_versions WHERE opportunity_id = 1 LIMIT 1").fetchone()["id"])
 
+    backlog_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "backlog_status", "label": "Backlog / Misconduct Status", "input_type": "select", "options": ["Clear — no active backlogs or misconduct", "Active backlog — details in remarks", "Misconduct record — details in remarks"], "required": True}]})
+    cgpa_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "cgpa_verified", "label": "CGPA Verification", "input_type": "select", "options": ["Verified ≥ 7.5 — meets requirement", "Below 7.5 — does not meet minimum", "Cannot verify at this time"], "required": True}]})
+    chair_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "coursework_alignment", "label": "Coursework Alignment with NTU AI/Robotics Programme", "input_type": "select", "options": ["Strong alignment — student's coursework directly relevant", "Adequate alignment — conditional approval", "Weak alignment — details in remarks", "No alignment — recommend rejection"], "required": True}]})
+    dean_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "dean_decision", "label": "Final Nomination Decision", "input_type": "select", "options": ["Approved — submit to NTU", "Rejected — details in remarks"], "required": True}]})
+
     graph_nodes = [
-        ("start", "start", "Start", None, None, None, None),
-        ("oge_review", "reviewer", "OGE Intake Review", "oge@plaksha.edu.in", '["all"]', '["approve", "request_changes", "reject", "comment"]', json.dumps({"sla_hours": 24})),
-        ("student_life", "reviewer", "Student Life Review", "student-life@plaksha.edu.in", '["all"]', '["approve", "request_changes", "comment"]', json.dumps({"sla_hours": 48})),
-        ("program_chair", "reviewer", "Program Chair Review", "program-chair@plaksha.edu.in", '["all"]', '["approve", "request_changes", "comment"]', json.dumps({"sla_hours": 72})),
-        ("dean_approval", "reviewer", "Dean Final Approval", "dean@plaksha.edu.in", '["all"]', '["approve", "reject", "comment"]', json.dumps({"sla_hours": 48})),
-        ("end", "end", "End", None, None, None, None),
+        ("start",               "start",    "Application Submitted",                  None,                              '["all"]', '[]',                                          '{}'),
+        ("oaa_review",          "reviewer", "Office of Academic Affairs",              "oaa@plaksha.edu.in",              '["all"]', '["approve","request_changes","comment"]',     backlog_input),
+        ("ug_academics_review", "reviewer", "UG Academics (CGPA ≥ 7.5)",              "ug-academics@plaksha.edu.in",     '["all"]', '["approve","request_changes","comment"]',     cgpa_input),
+        ("parallel_join",       "join_all", "OAA + UG Academics Complete",            None,                              '["all"]', '[]',                                          '{}'),
+        ("program_chair_review","reviewer", "Freshmore Coordinator (Prof. S. Pawar)", "shashikant.pawar@plaksha.edu.in", '["all"]', '["approve","request_changes","comment"]',     chair_input),
+        ("dean_approval",       "reviewer", "Dean — Final Approval",                  "dean@plaksha.edu.in",             '["all"]', '["approve","reject","comment"]',               dean_input),
+        ("end",                 "end",      "Nominated — Submitted to NTU",           None,                              '["all"]', '[]',                                          '{}'),
     ]
     for node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata in graph_nodes:
         conn.execute(
@@ -1150,11 +1164,13 @@ def seed_data(conn: sqlite3.Connection) -> None:
         )
 
     graph_edges = [
-        ("start", "oge_review"),
-        ("oge_review", "student_life"),
-        ("student_life", "program_chair"),
-        ("program_chair", "dean_approval"),
-        ("dean_approval", "end"),
+        ("start",               "oaa_review"),
+        ("start",               "ug_academics_review"),
+        ("oaa_review",          "parallel_join"),
+        ("ug_academics_review", "parallel_join"),
+        ("parallel_join",       "program_chair_review"),
+        ("program_chair_review","dean_approval"),
+        ("dean_approval",       "end"),
     ]
     for from_key, to_key in graph_edges:
         conn.execute(
@@ -1165,45 +1181,48 @@ def seed_data(conn: sqlite3.Connection) -> None:
             (gv_id, from_key, to_key),
         )
 
-    # ── Sample application: Rohan applying to Harvard 4+1 ──
-    submitted_rohan_harvard = {
+    # ── Sample application: Rohan applying to NTU Singapore ──
+    submitted_rohan_ntu = {
         "full_name": "Rohan",
         "student_id": "PL-2022-ROH",
         "email": "rohan@plaksha.edu.in",
-        "program": "Computer Science",
         "cgpa": 8.5,
-        "passport_number": "N1234567",
-        "language_score": 8.0,
-        "statement_of_purpose": "I want to pursue a master's at Harvard SEAS, focusing on AI systems and robotics.",
-        "transcript_upload": "https://drive.google.com/file/rohan_transcript",
-        "recommendation_upload": "https://drive.google.com/file/rohan_recommendation",
+        "statement_of_purpose": "I am deeply interested in AI and robotics research. NTU's labs offer the perfect environment to apply my coursework in real-world research projects alongside leading PhD students.",
+        "resume_upload": "https://drive.google.com/file/rohan_resume",
     }
     conn.execute(
         """
         INSERT OR IGNORE INTO applications
         (id, student_profile_id, opportunity_id, current_step_order, current_stage_label,
          graph_version_id, final_status, submitted_data_json, submitted_at, created_at, updated_at)
-        VALUES (1, 1, 1, 1, 'OGE Intake Review', ?, NULL, ?, ?, ?, ?)
+        VALUES (1, 1, 1, 1, 'Office of Academic Affairs', ?, NULL, ?, ?, ?, ?)
         """,
-        (gv_id, json.dumps(submitted_rohan_harvard), now, now, now),
+        (gv_id, json.dumps(submitted_rohan_ntu), now, now, now),
     )
-    # Instantiate graph tasks for Rohan's application.
+    # Parallel tasks: both OAA and UG Academics start simultaneously.
     conn.execute(
         """
         INSERT OR IGNORE INTO application_workflow_tasks
         (application_id, graph_version_id, node_key, assigned_reviewer_email, status, assigned_at)
-        VALUES (1, ?, 'oge_review', 'oge@plaksha.edu.in', 'active', ?)
+        VALUES (1, ?, 'oaa_review', 'oaa@plaksha.edu.in', 'active', ?)
         """,
         (gv_id, now),
     )
-
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO application_workflow_tasks
+        (application_id, graph_version_id, node_key, assigned_reviewer_email, status, assigned_at)
+        VALUES (1, ?, 'ug_academics_review', 'ug-academics@plaksha.edu.in', 'active', ?)
+        """,
+        (gv_id, now),
+    )
     conn.execute(
         """
         INSERT INTO timeline_events
         (application_id, event_type, event_payload_json, actor_email, created_at)
         VALUES (1, 'APPLICATION_CREATED', ?, ?, ?)
         """,
-        (json.dumps({"current_stage": "OGE Intake Review"}), "rohan@plaksha.edu.in", now),
+        (json.dumps({"current_stage": "Office of Academic Affairs"}), "rohan@plaksha.edu.in", now),
     )
 
     conn.commit()
@@ -1472,6 +1491,25 @@ def get_user_workspaces(conn: sqlite3.Connection, email: str) -> list[dict[str, 
         LIMIT 1
         """,
         (normalized_email,),
+    ).fetchone() or conn.execute(
+        """
+        SELECT 1
+        FROM graph_nodes gn
+        JOIN graph_versions gv ON gv.id = gn.graph_version_id
+        WHERE gn.node_type = 'reviewer'
+          AND LOWER(gn.reviewer_email) = LOWER(?)
+        LIMIT 1
+        """,
+        (normalized_email,),
+    ).fetchone() or conn.execute(
+        """
+        SELECT 1 FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        JOIN users u ON u.id = ur.user_id
+        WHERE LOWER(u.email) = LOWER(?) AND r.code = ?
+        LIMIT 1
+        """,
+        (normalized_email, REVIEWER_ROLE),
     ).fetchone()
     if reviewer_assignment:
         workspaces.append(
@@ -2876,13 +2914,28 @@ def admin_regenerate_workflow_draft(
     session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
 ) -> dict[str, Any]:
     ensure_db_initialized()
+    fields_applied: list[str] = []
     with db_conn() as conn:
         try:
             updated = AIWorkflowDraftService().regenerate_with_answers(conn, draft_id, body.answers)
         except ValueError as exc:
             status_code = 404 if "not found" in str(exc).lower() else 400
             raise HTTPException(status_code=status_code, detail=str(exc))
-    return {"draft": updated}
+
+        # If Claude returned updated applicant_form_fields and the draft is already
+        # linked to an opportunity, apply the fields immediately (not just on publish).
+        try:
+            opp_id = updated.get("opportunity_id")
+            raw_output = updated.get("draft_output")
+            if opp_id and raw_output:
+                parsed = AIWorkflowDraftOutput.model_validate_json(raw_output)
+                if parsed.applicant_form_fields:
+                    fields_applied = _replace_opportunity_form_fields(conn, int(opp_id), parsed.applicant_form_fields)
+                    conn.commit()
+        except Exception:
+            pass  # non-fatal — form fields still applied on publish
+
+    return {"draft": updated, "applicant_form_fields": fields_applied or None, "fields_applied": bool(fields_applied)}
 
 
 @app.post("/api/admin/workflow-drafts/{draft_id}/publish")

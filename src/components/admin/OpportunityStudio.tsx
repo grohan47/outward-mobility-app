@@ -765,12 +765,21 @@ export default function OpportunityStudio({
       if (!response.ok) throw new Error(body?.detail || "Unable to regenerate workflow draft.");
       if (body?.draft) {
         const draftData = normalizeDraftRow(body.draft);
+        // Prefer fields returned directly by the endpoint (already applied to DB)
+        // over the ones embedded in draft_output, but both point to the same list.
+        if (body.applicant_form_fields?.length) {
+          draftData.applicant_form_fields = body.applicant_form_fields;
+        }
         setCurrentDraftId(Number(body.draft_id || body.draft?.id || currentDraftId) || currentDraftId);
         setAnswers({});
         applyDraftData(draftData);
         if (draftData.clarifying_questions.length === 0) setStudioStep("pipeline");
       }
-      setNotice("PRISM regenerated the draft with your answers.");
+      setNotice(
+        body?.fields_applied
+          ? "PRISM regenerated the draft and applied the application fields."
+          : "PRISM regenerated the draft with your answers."
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to regenerate workflow draft.");
     } finally {
