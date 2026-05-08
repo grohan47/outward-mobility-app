@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import OnboardingFlow from "@/components/OnboardingFlow";
 
 type DemoUser = {
   email: string;
@@ -22,6 +23,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [demoUsers, setDemoUsers] = useState<DemoUser[]>([]);
+  const [pendingNewUser, setPendingNewUser] = useState<{ route: string; email: string } | null>(null);
 
   useEffect(() => {
     // Frontend -> API: GET /api/auth/demo-users
@@ -57,6 +59,11 @@ export default function LoginPage() {
       }
 
       const user = body.user;
+      if (user?.is_new_user) {
+        setPendingNewUser({ route: roleRoute(user.role), email: user.email || targetEmail });
+        setLoading(false);
+        return;
+      }
       const workspaces = user?.availableWorkspaces || [];
       if (workspaces.length > 1) {
         router.push("/select-workspace");
@@ -77,6 +84,21 @@ export default function LoginPage() {
       return;
     }
     await signInWithEmail(email);
+  }
+
+  if (pendingNewUser) {
+    return (
+      <OnboardingFlow
+        onComplete={(profile) => {
+          localStorage.setItem(
+            `prism:onboarding:${pendingNewUser.email}`,
+            JSON.stringify({ ...profile, completedAt: new Date().toISOString() })
+          );
+          router.push(pendingNewUser.route);
+          router.refresh();
+        }}
+      />
+    );
   }
 
   return (

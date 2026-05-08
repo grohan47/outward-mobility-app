@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import OpportunityStudio from "./OpportunityStudio";
+import OpportunityStudioV2 from "./OpportunityStudioV2";
 import type {
   CatalogField,
   CustomFieldDraft,
@@ -289,7 +289,7 @@ export default function OpportunityEditor({ mode, opportunityId }: OpportunityEd
   }
 
   return (
-    <OpportunityStudio
+    <OpportunityStudioV2
       mode={mode}
       opportunityId={opportunityId}
       availableFields={availableFields}

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi_app.graph_models import TaskRow, TransitionResult
+from fastapi_app.sla_management import SLAEmailSender
 
 
 APPROVE = "approve"
@@ -113,6 +115,15 @@ class GraphExecutionService:
                 raise ValueError(f"Decision '{normalized_decision}' is not allowed for this reviewer task")
 
             if normalized_decision == COMMENT:
+                if task["flag_return_task_id"]:
+                    return self._complete_temporary_flag_task(
+                        db,
+                        task,
+                        normalized_decision,
+                        ts,
+                        comment,
+                        reviewer_data,
+                    )
                 entry = f"[{ts}] {comment or ''}"
                 existing_comment = task["comment_summary"] or ""
                 comment_summary = f"{existing_comment}\n{entry}" if existing_comment else entry
@@ -127,6 +138,9 @@ class GraphExecutionService:
                 return TransitionResult(success=True, next_task_ids=[], application_status=None)
 
             if normalized_decision == FLAG:
+                flag_target = str((reviewer_data or {}).get("flag_target") or "admin").strip().lower()
+                if flag_target not in {"student", "admin"}:
+                    flag_target = "admin"
                 db.execute(
                     """
                     UPDATE application_workflow_tasks
@@ -134,20 +148,33 @@ class GraphExecutionService:
                         acted_at = ?,
                         decision = ?,
                         comment_summary = ?,
-                        reviewer_data_json = ?
+                        reviewer_data_json = ?,
+                        flag_target = ?
                     WHERE id = ?
                     """,
-                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
+                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), flag_target, task_id),
                 )
-                db.execute(
-                    """
-                    UPDATE applications
-                    SET current_stage_label = 'Flagged — Needs Attention',
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (ts, int(task["application_id"])),
-                )
+                if flag_target == "student":
+                    db.execute(
+                        """
+                        UPDATE applications
+                        SET current_stage_label = 'Flagged — Awaiting Student Clarification',
+                            current_step_order = 0,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (ts, int(task["application_id"])),
+                    )
+                else:
+                    db.execute(
+                        """
+                        UPDATE applications
+                        SET current_stage_label = 'Flagged — Awaiting OGE Review',
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (ts, int(task["application_id"])),
+                    )
                 return TransitionResult(success=True, next_task_ids=[], application_status="FLAGGED")
 
             if normalized_decision == APPROVE:
@@ -156,6 +183,15 @@ class GraphExecutionService:
                     raise ValueError(f"Missing required reviewer inputs: {', '.join(missing)}")
 
             if normalized_decision == REJECT:
+                if task["flag_return_task_id"]:
+                    return self._complete_temporary_flag_task(
+                        db,
+                        task,
+                        normalized_decision,
+                        ts,
+                        comment,
+                        reviewer_data,
+                    )
                 db.execute(
                     """
                     UPDATE application_workflow_tasks
@@ -196,6 +232,15 @@ class GraphExecutionService:
                 )
 
             if normalized_decision == REQUEST_CHANGES:
+                if task["flag_return_task_id"]:
+                    return self._complete_temporary_flag_task(
+                        db,
+                        task,
+                        normalized_decision,
+                        ts,
+                        comment,
+                        reviewer_data,
+                    )
                 db.execute(
                     """
                     UPDATE application_workflow_tasks
@@ -252,6 +297,12 @@ class GraphExecutionService:
                 """,
                 (completion_status, ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
             )
+            if task["flag_return_task_id"]:
+                return self._reactivate_flagger_task(
+                    db,
+                    int(task["flag_return_task_id"]),
+                    int(task["application_id"]),
+                )
             next_task_ids = self._advance_from_node(
                 db,
                 application,
@@ -282,6 +333,26 @@ class GraphExecutionService:
                   ON n.graph_version_id = t.graph_version_id
                  AND n.node_key = t.node_key
                 WHERE t.application_id = ?
+                  AND t.status = 'flagged'
+                  AND t.flag_target = 'student'
+                ORDER BY t.acted_at DESC, t.id DESC
+                LIMIT 1
+                """,
+                (application_id,),
+            ).fetchone()
+            if task:
+                return self._reactivate_task_row(db, int(task["task_id"]), application_id, str(task["display_name"]))
+
+            task = db.execute(
+                """
+                SELECT
+                  t.id AS task_id,
+                  COALESCE(n.display_name, t.node_key) AS display_name
+                FROM application_workflow_tasks t
+                JOIN graph_nodes n
+                  ON n.graph_version_id = t.graph_version_id
+                 AND n.node_key = t.node_key
+                WHERE t.application_id = ?
                   AND t.status = 'returned'
                 ORDER BY t.acted_at DESC, t.id DESC
                 LIMIT 1
@@ -291,31 +362,7 @@ class GraphExecutionService:
             if not task:
                 raise ValueError("Application has no returned workflow task to resubmit")
 
-            ts = _now_iso()
-            db.execute(
-                """
-                UPDATE application_workflow_tasks
-                SET status = 'active',
-                    acted_at = NULL,
-                    decision = NULL,
-                    comment_summary = NULL
-                WHERE id = ?
-                """,
-                (int(task["task_id"]),),
-            )
-            db.execute(
-                """
-                UPDATE applications
-                SET current_stage_label = ?,
-                    current_step_order = 1,
-                    return_to_step_order = NULL,
-                    return_to_stage_label = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (task["display_name"], ts, application_id),
-            )
-            return int(task["task_id"])
+            return self._reactivate_task_row(db, int(task["task_id"]), application_id, str(task["display_name"]))
 
     def get_inbox(self, db: sqlite3.Connection, reviewer_email: str) -> list[TaskRow]:
         rows = db.execute(
@@ -473,6 +520,8 @@ class GraphExecutionService:
             """,
             (int(application["id"]), graph_version_id, node["node_key"], reviewer_email),
         )
+        task_id = int(cursor.lastrowid)
+        self._send_assignment_email(db, application, reviewer_email, node)
         db.execute(
             """
             UPDATE applications
@@ -483,7 +532,126 @@ class GraphExecutionService:
             """,
             (node["display_name"] or node["node_key"], _now_iso(), int(application["id"])),
         )
-        return [int(cursor.lastrowid)]
+        return [task_id]
+
+    def _send_assignment_email(
+        self,
+        db: sqlite3.Connection,
+        application: sqlite3.Row,
+        reviewer_email: str,
+        node: sqlite3.Row,
+    ) -> None:
+        try:
+            row = db.execute(
+                """
+                SELECT o.title AS opportunity_title, u.full_name AS student_name
+                FROM applications a
+                JOIN opportunities o ON o.id = a.opportunity_id
+                JOIN student_profiles sp ON sp.id = a.student_profile_id
+                JOIN users u ON u.id = sp.user_id
+                WHERE a.id = ?
+                """,
+                (int(application["id"]),),
+            ).fetchone()
+            opportunity_title = str(row["opportunity_title"] if row else "PRISM opportunity")
+            student_name = str(row["student_name"] if row else "A student")
+            stage_name = str(node["display_name"] or node["node_key"])
+            login_url = os.environ.get("PRISM_LOGIN_URL", "http://localhost:3000")
+            SLAEmailSender().send(
+                reviewer_email,
+                f"[PRISM] Action required: {opportunity_title}",
+                (
+                    f"{student_name} is waiting for your review in PRISM.\n\n"
+                    f"Stage: {stage_name}\n"
+                    f"Opportunity: {opportunity_title}\n\n"
+                    f"Sign in to review: {login_url}\n"
+                ),
+            )
+        except Exception:
+            # Notification failures should not block workflow execution.
+            return
+
+    def _reactivate_task_row(
+        self,
+        db: sqlite3.Connection,
+        task_id: int,
+        application_id: int,
+        display_name: str,
+    ) -> int:
+        ts = _now_iso()
+        db.execute(
+            """
+            UPDATE application_workflow_tasks
+            SET status = 'active',
+                acted_at = NULL,
+                decision = NULL,
+                comment_summary = NULL,
+                flag_target = NULL
+            WHERE id = ?
+            """,
+            (task_id,),
+        )
+        db.execute(
+            """
+            UPDATE applications
+            SET current_stage_label = ?,
+                current_step_order = 1,
+                return_to_step_order = NULL,
+                return_to_stage_label = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (display_name, ts, application_id),
+        )
+        return task_id
+
+    def _reactivate_flagger_task(
+        self,
+        db: sqlite3.Connection,
+        return_task_id: int,
+        application_id: int,
+    ) -> TransitionResult:
+        row = db.execute(
+            """
+            SELECT COALESCE(n.display_name, t.node_key) AS display_name
+            FROM application_workflow_tasks t
+            JOIN graph_nodes n
+              ON n.graph_version_id = t.graph_version_id
+             AND n.node_key = t.node_key
+            WHERE t.id = ?
+            """,
+            (return_task_id,),
+        ).fetchone()
+        display_name = str(row["display_name"] if row else "Flagger Review")
+        task_id = self._reactivate_task_row(db, return_task_id, application_id, display_name)
+        return TransitionResult(success=True, next_task_ids=[task_id], application_status="FLAG_RESOLVED")
+
+    def _complete_temporary_flag_task(
+        self,
+        db: sqlite3.Connection,
+        task: sqlite3.Row,
+        decision: str,
+        ts: str,
+        comment: str | None,
+        reviewer_data: dict[str, Any] | None,
+    ) -> TransitionResult:
+        db.execute(
+            """
+            UPDATE application_workflow_tasks
+            SET status = 'completed',
+                acted_at = ?,
+                decision = ?,
+                comment_summary = ?,
+                reviewer_data_json = ?
+            WHERE id = ?
+            """,
+            (ts, decision, comment, json.dumps(reviewer_data or {}), int(task["id"])),
+        )
+        return self._reactivate_flagger_task(
+            db,
+            int(task["flag_return_task_id"]),
+            int(task["application_id"]),
+        )
 
     def _mark_application_approved(self, db: sqlite3.Connection, application_id: int) -> None:
         db.execute(

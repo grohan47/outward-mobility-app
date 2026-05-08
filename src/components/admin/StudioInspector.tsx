@@ -225,6 +225,7 @@ export default function StudioInspector({
   const slaHours = Number(node.metadata?.sla_hours || 0) || undefined;
   const requiredInputs = node.metadata?.required_inputs || [];
   const customSla = slaHours && !SLA_OPTIONS.some((option) => option.value === slaHours);
+  const hasFinalAuthority = node.allowed_actions.includes("reject");
 
   return (
     <aside className="flex h-full flex-col border-l border-slate-200 bg-white" role="region" aria-label="Node configuration">
@@ -250,6 +251,40 @@ export default function StudioInspector({
               placeholder="Configure this reviewer"
             />
           </FieldLabel>
+
+          <section className="space-y-3">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Authority Level</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateNode(node.node_key, {
+                    allowed_actions: ["approve", "flag", "request_changes", "comment"],
+                  })
+                }
+                className={`rounded-xl border px-3 py-3 text-left text-xs font-semibold ${
+                  !hasFinalAuthority ? "border-primary bg-primary/10 text-primary-dark" : "border-slate-200 bg-white text-slate-600"
+                }`}
+              >
+                Standard
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">Approve, flag, request changes</span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateNode(node.node_key, {
+                    allowed_actions: ["approve", "reject", "flag", "request_changes", "comment"],
+                  })
+                }
+                className={`rounded-xl border px-3 py-3 text-left text-xs font-semibold ${
+                  hasFinalAuthority ? "border-primary bg-primary/10 text-primary-dark" : "border-slate-200 bg-white text-slate-600"
+                }`}
+              >
+                Final
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">Includes reject authority</span>
+              </button>
+            </div>
+          </section>
 
           <section className="space-y-3">
             <div className="flex items-center justify-between">

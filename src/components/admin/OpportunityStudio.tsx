@@ -2,8 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import StudioGraph from "./StudioGraph";
-import StudioInspector from "./StudioInspector";
+import StudioGraphV2 from "./StudioGraphV2";
 import type {
   CatalogField,
   CustomFieldDraft,
@@ -97,6 +96,8 @@ function mergeDetailFields(current: OpportunityDetailField[], incoming: Opportun
 }
 
 type StudioStep = "details" | "form" | "pipeline";
+type SetupMode = "ai" | "manual";
+type AIChatMessage = { role: "user" | "assistant"; content: string };
 
 function validEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -124,7 +125,7 @@ function defaultReviewerNode(label = "New Reviewer"): StudioGraphNode {
     display_name: label,
     reviewer_email: "",
     visible_sections: ["all"],
-    allowed_actions: ["approve", "reject", "request_changes", "comment"],
+    allowed_actions: ["approve", "flag", "request_changes", "comment"],
     metadata: { required_inputs: [], sla_hours: 72, can_view_comments: false },
   };
 }
@@ -162,6 +163,18 @@ function rejectedEndNode(): StudioGraphNode {
     visible_sections: ["all"],
     allowed_actions: [],
     metadata: { required_inputs: [], final_status: "REJECTED" },
+  };
+}
+
+function terminalEndNode(label = "Terminal End"): StudioGraphNode {
+  return {
+    node_key: nodeKey("end"),
+    node_type: "end",
+    display_name: label,
+    reviewer_email: null,
+    visible_sections: ["all"],
+    allowed_actions: [],
+    metadata: { required_inputs: [] },
   };
 }
 
@@ -204,7 +217,7 @@ function workflowStepsToGraph(steps: WorkflowStep[]): { nodes: StudioGraphNode[]
     display_name: step.reviewerName || step.name,
     reviewer_email: step.reviewerEmail,
     visible_sections: step.visibleFields.length > 0 ? step.visibleFields : ["all"],
-    allowed_actions: ["approve", "reject", "request_changes", "comment"],
+    allowed_actions: index === steps.length - 1 ? ["approve", "reject", "flag", "request_changes", "comment"] : ["approve", "flag", "request_changes", "comment"],
     metadata: {
       required_inputs: step.requiredInputs.map((input) => {
         const inputType = input.inputType === "dropdown" || input.inputType === "multiselect" ? "select" : input.inputType === "number" ? "number" : "text";
@@ -238,6 +251,72 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+function normalizeConditionJson(condition: Record<string, unknown> | null | undefined) {
+  if (!condition) return condition;
+  const operator = condition.op ?? condition.operator;
+  const opMap: Record<string, string> = {
+    eq: "equals",
+    neq: "not_equals",
+    gte: "gte",
+    lte: "lte",
+    gt: "gt",
+    lt: "lt",
+  };
+  return {
+    ...condition,
+    op: typeof operator === "string" ? opMap[operator] || operator : "equals",
+  };
+}
+
+function normalizeGraphForApp(graph: DraftOutput["graph"]): DraftOutput["graph"] {
+  const idToNodeKey = new Map<string, string>();
+  const nodes = (graph.nodes || []).map((rawNode: StudioGraphNode & Record<string, unknown>) => {
+    const legacyId = typeof rawNode.id === "string" ? rawNode.id : undefined;
+    const nodeKey = rawNode.node_key || legacyId || nodeKeyFromType(rawNode.node_type);
+    if (legacyId) idToNodeKey.set(legacyId, nodeKey);
+    const directInputs = Array.isArray(rawNode.required_inputs) ? rawNode.required_inputs : undefined;
+    const directSla = typeof rawNode.sla_hours === "number" ? rawNode.sla_hours : undefined;
+    const canvasX = typeof rawNode.x === "number" ? rawNode.x : undefined;
+    const canvasY = typeof rawNode.y === "number" ? rawNode.y : undefined;
+    const metadata = {
+      ...(rawNode.metadata || { required_inputs: [] }),
+      required_inputs: rawNode.metadata?.required_inputs || directInputs || [],
+      ...(directSla ? { sla_hours: directSla } : {}),
+      ...(typeof rawNode.can_view_comments === "boolean" ? { can_view_comments: rawNode.can_view_comments } : {}),
+      ...(canvasX !== undefined && canvasY !== undefined ? { canvas_position: { x: canvasX, y: canvasY } } : {}),
+    };
+    return {
+      node_key: nodeKey,
+      node_type: rawNode.node_type,
+      display_name: rawNode.display_name || null,
+      reviewer_email: typeof rawNode.reviewer_email === "string" ? rawNode.reviewer_email : null,
+      visible_sections: Array.isArray(rawNode.visible_sections) ? rawNode.visible_sections : ["all"],
+      allowed_actions: Array.isArray(rawNode.allowed_actions) ? rawNode.allowed_actions : rawNode.node_type === "reviewer" ? ["approve", "flag", "request_changes", "comment"] : [],
+      metadata,
+    } as StudioGraphNode;
+  });
+
+  const edges = (graph.edges || []).map((rawEdge: StudioGraphEdge & Record<string, unknown>) => {
+    const from = rawEdge.from_node_key || (typeof rawEdge.from === "string" ? idToNodeKey.get(rawEdge.from) || rawEdge.from : "");
+    const to = rawEdge.to_node_key || (typeof rawEdge.to === "string" ? idToNodeKey.get(rawEdge.to) || rawEdge.to : "");
+    return {
+      from_node_key: String(from),
+      to_node_key: String(to),
+      action: rawEdge.action || "always",
+      label: rawEdge.label || null,
+      condition_json: normalizeConditionJson(rawEdge.condition_json as Record<string, unknown> | null | undefined) || null,
+    } as StudioGraphEdge;
+  });
+
+  return { nodes, edges: dedupeEdges(edges) };
+}
+
+function nodeKeyFromType(nodeType: StudioGraphNode["node_type"]) {
+  if (nodeType === "start") return "start";
+  if (nodeType === "end") return "end";
+  return nodeKey(nodeType);
+}
+
 export default function OpportunityStudio({
   mode,
   opportunityId,
@@ -254,6 +333,7 @@ export default function OpportunityStudio({
 }: OpportunityStudioProps) {
   const router = useRouter();
   const [studioStep, setStudioStep] = useState<StudioStep>(mode === "create" ? "details" : "pipeline");
+  const [setupMode, setSetupMode] = useState<SetupMode | null>(mode === "edit" ? "manual" : null);
   const [mobileTab, setMobileTab] = useState<"details" | "graph" | "inspector">("graph");
   const [opportunity, setOpportunity] = useState<OpportunityData>(initialOpportunity || blankOpportunity);
   const [detailFields, setDetailFields] = useState<OpportunityDetailField[]>(initialDetailFields);
@@ -272,6 +352,10 @@ export default function OpportunityStudio({
   const [selectedEdgeKey, setSelectedEdgeKey] = useState<string | null>(null);
   const [connectSourceKey, setConnectSourceKey] = useState<string | null>(null);
   const [aiPrompt, setAiPrompt] = useState("");
+  const [aiChatMessages, setAiChatMessages] = useState<AIChatMessage[]>([]);
+  const [aiChatInput, setAiChatInput] = useState("");
+  const [inlineAiOpen, setInlineAiOpen] = useState(false);
+  const [inlineAiInput, setInlineAiInput] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
   const [currentDraftId, setCurrentDraftId] = useState<number | null>(null);
   const [draftOutput, setDraftOutput] = useState<DraftOutput | null>(null);
@@ -504,6 +588,30 @@ export default function OpportunityStudio({
     setNotice("Reject route added. A denied application will close on the rejected path.");
   }
 
+  function addTerminalEnd() {
+    const selected = graphNodes.find((node) => node.node_key === selectedNodeKey);
+    if (!selected || selected.node_type === "end") {
+      setError("Select a non-terminal graph node before adding a terminal end.");
+      return;
+    }
+    const terminal = terminalEndNode();
+    commitGraph(
+      [...graphNodes, terminal],
+      dedupeEdges([
+        ...graphEdges,
+        {
+          from_node_key: selected.node_key,
+          to_node_key: terminal.node_key,
+          action: defaultRouteAction(selected),
+          label: selected.node_type === "reviewer" ? "Approve and end" : "End here",
+        },
+      ])
+    );
+    setSelectedNodeKey(terminal.node_key);
+    setSelectedEdgeKey(null);
+    setNotice("Terminal end node added.");
+  }
+
   function startConnectMode() {
     const connectableCount = graphNodes.filter((node) => node.node_type !== "end").length;
     if (connectableCount < 1 || graphNodes.length < 2) {
@@ -622,15 +730,29 @@ export default function OpportunityStudio({
 
   function removeNode(nodeKeyToRemove: string) {
     const node = graphNodes.find((item) => item.node_key === nodeKeyToRemove);
-    if (!node || node.node_type !== "reviewer") return;
+    if (!node || node.node_type === "start") return;
+    if (node.node_type === "end" && graphNodes.filter((item) => item.node_type === "end").length === 1) return;
     const incoming = graphEdges.filter((edge) => edge.to_node_key === nodeKeyToRemove);
     const outgoing = graphEdges.filter((edge) => edge.from_node_key === nodeKeyToRemove);
-    const bridged = incoming.flatMap((inEdge) => outgoing.map((outEdge) => ({ from_node_key: inEdge.from_node_key, to_node_key: outEdge.to_node_key, action: inEdge.action || outEdge.action || "always" })));
+    const bridged =
+      node.node_type === "reviewer"
+        ? incoming.flatMap((inEdge) => outgoing.map((outEdge) => ({ from_node_key: inEdge.from_node_key, to_node_key: outEdge.to_node_key, action: inEdge.action || outEdge.action || "always" })))
+        : [];
     commitGraph(
       graphNodes.filter((item) => item.node_key !== nodeKeyToRemove),
       dedupeEdges([...graphEdges.filter((edge) => edge.from_node_key !== nodeKeyToRemove && edge.to_node_key !== nodeKeyToRemove), ...bridged])
     );
     setSelectedNodeKey(null);
+    setSelectedEdgeKey(null);
+  }
+
+  function removeEdge(edgeKeyToRemove: string) {
+    const [from, to] = edgeKeyToRemove.split("->");
+    commitGraph(
+      graphNodes,
+      graphEdges.filter((edge) => !(edge.from_node_key === from && edge.to_node_key === to))
+    );
+    setSelectedEdgeKey(null);
   }
 
   function undo() {
@@ -703,13 +825,14 @@ export default function OpportunityStudio({
     if (draftDetails.length > 0) {
       setDetailFields((prev) => mergeDetailFields(prev, draftDetails));
     }
-    commitGraph(draftData.graph.nodes, draftData.graph.edges);
+    const normalizedGraph = normalizeGraphForApp(draftData.graph);
+    commitGraph(normalizedGraph.nodes, normalizedGraph.edges);
   }
 
-  async function generateDraft() {
+  async function generateDraftFromPrompt(prompt: string, options: { advanceTo?: StudioStep; source?: "chat" | "prompt" } = {}) {
     setError(null);
     setNotice(null);
-    if (aiPrompt.trim().length < 10) {
+    if (prompt.trim().length < 10) {
       setError("Enter at least 10 characters so PRISM has enough context.");
       return;
     }
@@ -719,7 +842,7 @@ export default function OpportunityStudio({
       const response = await fetch("/api/admin/opportunities/ai-generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: aiPrompt.trim() }),
+        body: JSON.stringify({ prompt: prompt.trim().slice(0, 4000) }),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.detail || "AI generation failed.");
@@ -727,8 +850,11 @@ export default function OpportunityStudio({
       setCurrentDraftId(Number(body.draft_id || body.draft?.id || 0) || null);
       setAnswers({});
       applyDraftData(draftData);
-      const shouldAdvanceToPipeline = draftData.clarifying_questions.length === 0 && draftData.confidence >= 0.8;
-      if (shouldAdvanceToPipeline) setStudioStep("pipeline");
+      if (setupMode === "ai") setSetupMode("manual");
+      const shouldAdvanceToPipeline =
+        options.advanceTo === "pipeline" || (draftData.clarifying_questions.length === 0 && draftData.confidence >= 0.8);
+      if (options.advanceTo) setStudioStep(options.advanceTo);
+      else if (shouldAdvanceToPipeline) setStudioStep("pipeline");
       setNotice(
         shouldAdvanceToPipeline
           ? "PRISM filled the draft and moved you to the pipeline."
@@ -738,6 +864,45 @@ export default function OpportunityStudio({
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to generate draft.");
+    } finally {
+      setAiGenerating(false);
+    }
+  }
+
+  async function generateDraft() {
+    await generateDraftFromPrompt(aiPrompt);
+  }
+
+  function transcriptPrompt(messages: AIChatMessage[]) {
+    return messages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join("\n\n");
+  }
+
+  async function sendChatMessage(content: string, source: "modal" | "inline" = "modal") {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    const nextMessages: AIChatMessage[] = [...aiChatMessages, { role: "user", content: trimmed }];
+    setAiChatMessages(nextMessages);
+    setAiChatInput("");
+    setInlineAiInput("");
+    setAiGenerating(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/admin/workflow-drafts/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: nextMessages }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.detail || "PRISM setup chat failed.");
+      const reply = String(body.reply || body.message || "");
+      const withReply: AIChatMessage[] = [...nextMessages, { role: "assistant", content: reply }];
+      setAiChatMessages(withReply);
+      if (body.ready) {
+        await generateDraftFromPrompt(transcriptPrompt(withReply), { advanceTo: "details", source: "chat" });
+        if (source === "inline") setInlineAiOpen(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to continue AI setup chat.");
     } finally {
       setAiGenerating(false);
     }
@@ -901,6 +1066,32 @@ export default function OpportunityStudio({
     return body;
   }
 
+  if (mode === "create" && setupMode === null) {
+    return <ModeSelectionScreen onChooseAI={() => setSetupMode("ai")} onChooseManual={() => setSetupMode("manual")} />;
+  }
+
+  if (mode === "create" && setupMode === "ai" && !draftOutput && !currentDraftId) {
+    return (
+      <AIChatSetupScreen
+        messages={aiChatMessages}
+        input={aiChatInput}
+        setInput={setAiChatInput}
+        loading={aiGenerating}
+        error={error}
+        onBack={() => setSetupMode(null)}
+        onSend={() => void sendChatMessage(aiChatInput)}
+        onBuildManual={() => setSetupMode("manual")}
+      />
+    );
+  }
+
+  const studioSteps: Array<{ key: StudioStep; label: string }> = [
+    { key: "details", label: "Opportunity Details" },
+    { key: "form", label: "Application Form" },
+    { key: "pipeline", label: "Approval Pipeline" },
+  ];
+  const activeStepIndex = Math.max(0, studioSteps.findIndex((step) => step.key === studioStep));
+
   return (
     <div className="relative -m-6 flex h-[calc(100vh-96px)] flex-col overflow-hidden bg-white">
       <header className="border-b border-slate-200 bg-white">
@@ -914,64 +1105,107 @@ export default function OpportunityStudio({
             </button>
           </div>
         )}
-        <div className="flex min-h-[64px] flex-wrap items-center gap-3 px-4">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <span className="text-sm font-black text-slate-900">PRISM</span>
-            {studioStep === "details" ? (
-              <p className="min-w-[180px] flex-1 truncate text-lg font-semibold text-slate-900">{opportunity.title || "New opportunity"}</p>
+        <div className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-5 md:grid-cols-[minmax(180px,0.8fr)_minmax(360px,1.4fr)_minmax(220px,0.8fr)]">
+          <div className="flex min-w-0 items-center gap-3">
+            <button type="button" onClick={() => router.push("/admin/opportunities")} className="inline-flex min-h-[34px] items-center gap-1 rounded-lg px-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">
+              <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+              Opportunities
+            </button>
+            <div className="h-6 w-px bg-slate-200" />
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-white">
+                <svg viewBox="0 0 48 48" width="14" height="14" fill="currentColor" aria-hidden="true">
+                  <path clipRule="evenodd" d="M47.2426 24L24 47.2426L0.757355 24L24 0.757355L47.2426 24ZM12.2426 21H35.7574L24 9.24264L12.2426 21Z" fillRule="evenodd" />
+                </svg>
+              </span>
+              <span className="truncate text-sm font-black text-slate-800">Opportunity Studio</span>
+            </div>
+          </div>
+
+          <div className="hidden items-center justify-center md:flex">
+            {studioSteps.map((step, index) => {
+              const active = step.key === studioStep;
+              const done = index < activeStepIndex;
+              return (
+                <div key={step.key} className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => setStudioStep(step.key)}
+                    className={`inline-flex min-h-[36px] items-center gap-2 rounded-full border px-3 text-xs font-bold transition ${
+                      active
+                        ? "border-primary bg-primary/10 text-primary-dark"
+                        : done
+                          ? "border-transparent text-slate-600 hover:bg-slate-50"
+                          : "border-transparent text-slate-400 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${active || done ? "bg-primary text-white" : "bg-slate-200 text-slate-500"}`}>
+                      {done ? <span className="material-symbols-outlined text-[13px]">check</span> : index + 1}
+                    </span>
+                    <span className="whitespace-nowrap">{step.label}</span>
+                  </button>
+                  {index < studioSteps.length - 1 && <div className={`mx-1 h-px w-8 ${done ? "bg-primary" : "bg-slate-200"}`} />}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex min-w-0 items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setInlineAiOpen((value) => !value)}
+              className={`inline-flex min-h-[32px] items-center gap-1 rounded-full border px-3 text-xs font-black ${
+                inlineAiOpen ? "border-primary bg-primary text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
+              AI
+            </button>
+            <button type="button" onClick={saveDraftOnly} disabled={saving} className="hidden min-h-[38px] rounded-lg px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 lg:inline-flex lg:items-center">
+              {saving ? "Saving..." : "Save Draft"}
+            </button>
+            {studioStep === "pipeline" ? (
+              <>
+                <button type="button" onClick={() => void validateForPublish()} disabled={validating} className="hidden min-h-[38px] rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 xl:inline-flex xl:items-center">
+                  {validating ? "Validating..." : publishReady ? "Validated" : "Validate"}
+                </button>
+                <button type="button" onClick={() => void publishWorkflow()} disabled={publishing} className="inline-flex min-h-[38px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm disabled:opacity-50">
+                  {publishing ? <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span> : <span className="material-symbols-outlined text-[18px]">rocket_launch</span>}
+                  Publish
+                </button>
+              </>
             ) : (
-              <input
-                className="min-w-[180px] flex-1 border-b border-transparent bg-transparent text-lg font-semibold text-slate-900 outline-none hover:border-slate-300 focus:border-primary"
-                value={opportunity.title}
-                onChange={(event) => setOpportunity({ ...opportunity, title: event.target.value })}
-                placeholder="Untitled opportunity"
-              />
+              <button type="button" onClick={() => setStudioStep(studioStep === "details" ? "form" : "pipeline")} className="inline-flex min-h-[38px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm">
+                Continue
+                <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+              </button>
             )}
-            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">{mode === "create" ? "Draft" : opportunity.status}</span>
-            <div className="hidden items-center gap-1 rounded-lg bg-slate-100 p-1 md:flex">
+          </div>
+        </div>
+        {inlineAiOpen && (
+          <div className="border-t border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="mx-auto flex max-w-5xl gap-2">
+              <input
+                value={inlineAiInput}
+                onChange={(event) => setInlineAiInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) void sendChatMessage(inlineAiInput, "inline");
+                }}
+                className="min-h-[40px] flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-primary"
+                placeholder="Ask PRISM to revise the setup or paste missing approval details"
+              />
               <button
                 type="button"
-                onClick={() => setStudioStep("details")}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "details" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+                onClick={() => void sendChatMessage(inlineAiInput, "inline")}
+                disabled={aiGenerating || inlineAiInput.trim().length === 0}
+                className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white disabled:opacity-50"
               >
-                1 Details
-              </button>
-              <button
-                type="button"
-                onClick={() => setStudioStep("form")}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "form" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
-              >
-                2 Application Form
-              </button>
-              <button
-                type="button"
-                onClick={() => setStudioStep("pipeline")}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold ${studioStep === "pipeline" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
-              >
-                3 Pipeline
+                {aiGenerating ? <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span> : <span className="material-symbols-outlined text-[18px]">send</span>}
+                Send
               </button>
             </div>
           </div>
-          <button type="button" onClick={saveDraftOnly} disabled={saving} className="min-h-[40px] rounded-lg px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50">
-            {saving ? "Saving..." : "Save Draft"}
-          </button>
-          {studioStep === "pipeline" ? (
-            <>
-              <button type="button" onClick={() => void validateForPublish()} disabled={validating} className="min-h-[40px] rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                {validating ? "Validating..." : publishReady ? "Validated" : "Validate"}
-              </button>
-              <button type="button" onClick={() => void publishWorkflow()} disabled={publishing} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm disabled:opacity-50">
-                {publishing ? <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span> : <span className="material-symbols-outlined text-[18px]">publish</span>}
-                Publish Workflow
-              </button>
-            </>
-          ) : (
-            <button type="button" onClick={() => setStudioStep(studioStep === "details" ? "form" : "pipeline")} className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-bold text-white shadow-sm">
-              {studioStep === "details" ? "Application Form" : "Build Pipeline"}
-              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
-            </button>
-          )}
-        </div>
+        )}
         {(error || notice) && (
           <div className={`border-t px-4 py-2 text-sm ${error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
             {error || notice}
@@ -1016,121 +1250,33 @@ export default function OpportunityStudio({
           onContinue={() => setStudioStep("pipeline")}
         />
       ) : (
-        <div className="hidden flex-1 lg:grid lg:grid-cols-[220px_1fr_280px]">
-          <PipelineRail
-            opportunity={opportunity}
+        <div className="min-h-0 flex-1">
+          <StudioGraphV2
             nodes={graphNodes}
             edges={graphEdges}
-            selectedNode={selectedNode}
-            selectedEdge={selectedEdge}
+            selectedNodeKey={selectedNodeKey}
+            selectedEdgeKey={selectedEdgeKey}
             validationWarnings={validationWarnings}
-            openQuestions={openQuestions.length}
-            publishReady={publishReady}
-            onBack={() => setStudioStep("form")}
+            availableFields={selectedApplicationFields}
+            connectMode={Boolean(connectSourceKey)}
+            onSelectNode={handleNodeSelection}
+            onSelectEdge={setSelectedEdgeKey}
             onAddReviewer={addReviewer}
             onAddParallel={addParallelGroup}
             onAddConditionalBranch={addConditionalBranch}
             onAddJoin={addJoin}
+            onAddTerminalEnd={addTerminalEnd}
             onAddRejectRoute={addRejectRoute}
             onStartConnect={startConnectMode}
-          />
-          <main className="flex min-w-0 flex-col">
-            <StudioGraph
-              nodes={graphNodes}
-              edges={graphEdges}
-              selectedNodeKey={selectedNodeKey}
-              selectedEdgeKey={selectedEdgeKey}
-              validationWarnings={validationWarnings}
-              connectMode={Boolean(connectSourceKey)}
-              onSelectNode={handleNodeSelection}
-              onSelectEdge={setSelectedEdgeKey}
-              onAddReviewer={addReviewer}
-              onAddParallel={addParallelGroup}
-              onAddConditionalBranch={addConditionalBranch}
-              onAddJoin={addJoin}
-              onAddRejectRoute={addRejectRoute}
-              onStartConnect={startConnectMode}
-              onAddCondition={addCondition}
-              onMoveNode={moveNode}
-              onResetLayout={resetGraphLayout}
-              onUndo={undo}
-              onRedo={redo}
-            />
-          </main>
-          <StudioInspector
-            node={selectedNode}
-            edge={selectedEdge}
-            nodes={graphNodes}
-            availableFields={selectedApplicationFields}
-            validationWarnings={validationWarnings}
-            onClose={() => {
-              setSelectedNodeKey(null);
-              setSelectedEdgeKey(null);
-            }}
+            onMoveNode={moveNode}
+            onResetLayout={resetGraphLayout}
+            onUndo={undo}
+            onRedo={redo}
             onUpdateNode={updateNode}
             onUpdateEdge={updateEdge}
             onRemoveNode={removeNode}
+            onRemoveEdge={removeEdge}
           />
-        </div>
-      )}
-
-      {studioStep === "pipeline" && (
-        <div className="flex flex-1 flex-col lg:hidden">
-          {mobileTab === "graph" && (
-            <StudioGraph
-              mobile
-              nodes={graphNodes}
-              edges={graphEdges}
-              selectedNodeKey={selectedNodeKey}
-              selectedEdgeKey={selectedEdgeKey}
-              validationWarnings={validationWarnings}
-              connectMode={Boolean(connectSourceKey)}
-              onSelectNode={(key) => {
-                handleNodeSelection(key);
-                if (key) setMobileTab("inspector");
-              }}
-              onSelectEdge={setSelectedEdgeKey}
-              onAddReviewer={addReviewer}
-              onAddParallel={addParallelGroup}
-              onAddConditionalBranch={addConditionalBranch}
-              onAddJoin={addJoin}
-              onAddRejectRoute={addRejectRoute}
-              onStartConnect={startConnectMode}
-              onAddCondition={addCondition}
-              onMoveNode={moveNode}
-              onResetLayout={resetGraphLayout}
-              onUndo={undo}
-              onRedo={redo}
-            />
-          )}
-          {mobileTab === "inspector" && (
-            <StudioInspector
-              node={selectedNode}
-              edge={selectedEdge}
-              nodes={graphNodes}
-              availableFields={selectedApplicationFields}
-              validationWarnings={validationWarnings}
-              onClose={() => setMobileTab("graph")}
-              onUpdateNode={updateNode}
-              onUpdateEdge={updateEdge}
-              onRemoveNode={removeNode}
-            />
-          )}
-          <nav className="mt-auto grid grid-cols-3 border-t border-slate-200 bg-white">
-            <button type="button" onClick={() => setStudioStep("form")} className="min-h-[56px] text-sm font-semibold text-slate-500">
-              Form
-            </button>
-            {(["graph", "inspector"] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setMobileTab(tab)}
-                className={`min-h-[56px] text-sm font-semibold capitalize ${mobileTab === tab ? "text-primary-dark" : "text-slate-500"}`}
-              >
-                {tab}
-              </button>
-            ))}
-          </nav>
         </div>
       )}
 
@@ -1153,6 +1299,141 @@ export default function OpportunityStudio({
         </div>
       )}
     </div>
+  );
+}
+
+function ModeSelectionScreen({
+  onChooseAI,
+  onChooseManual,
+}: {
+  onChooseAI: () => void;
+  onChooseManual: () => void;
+}) {
+  return (
+    <main className="-m-6 flex min-h-[calc(100vh-96px)] items-center justify-center bg-slate-50 p-6">
+      <div className="w-full max-w-4xl">
+        <div className="mb-8 text-center">
+          <p className="text-xs font-black uppercase tracking-wider text-primary-dark">Opportunity Studio</p>
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-900">Start a new opportunity</h1>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={onChooseAI}
+            className="group rounded-xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:border-primary/40 hover:shadow-md"
+          >
+            <span className="material-symbols-outlined rounded-xl bg-primary/10 p-3 text-3xl text-primary-dark">auto_awesome</span>
+            <h2 className="mt-5 text-xl font-black text-slate-900">Generate with AI</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Chat through a forwarded email, clarify missing reviewers, then let PRISM fill the draft.</p>
+            <span className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-primary-dark">
+              Open setup chat
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={onChooseManual}
+            className="group rounded-xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:border-slate-300 hover:shadow-md"
+          >
+            <span className="material-symbols-outlined rounded-xl bg-slate-100 p-3 text-3xl text-slate-700">edit_square</span>
+            <h2 className="mt-5 text-xl font-black text-slate-900">Build manually</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Enter details, choose form fields, and draw the review pipeline yourself.</p>
+            <span className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-slate-700">
+              Open wizard
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </span>
+          </button>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function AIChatSetupScreen({
+  messages,
+  input,
+  setInput,
+  loading,
+  error,
+  onBack,
+  onSend,
+  onBuildManual,
+}: {
+  messages: AIChatMessage[];
+  input: string;
+  setInput: (value: string) => void;
+  loading: boolean;
+  error: string | null;
+  onBack: () => void;
+  onSend: () => void;
+  onBuildManual: () => void;
+}) {
+  return (
+    <main className="-m-6 flex h-[calc(100vh-96px)] flex-col bg-slate-50">
+      <header className="border-b border-slate-200 bg-white px-5 py-4">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3">
+          <button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-slate-900">
+            <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+            Start options
+          </button>
+          <button type="button" onClick={onBuildManual} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold text-slate-600 hover:bg-slate-50">
+            Build manually
+          </button>
+        </div>
+      </header>
+      <section className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col p-5">
+        <div className="mb-4">
+          <p className="text-xs font-black uppercase tracking-wider text-primary-dark">PRISM Setup</p>
+          <h1 className="mt-1 text-2xl font-black tracking-tight text-slate-900">Generate with AI</h1>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          {messages.length === 0 ? (
+            <div className="flex h-full min-h-[320px] flex-col items-center justify-center text-center">
+              <span className="material-symbols-outlined rounded-2xl bg-primary/10 p-4 text-4xl text-primary-dark">mark_email_read</span>
+              <h2 className="mt-5 text-lg font-black text-slate-900">Paste the opportunity email</h2>
+              <p className="mt-2 max-w-md text-sm leading-6 text-slate-500">
+                PRISM will ask one clarification at a time. When enough context is available, it will generate the structured draft automatically.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {messages.map((message, index) => (
+                <div key={`${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === "user" ? "bg-primary text-white" : "bg-slate-100 text-slate-800"}`}>
+                    {message.content}
+                  </div>
+                </div>
+              ))}
+              {loading && (
+                <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-500">
+                  <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
+                  PRISM is thinking
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        {error && <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
+        <div className="mt-4 flex gap-2">
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            rows={2}
+            className="min-h-[52px] flex-1 resize-none rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-primary"
+            placeholder="Paste the forwarded email or answer PRISM's question"
+          />
+          <button
+            type="button"
+            onClick={onSend}
+            disabled={loading || input.trim().length === 0}
+            className="inline-flex min-h-[52px] items-center gap-2 rounded-xl bg-primary px-5 text-sm font-black text-white disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[18px]">send</span>
+            Send
+          </button>
+        </div>
+      </section>
+    </main>
   );
 }
 

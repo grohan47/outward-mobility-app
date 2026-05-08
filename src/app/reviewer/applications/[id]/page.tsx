@@ -14,8 +14,9 @@ type SessionUser = {
 
 type StepRequiredInput = {
   input_key: string;
-  input_label: string;
-  input_type: "text" | "number" | "dropdown" | "multiselect";
+  input_label?: string;
+  label?: string;
+  input_type: "text" | "number" | "dropdown" | "multiselect" | "select" | "checkbox";
   options?: string[];
   is_required: number;
 };
@@ -48,6 +49,7 @@ type TimelineRecord = {
 };
 
 type GraphNodeInfo = {
+  task_id?: number;
   node_key: string;
   display_name: string;
   allowed_actions: string[];
@@ -76,6 +78,14 @@ type DetailPayload = {
   permissions?: { can_view_comments?: boolean };
 };
 
+type ApprovalAssist = {
+  recommendation?: string;
+  rationale?: string;
+  quality_checks?: Array<{ field?: string; label?: string; status?: string; note?: string }>;
+  draft_remarks?: string;
+  is_dummy_ai?: boolean;
+};
+
 function formatValue(value: unknown): string {
   if (Array.isArray(value)) return value.map((entry) => String(entry)).join(", ");
   if (value === null || value === undefined || value === "") return "-";
@@ -99,6 +109,9 @@ export default function ReviewerApplicationDetail() {
   const [remarks, setRemarks] = useState("");
   const [dynamicInputs, setDynamicInputs] = useState<Record<string, unknown>>({});
   const [targetStepOrder, setTargetStepOrder] = useState<number | null>(null);
+  const [assist, setAssist] = useState<ApprovalAssist | null>(null);
+  const [assistOpen, setAssistOpen] = useState(false);
+  const [assistLoading, setAssistLoading] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -132,6 +145,25 @@ export default function ReviewerApplicationDetail() {
       .catch(() => setLoading(false));
   }, [params.id]);
 
+  useEffect(() => {
+    let mounted = true;
+    setAssistLoading(true);
+    fetch(`/api/applications/${params.id}/ai-approval-assist`)
+      .then((response) => response.json())
+      .then((body) => {
+        if (mounted) setAssist(body || null);
+      })
+      .catch(() => {
+        if (mounted) setAssist(null);
+      })
+      .finally(() => {
+        if (mounted) setAssistLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [params.id]);
+
   const application = useMemo(
     () => ({
       id: Number(data?.application?.id || 0),
@@ -145,6 +177,7 @@ export default function ReviewerApplicationDetail() {
 
   const graphNodeInfo = data?.graph_node_info ?? null;
   const isGraphApp = graphNodeInfo !== null;
+  const allowedActions = graphNodeInfo?.allowed_actions || [];
 
   const pipelineSteps = useMemo(() => (Array.isArray(data?.pipeline_steps) ? data.pipeline_steps : []), [data?.pipeline_steps]);
   const reviews = useMemo(() => (Array.isArray(data?.reviews) ? data.reviews : []), [data?.reviews]);
@@ -303,6 +336,53 @@ export default function ReviewerApplicationDetail() {
         </div>
 
         <div className="lg:col-span-3 space-y-6">
+          <Card className="border-indigo-100 bg-indigo-50/40">
+            <button
+              type="button"
+              onClick={() => setAssistOpen((value) => !value)}
+              className="flex w-full items-center justify-between gap-4 text-left"
+            >
+              <div className="flex items-center gap-3">
+                <span className="material-symbols-outlined rounded-lg bg-indigo-100 p-2 text-indigo-700">auto_awesome</span>
+                <div>
+                  <p className="text-sm font-black uppercase tracking-wider text-indigo-900">PRISM AI - review assist</p>
+                  <p className="mt-1 text-sm text-indigo-800">
+                    {assistLoading ? "Preparing recommendation..." : assist?.recommendation || "Open for a field quality scan"}
+                  </p>
+                </div>
+              </div>
+              <span className="material-symbols-outlined text-indigo-700">{assistOpen ? "expand_less" : "expand_more"}</span>
+            </button>
+            {assistOpen && (
+              <div className="mt-4 border-t border-indigo-100 pt-4">
+                <p className="text-sm leading-6 text-indigo-950">{assist?.rationale || "No AI recommendation available yet."}</p>
+                {assist?.quality_checks && assist.quality_checks.length > 0 && (
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    {assist.quality_checks.slice(0, 6).map((check, index) => (
+                      <div key={`${check.field || index}`} className="rounded-lg border border-indigo-100 bg-white p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">{check.label || check.field}</p>
+                          <Badge variant={check.status === "missing" ? "warning" : "success"}>{check.status || "review"}</Badge>
+                        </div>
+                        <p className="mt-2 text-sm text-slate-700">{check.note}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {assist?.draft_remarks && (
+                  <button
+                    type="button"
+                    onClick={() => setRemarks(assist.draft_remarks || "")}
+                    className="mt-4 inline-flex h-9 items-center gap-2 rounded-lg bg-indigo-600 px-3 text-sm font-bold text-white"
+                  >
+                    <span className="material-symbols-outlined text-[17px]">edit_note</span>
+                    Use Draft Remarks
+                  </button>
+                )}
+              </div>
+            )}
+          </Card>
+
           <Card>
             <CardHeader title="Application File" />
             <div className="p-4 bg-slate-50 border-t border-slate-100 space-y-4 text-sm text-slate-700">
@@ -334,7 +414,7 @@ export default function ReviewerApplicationDetail() {
                     <Card key={input.input_key} className="border border-slate-200 shadow-none">
                       <div className="p-4">
                         <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-                          {input.input_label}
+                          {input.input_label || input.label || labelFromKey(input.input_key)}
                         </label>
 
                         {(input.input_type === "text" || input.input_type === "number") && (
@@ -346,7 +426,7 @@ export default function ReviewerApplicationDetail() {
                           />
                         )}
 
-                        {input.input_type === "dropdown" && (
+                        {(input.input_type === "dropdown" || input.input_type === "select") && (
                           <select
                             className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm bg-white"
                             value={String(dynamicInputs[input.input_key] || "")}
@@ -359,6 +439,17 @@ export default function ReviewerApplicationDetail() {
                               </option>
                             ))}
                           </select>
+                        )}
+
+                        {input.input_type === "checkbox" && (
+                          <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(dynamicInputs[input.input_key])}
+                              onChange={(e) => setDynamicInputs((prev) => ({ ...prev, [input.input_key]: e.target.checked }))}
+                            />
+                            Confirmed
+                          </label>
                         )}
 
                         {input.input_type === "multiselect" && (
@@ -432,7 +523,7 @@ export default function ReviewerApplicationDetail() {
                   size="md"
                   loading={actionLoading}
                   onClick={() => handleAction("reject")}
-                  disabled={!remarks || user?.role !== "ADMIN"}
+                  disabled={!remarks || (isGraphApp ? !allowedActions.includes("reject") : user?.role !== "ADMIN")}
                 >
                   Reject
                 </Button>

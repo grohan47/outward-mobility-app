@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS application_workflow_tasks (
   decision TEXT,
   comment_summary TEXT,
   return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
+  flag_target TEXT,
+  flag_return_task_id INTEGER REFERENCES application_workflow_tasks(id),
   created_at TEXT DEFAULT (datetime('now'))
 );
 

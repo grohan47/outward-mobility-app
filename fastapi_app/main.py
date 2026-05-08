@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from fastapi_app.ai_service import ai_approval_assist, ai_nomination_insights, ai_thread_summary
-from fastapi_app.ai_workflow import AIWorkflowDraftService
+from fastapi_app.ai_workflow import AIWorkflowChatService, AIWorkflowDraftService
 from fastapi_app.graph_execution import GraphExecutionService
 from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, OpportunityDraftModel
 from fastapi_app.graph_publishing import GraphPublishingService
@@ -502,7 +502,7 @@ def schema_needs_reset(conn: sqlite3.Connection) -> bool:
         "opportunity_step_required_inputs": {"options_json", "display_order"},
         "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id", "workflow_notes"},
         "form_field_catalog": {"field_hint", "options_json"},
-        "application_workflow_tasks": {"reviewer_data_json"},
+        "application_workflow_tasks": {"reviewer_data_json", "flag_target", "flag_return_task_id"},
         "opportunities": {"ai_summary_json", "ai_summary_source_hash"},
         "graph_edges": {"action"},
         "workflow_drafts": {"original_prompt"},
@@ -538,6 +538,12 @@ def apply_schema_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE applications ADD COLUMN workflow_notes TEXT")
     if "application_workflow_tasks" in list_tables(conn) and "reviewer_data_json" not in table_columns(conn, "application_workflow_tasks"):
         conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
+    if "application_workflow_tasks" in list_tables(conn):
+        task_columns = table_columns(conn, "application_workflow_tasks")
+        if "flag_target" not in task_columns:
+            conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN flag_target TEXT")
+        if "flag_return_task_id" not in task_columns:
+            conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN flag_return_task_id INTEGER REFERENCES application_workflow_tasks(id)")
     if "graph_edges" in list_tables(conn) and "action" not in table_columns(conn, "graph_edges"):
         conn.execute("ALTER TABLE graph_edges ADD COLUMN action TEXT")
     if "workflow_drafts" in list_tables(conn) and "original_prompt" not in table_columns(conn, "workflow_drafts"):
@@ -854,6 +860,8 @@ CREATE TABLE application_workflow_tasks (
   comment_summary TEXT,
   return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
   reviewer_data_json TEXT DEFAULT '{}',
+  flag_target TEXT,
+  flag_return_task_id INTEGER REFERENCES application_workflow_tasks(id),
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -1232,6 +1240,13 @@ def ensure_db_initialized() -> None:
         required = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         if required == 0:
             seed_data(conn)
+        for reviewer_email, reviewer_name in [
+            ("vc@plaksha.edu.in", "Vice Chancellor"),
+            ("dean@plaksha.edu.in", "Dean Academics"),
+            ("oge@plaksha.edu.in", "OGE Administrator"),
+        ]:
+            ensure_reviewer_account(conn, reviewer_email, reviewer_name, "Reviewer", now_iso())
+        conn.commit()
 
 
 def parse_session(raw_session: str | None) -> dict[str, Any] | None:
@@ -1339,6 +1354,16 @@ class OpportunityAIGenerateBody(BaseModel):
     prompt: str = Field(min_length=10, max_length=4000)
 
 
+class WorkflowChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=12000)
+
+
+class WorkflowChatBody(BaseModel):
+    messages: list[WorkflowChatMessage] = Field(min_length=1, max_length=40)
+    session_id: str | None = None
+
+
 class ClarificationAnswerBody(BaseModel):
     answers: dict[str, Any]
 
@@ -1367,6 +1392,12 @@ class TaskDecideBody(BaseModel):
     decision: str
     comment: str | None = None
     reviewer_data: dict[str, Any] | None = None
+
+
+class ResolveFlagBody(BaseModel):
+    action: Literal["return_to_flagger", "redirect"]
+    redirect_email: str | None = None
+    comment: str | None = None
 
 
 class SLAPolicyBody(BaseModel):
@@ -2394,6 +2425,7 @@ def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
     email = body.email.strip().lower()
     with db_conn() as conn:
         user = get_user_identity(conn, email)
+        is_new_user = False
         if not user:
             assignment = conn.execute(
                 """
@@ -2406,6 +2438,7 @@ def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
                 (email,),
             ).fetchone()
             if assignment:
+                is_new_user = True
                 ensure_reviewer_account(
                     conn,
                     email,
@@ -2421,6 +2454,7 @@ def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
 
         available_workspaces = get_user_workspaces(conn, email)
         session_payload = build_session_payload(user, available_workspaces)
+        session_payload["is_new_user"] = is_new_user
 
     response.set_cookie(
         key=SESSION_COOKIE,
@@ -2737,6 +2771,19 @@ def admin_generate_opportunity_with_ai(
     return {"draft_id": draft["id"], "draft": draft}
 
 
+@app.post("/api/admin/workflow-drafts/chat")
+def admin_workflow_draft_chat(
+    body: WorkflowChatBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    messages = [message.model_dump() for message in body.messages]
+    try:
+        reply, ready = AIWorkflowChatService().chat(messages)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Workflow setup chat failed: {exc}")
+    return {"reply": reply, "message": reply, "ready": ready, "session_id": body.session_id or f"chat-{int(datetime.now(timezone.utc).timestamp())}"}
+
+
 @app.post("/api/admin/workflow-drafts/manual", status_code=201)
 def admin_create_manual_workflow_draft(
     body: WorkflowDraftManualBody,
@@ -2912,6 +2959,126 @@ def reviewer_decide_task(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     return result.model_dump()
+
+
+@app.post("/api/admin/applications/{application_id}/resolve-flag")
+def admin_resolve_flag(
+    application_id: int,
+    body: ResolveFlagBody,
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
+    ensure_db_initialized()
+    with db_conn() as conn:
+        app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Application not found")
+        flagged = conn.execute(
+            """
+            SELECT *
+            FROM application_workflow_tasks
+            WHERE application_id = ?
+              AND status = 'flagged'
+              AND COALESCE(flag_target, 'admin') = 'admin'
+            ORDER BY acted_at DESC, id DESC
+            LIMIT 1
+            """,
+            (application_id,),
+        ).fetchone()
+        if not flagged:
+            raise HTTPException(status_code=400, detail="No admin-targeted flag is waiting for resolution.")
+
+        ts = now_iso()
+        if body.comment:
+            conn.execute(
+                """
+                INSERT INTO application_comments (application_id, author_email, text, visibility, created_at)
+                VALUES (?, ?, ?, 'internal', ?)
+                """,
+                (application_id, session.email, body.comment.strip(), ts),
+            )
+
+        if body.action == "return_to_flagger":
+            node = conn.execute(
+                """
+                SELECT COALESCE(n.display_name, t.node_key) AS display_name
+                FROM application_workflow_tasks t
+                JOIN graph_nodes n
+                  ON n.graph_version_id = t.graph_version_id
+                 AND n.node_key = t.node_key
+                WHERE t.id = ?
+                """,
+                (int(flagged["id"]),),
+            ).fetchone()
+            display_name = str(node["display_name"] if node else flagged["node_key"])
+            conn.execute(
+                """
+                UPDATE application_workflow_tasks
+                SET status = 'active',
+                    acted_at = NULL,
+                    decision = NULL,
+                    flag_target = NULL
+                WHERE id = ?
+                """,
+                (int(flagged["id"]),),
+            )
+            conn.execute(
+                """
+                UPDATE applications
+                SET current_stage_label = ?,
+                    current_step_order = 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (display_name, ts, application_id),
+            )
+            next_task_id = int(flagged["id"])
+        else:
+            redirect_email = (body.redirect_email or "").strip().lower()
+            if not valid_email(redirect_email):
+                raise HTTPException(status_code=400, detail="A valid redirect_email is required.")
+            ensure_reviewer_account(conn, redirect_email, None, "Temporary Flag Review", ts)
+            cursor = conn.execute(
+                """
+                INSERT INTO application_workflow_tasks
+                  (application_id, graph_version_id, node_key, assigned_reviewer_email,
+                   status, flag_return_task_id, reviewer_data_json)
+                VALUES (?, ?, ?, ?, 'active', ?, '{}')
+                """,
+                (
+                    application_id,
+                    int(flagged["graph_version_id"]),
+                    flagged["node_key"],
+                    redirect_email,
+                    int(flagged["id"]),
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE applications
+                SET current_stage_label = 'Flagged — Temporary Reviewer',
+                    current_step_order = 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (ts, application_id),
+            )
+            next_task_id = int(cursor.lastrowid)
+
+        conn.execute(
+            """
+            INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
+            VALUES (?, 'FLAG_RESOLVED', ?, ?, ?)
+            """,
+            (
+                application_id,
+                json.dumps({"action": body.action, "redirect_email": body.redirect_email, "next_task_id": next_task_id}),
+                session.email,
+                ts,
+            ),
+        )
+        conn.commit()
+        updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+    return {"application": dict(updated) if updated else None, "next_task_id": next_task_id}
 
 
 @app.get("/api/admin/opportunities/{opportunity_id}/graph")
@@ -3147,7 +3314,7 @@ def admin_delete_opportunity(
                 conn.execute(f"DELETE FROM sla_reminders_sent WHERE task_id IN ({t_placeholders})", t_params)
                 conn.execute(f"DELETE FROM sla_breaches WHERE task_id IN ({t_placeholders})", t_params)
             
-            conn.execute(f"UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id IN ({placeholders})", params)
+            conn.execute(f"UPDATE application_workflow_tasks SET return_to_task_id = NULL, flag_return_task_id = NULL WHERE application_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM application_workflow_tasks WHERE application_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM timeline_events WHERE application_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM application_comments WHERE application_id IN ({placeholders})", params)
@@ -3368,7 +3535,7 @@ def delete_application(application_id: int, session: SessionUser = Depends(get_s
             params = tuple(task_ids)
             conn.execute(f"DELETE FROM sla_reminders_sent WHERE task_id IN ({placeholders})", params)
             conn.execute(f"DELETE FROM sla_breaches WHERE task_id IN ({placeholders})", params)
-            conn.execute("UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id = ?", (application_id,))
+            conn.execute("UPDATE application_workflow_tasks SET return_to_task_id = NULL, flag_return_task_id = NULL WHERE application_id = ?", (application_id,))
             conn.execute(f"DELETE FROM application_workflow_tasks WHERE id IN ({placeholders})", params)
 
         conn.execute("DELETE FROM timeline_events WHERE application_id = ?", (application_id,))
@@ -3480,6 +3647,7 @@ def application_detail(application_id: int, session: SessionUser = Depends(get_s
                     detail["reviews"] = []
 
                 detail["graph_node_info"] = {
+                    "task_id": int(task["id"]),
                     "node_key": task["node_key"],
                     "display_name": node_display_name,
                     "allowed_actions": allowed_actions,
@@ -3775,12 +3943,22 @@ def submit_student_response(
 
         # ── Graph-backed path ──
         if app_row["graph_version_id"]:
-            returned_task = conn.execute(
-                "SELECT id FROM application_workflow_tasks WHERE application_id = ? AND status = 'returned' ORDER BY id DESC LIMIT 1",
+            waiting_task = conn.execute(
+                """
+                SELECT id
+                FROM application_workflow_tasks
+                WHERE application_id = ?
+                  AND (
+                    status = 'returned'
+                    OR (status = 'flagged' AND flag_target = 'student')
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+                """,
                 (application_id,),
             ).fetchone()
-            if not returned_task:
-                raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
+            if not waiting_task:
+                raise HTTPException(status_code=400, detail="This application is not waiting on student rework or clarification.")
             ts = now_iso()
             comment_text = body.text.strip()
             conn.execute(

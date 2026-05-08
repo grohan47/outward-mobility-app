@@ -225,6 +225,7 @@ export interface SessionUser {
     roleDisplayName: string;
     dashboardPath: string;
   }>;
+  is_new_user?: boolean;
 }
 
 export type RoleCode =

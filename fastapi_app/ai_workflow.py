@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import sqlite3
@@ -24,6 +25,25 @@ try:
     _STANDARD_PATHWAY: dict = json.loads(_STANDARD_PATHWAY_PATH.read_text())
 except (FileNotFoundError, json.JSONDecodeError):
     _STANDARD_PATHWAY = {}
+
+CHAT_SYSTEM_PROMPT = """\
+You are PRISM Setup, a helpful assistant that helps university administrators configure
+an opportunity approval workflow. The admin will paste a forwarded email or describe
+an opportunity. Your job is to understand it fully before generating the structured data.
+
+Ask clarifying questions ONE AT A TIME about:
+- Who should review applications (and in what order)
+- Which reviewers need reject authority vs only comment/flag authority
+- Eligibility criteria if not explicit
+- Application deadline
+- Whether parallel reviews are needed
+
+When you have enough information to generate a complete workflow, say EXACTLY:
+"I am ready to generate your opportunity!"
+Do not output any JSON. Do not guess — ask.
+"""
+
+READY_TO_GENERATE_PHRASE = "I am ready to generate your opportunity!"
 
 SYSTEM_PROMPT = """\
 You are PRISM, an AI workflow generator for Plaksha University's global affairs office (OGE).
@@ -55,8 +75,8 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
         "node_type": "start | reviewer | join_all | join_any | conditional | end",
         "display_name": "string or null",
         "reviewer_email": "string or null",
-        "visible_sections": ["all"],
-        "allowed_actions": ["approve", "request_changes", "comment"],
+        "visible_sections": [],
+        "allowed_actions": ["approve", "flag", "request_changes", "comment"],
         "metadata": {
           "sla_hours": 72,
           "required_inputs": [
@@ -81,7 +101,7 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
     ]
   },
   "applicant_form_fields": ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
-  "generator_visibility_rules": ["ug2024@plaksha.edu.in"],
+  "generator_visibility_rules": [],
   "clarifying_questions": [],
   "confidence": 0.85,
   "warnings": [],
@@ -90,11 +110,30 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
 
 GRAPH RULES:
 - Every graph must have exactly one start node and at least one end node.
-- reviewer nodes must have reviewer_email set. Use @plaksha.edu.in addresses.
+- reviewer nodes must have reviewer_email set. Use exact reviewer addresses when known.
 - allowed_actions must always include "comment" for every reviewer node.
 - Every reviewer node must set metadata.sla_hours. Default: 72. Use a lower value only if the email specifies a tighter timeline (minimum 24).
 - For parallel approvals, use start → [reviewerA, reviewerB] → join_all → next.
+- Use join_all for parallel approvals. Do not generate join_any unless the email explicitly describes first-response-wins approval.
+- Do not generate conditional nodes unless the email explicitly describes conditional routing.
 - Do not include unrestricted code or arbitrary expressions in condition_json.
+
+NODE TYPES:
+- start: entry point, no reviewer, exactly 1 per graph
+- reviewer: human review step — requires reviewer_email, display_name, sla_hours (default 72)
+- join_all: gate that waits for ALL incoming reviewer branches to complete
+- end: terminal — use metadata.final_status "APPROVED" or "REJECTED" based on incoming action
+
+EDGE ACTIONS:
+- always: unconditional (use from start → reviewer, join_all → next)
+- approve: traverse when reviewer approves
+- reject: traverse when reviewer rejects (only for nodes with reject authority)
+- request_changes: traverse when reviewer requests changes (goes to student rework)
+
+AUTHORITY LEVELS:
+- Standard reviewer allowed_actions: ["approve", "flag", "request_changes", "comment"]
+- Final approver allowed_actions: ["approve", "reject", "flag", "request_changes", "comment"]
+- Only the LAST reviewer in the chain (before end) should have reject authority
 
 OPPORTUNITY RULES:
 - Only title, code, and description are fixed fields.
@@ -118,29 +157,27 @@ APPLICANT FORM FIELDS RULES:
 - Add language_score if language proficiency or IELTS/TOEFL is required.
 
 VISIBILITY RULES:
-- generator_visibility_rules must contain at least one @plaksha.edu.in group email.
-- Default to ["ug2024@plaksha.edu.in"] unless the email explicitly maps to a seeded group or names an exact @plaksha.edu.in group email.
-- Seeded GROUP_EMAIL groups currently available: ug2024@plaksha.edu.in and professors@plaksha.edu.in.
-- Use professors@plaksha.edu.in only when the opportunity is meant for professors/faculty.
-- If the email names a different Plaksha group email explicitly, include that exact lowercase @plaksha.edu.in address; otherwise do not invent unseeded cohort groups.
-- Use lowercase email addresses only. Do not include non-Plaksha addresses.
+- generator_visibility_rules should default to [] so the admin can fill eligibility in the UI.
+- If the prompt names exact eligible email groups or users, include those lowercase addresses.
+- Do not invent visibility rules.
 
-STANDARD PLAKSHA APPROVAL PATHWAY:
+STANDARD APPROVAL PATHWAY:
 If the email does not specify an explicit reviewer/approval chain, use this graph.
-Do NOT ask a clarifying question — just apply it and add the warning below.
-Warning to add: "No explicit approval chain found — applied Plaksha standard pathway. Review reviewer assignments before publishing."
+Replace reviewer_email placeholders with real addresses when known.
+If any reviewer_email is a placeholder, set confidence below 0.7 and add a clarifying question asking who exactly should review.
+Warning to add: "No explicit approval chain found — applied standard pathway. Review reviewer assignments before publishing."
 
   Nodes (in order):
     start                  — node_type: start
-    oaa_review             — reviewer, oaa@plaksha.edu.in, sla_hours:72
+    oaa_review             — reviewer, oaa@university.edu, sla_hours:72, standard authority
                              required_input: backlog_status (select: Clear/Active backlog/Misconduct)
-    ug_academics_review    — reviewer, ug-academics@plaksha.edu.in, sla_hours:72
+    ug_academics_review    — reviewer, academics@university.edu, sla_hours:72, standard authority
                              required_input: cgpa_verified (select: Meets requirement/Below minimum/Cannot verify)
     parallel_join          — node_type: join_all
-    program_chair_review   — reviewer, shashikant.pawar@plaksha.edu.in, sla_hours:72
+    program_chair_review   — reviewer, chair@university.edu, sla_hours:72, standard authority
                              required_input: coursework_alignment (select: Strong/Adequate/Weak/No alignment)
-    dean_approval          — reviewer, dean@plaksha.edu.in, sla_hours:72
-                             allowed_actions: ["approve","reject","comment"]
+    dean_approval          — reviewer, dean@university.edu, sla_hours:72, FINAL AUTHORITY
+                             allowed_actions: ["approve","reject","flag","request_changes","comment"]
                              required_input: dean_decision (select: Approved for nomination/Rejected)
     end                    — node_type: end
 
@@ -151,6 +188,7 @@ Warning to add: "No explicit approval chain found — applied Plaksha standard p
 
 OTHER RULES:
 - If policy is still unclear after applying all rules above, add a clarifying question and lower confidence.
+- If any reviewer_email is a placeholder, set confidence < 0.7 and add a clarifying question about who exactly should review.
 - Output JSON only. No markdown, no prose, no explanations.
 """
 
@@ -162,7 +200,13 @@ def _now_iso() -> str:
 class LLMProvider(Protocol):
     """Swap-in interface for any model provider. Mock this in tests."""
 
-    def complete(self, system: str, user: str, timeout: int) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        timeout: int,
+        response_format: dict[str, str] | None = None,
+    ) -> str:
         """Return raw JSON string from the model."""
         ...
 
@@ -170,7 +214,13 @@ class LLMProvider(Protocol):
 class ClaudeProvider:
     """Anthropic SDK provider with structured output. Requires: pip install anthropic"""
 
-    def complete(self, system: str, user: str, timeout: int) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        timeout: int,
+        response_format: dict[str, str] | None = None,
+    ) -> str:
         import anthropic
         from fastapi_app.ai_service import CLAUDE_MODEL, CLAUDE_TEMPERATURE
 
@@ -193,17 +243,22 @@ class GeminiProvider:
 
     MODEL = "gemini-2.0-flash"
 
-    def complete(self, system: str, user: str, timeout: int) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        timeout: int,
+        response_format: dict[str, str] | None = None,
+    ) -> str:
         import os
 
         from google import genai
 
         client = genai.Client(api_key=os.environ["AI_API_KEY"])
-        resp = client.models.generate_content(
-            model=self.MODEL,
-            contents=f"{system}\n\n{user}",
-            config={"response_mime_type": "application/json"},
-        )
+        kwargs: dict[str, Any] = {"model": self.MODEL, "contents": f"{system}\n\n{user}"}
+        if response_format:
+            kwargs["config"] = {"response_mime_type": "application/json"}
+        resp = client.models.generate_content(**kwargs)
         return resp.text
 
 
@@ -215,6 +270,54 @@ def get_provider() -> LLMProvider:
     if p == "gemini":
         return GeminiProvider()
     return ClaudeProvider()
+
+
+def _provider_supports_kwarg(provider: LLMProvider, name: str) -> bool:
+    try:
+        signature = inspect.signature(provider.complete)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def _complete(
+    provider: LLMProvider,
+    system: str,
+    user: str,
+    timeout: int,
+    response_format: dict[str, str] | None = None,
+) -> str:
+    if response_format and _provider_supports_kwarg(provider, "response_format"):
+        return provider.complete(system, user, timeout, response_format=response_format)
+    return provider.complete(system, user, timeout)
+
+
+class AIWorkflowChatService:
+    """Conversational setup assistant for two-phase workflow generation."""
+
+    TIMEOUT_SECONDS = 30
+
+    def __init__(self, provider: LLMProvider | None = None) -> None:
+        self._provider = provider
+
+    def chat(self, messages: list[dict[str, str]]) -> tuple[str, bool]:
+        provider = self._provider or get_provider()
+        transcript = self._format_messages(messages)
+        reply = _complete(provider, CHAT_SYSTEM_PROMPT, transcript, self.TIMEOUT_SECONDS)
+        return reply, READY_TO_GENERATE_PHRASE in reply
+
+    def _format_messages(self, messages: list[dict[str, str]]) -> str:
+        lines: list[str] = []
+        for message in messages:
+            role = str(message.get("role") or "user").strip().lower()
+            content = str(message.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            lines.append(f"{role.upper()}: {content}")
+        return "\n\n".join(lines)
 
 
 class AIWorkflowDraftService:
@@ -278,7 +381,13 @@ class AIWorkflowDraftService:
 
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                raw = provider.complete(SYSTEM_PROMPT, prompt, self.TIMEOUT_SECONDS)
+                raw = _complete(
+                    provider,
+                    SYSTEM_PROMPT,
+                    prompt,
+                    self.TIMEOUT_SECONDS,
+                    response_format={"type": "json_object"},
+                )
                 parsed = AIWorkflowDraftOutput.model_validate_json(raw)
                 errors = GraphPolicyValidator().validate_graph(parsed.graph)
                 parsed.warnings.extend(errors)
