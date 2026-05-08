@@ -33,3 +33,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 tsconfig.tsbuildinfo
+
+# Nested app copy (accidentally created — work overlaid to root)
+outward-mobility-app-next/

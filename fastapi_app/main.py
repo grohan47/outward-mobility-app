@@ -2641,6 +2641,13 @@ def application_ai_approval_assist(application_id: int, session: SessionUser = D
     return ai_approval_assist(detail)
 
 
+@app.post("/api/applications/{application_id}/ai-summary")
+def application_ai_summary(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+    detail = application_detail(application_id, session=session)
+    summary = AIWorkflowDraftService().generate_application_summary(detail)
+    return {"summary": summary, "is_dummy_ai": False}
+
+
 @app.get("/api/admin/opportunities")
 def admin_list_opportunities(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
     ensure_db_initialized()

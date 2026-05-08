@@ -96,6 +96,8 @@ export default function AdminApplicationReviewPage() {
   const [loading, setLoading] = useState(true);
   const [savingFile, setSavingFile] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string | null>(null);
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
   const [remarks, setRemarks] = useState("");
   const [dynamicInputs, setDynamicInputs] = useState<Record<string, unknown>>({});
   const [targetStepOrder, setTargetStepOrder] = useState<number | null>(null);
@@ -196,6 +198,21 @@ export default function AdminApplicationReviewPage() {
     }
   }
 
+  async function generateAISummary() {
+    if (!data) return;
+    setAiSummaryLoading(true);
+    try {
+      const res = await fetch(`/api/applications/${data.application.id}/ai-summary`, { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail || "AI summary failed.");
+      setAiSummary(body.summary || null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "AI summary failed.");
+    } finally {
+      setAiSummaryLoading(false);
+    }
+  }
+
   async function handleAction(endpoint: "approve" | "request-changes" | "reject") {
     if (!data || !user) return;
     setActionLoading(true);
@@ -272,6 +289,25 @@ export default function AdminApplicationReviewPage() {
             </Badge>
           ) : (
             <Badge variant="info">OPEN</Badge>
+          )}
+        </div>
+      </Card>
+
+      <Card>
+        <div className="flex items-center justify-between px-6 pt-5 pb-2">
+          <div>
+            <p className="font-bold text-slate-900">AI Summary</p>
+            <p className="text-xs text-slate-500 mt-0.5">PRISM-generated plain-English snapshot of this application.</p>
+          </div>
+          <Button size="sm" loading={aiSummaryLoading} onClick={generateAISummary}>
+            {aiSummary ? "Regenerate" : "Generate"}
+          </Button>
+        </div>
+        <div className="px-6 pb-5 border-t border-slate-100 mt-3 pt-4">
+          {aiSummary ? (
+            <p className="text-sm text-slate-700 leading-relaxed">{aiSummary}</p>
+          ) : (
+            <p className="text-sm text-slate-400 italic">Click Generate to have PRISM summarise this application.</p>
           )}
         </div>
       </Card>

@@ -134,6 +134,7 @@ export type DraftOutput = {
     nodes: StudioGraphNode[];
     edges: StudioGraphEdge[];
   };
+  applicant_form_fields?: string[];
   clarifying_questions: string[];
   confidence: number;
   warnings: string[];

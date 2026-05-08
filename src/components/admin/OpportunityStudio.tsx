@@ -704,6 +704,11 @@ export default function OpportunityStudio({
       setDetailFields((prev) => mergeDetailFields(prev, draftDetails));
     }
     commitGraph(draftData.graph.nodes, draftData.graph.edges);
+    if (draftData.applicant_form_fields?.length) {
+      const available = new Set(selectableFields.map((f) => f.field_key));
+      const aiFields = draftData.applicant_form_fields.filter((key) => available.has(key));
+      if (aiFields.length > 0) setSelectedFields(aiFields);
+    }
   }
 
   async function generateDraft() {
@@ -2049,6 +2054,7 @@ function normalizeDraftRow(row: any): DraftOutput {
   });
   return {
     ...parsed,
+    applicant_form_fields: Array.isArray(parsed.applicant_form_fields) ? parsed.applicant_form_fields : undefined,
     clarifying_questions: parseJson<string[]>(row?.clarifying_questions, parsed.clarifying_questions || []),
     warnings: parseJson<string[]>(row?.warnings, parsed.warnings || []),
     confidence: Number(row?.confidence ?? parsed.confidence ?? 0),

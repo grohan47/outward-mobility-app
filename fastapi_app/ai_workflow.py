@@ -399,6 +399,71 @@ class AIWorkflowDraftService:
             is_fallback=True,
         )
 
+    def generate_application_summary(self, application_detail: dict) -> str:
+        """Call the model to produce a plain-English summary of an application's state."""
+        provider = self._provider or get_provider()
+        app = application_detail.get("application") or {}
+        opportunity = application_detail.get("opportunity") or {}
+        student = application_detail.get("student_user") or {}
+        reviews = application_detail.get("reviews") or []
+        comments = application_detail.get("comments") or []
+        timeline = application_detail.get("timeline") or []
+        app_file = application_detail.get("application_file") or {}
+
+        review_lines = []
+        for r in reviews[:5]:
+            decision = r.get("decision") or "REVIEW"
+            reviewer = r.get("reviewer_name") or r.get("reviewer_email") or "reviewer"
+            remarks = (r.get("remarks") or "").strip()[:200]
+            review_lines.append(f"- {decision} by {reviewer}: {remarks}" if remarks else f"- {decision} by {reviewer}")
+
+        comment_lines = []
+        for c in comments[:5]:
+            author = c.get("author_email") or "unknown"
+            text = (c.get("text") or "").strip()[:200]
+            if text:
+                comment_lines.append(f"- {author}: {text}")
+
+        app_data_lines = [f"- {k}: {str(v)[:120]}" for k, v in list(app_file.items())[:10] if v not in (None, "")]
+
+        system = (
+            "You are PRISM, a university global affairs assistant. "
+            "Given structured application data, write a concise 3–5 sentence plain-English summary "
+            "covering: the student's current status, key review decisions made so far, any blockers or "
+            "pending actions, and a recommended next step for the OGE team. "
+            "Be direct. No bullet points in the output — write flowing prose."
+        )
+        user = "\n".join([
+            f"Opportunity: {opportunity.get('title', 'Unknown')}",
+            f"Student: {student.get('full_name', 'Unknown')}",
+            f"Current stage: {app.get('current_stage_label') or 'Unknown'}",
+            f"Final status: {app.get('final_status') or 'In progress'}",
+            "",
+            "Application data:",
+            *app_data_lines,
+            "",
+            "Review decisions:",
+            *(review_lines or ["None yet."]),
+            "",
+            "Comments:",
+            *(comment_lines or ["None yet."]),
+            "",
+            f"Timeline events: {len(timeline)}",
+        ])
+
+        try:
+            return provider.complete(system, user, timeout=20)
+        except Exception as exc:
+            _log.error("ai_summary_failed", extra={"error": str(exc)})
+            stage = app.get("current_stage_label") or "an unknown stage"
+            status = app.get("final_status") or "in progress"
+            return (
+                f"{student.get('full_name', 'The student')}'s application for "
+                f"{opportunity.get('title', 'this opportunity')} is currently {status} at {stage}. "
+                f"There are {len(reviews)} review decision(s) and {len(comments)} comment(s) on record. "
+                f"AI summary generation was unavailable — please review the thread manually."
+            )
+
     def _persist_draft(
         self,
         db: sqlite3.Connection,
