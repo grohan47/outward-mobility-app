@@ -418,9 +418,22 @@ class GraphExecutionService:
         if node_type == "conditional":
             return self._advance_from_node(db, application, graph_version_id, node_key, completed_task_id)
         if node_type == "join_all":
-            if not self._join_all_ready(db, int(application["id"]), graph_version_id, node_key):
+            ready, any_rejected = self._join_all_ready(db, int(application["id"]), graph_version_id, node_key)
+            if not ready:
                 return []
-            return self._advance_once(db, application, graph_version_id, node_key)
+            if any_rejected:
+                self._mark_application_rejected(db, int(application["id"]))
+                return []
+            if self._node_already_advanced(db, int(application["id"]), graph_version_id, node_key):
+                return []
+            summary = self._join_all_outcome_summary(db, int(application["id"]), graph_version_id, node_key)
+            if summary and any(not item.endswith("=completed/approve") for item in summary):
+                self._append_workflow_note(
+                    db,
+                    int(application["id"]),
+                    f"join_all at {node_key} advanced with mixed branch outcomes: {', '.join(summary)}",
+                )
+            return self._advance_from_node(db, application, graph_version_id, node_key)
         if node_type == "join_any":
             self._skip_join_siblings(db, int(application["id"]), graph_version_id, node_key, completed_task_id)
             return self._advance_once(db, application, graph_version_id, node_key)
@@ -502,24 +515,78 @@ class GraphExecutionService:
         application_id: int,
         graph_version_id: int,
         join_node_key: str,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         incoming = self._incoming_sources(db, graph_version_id, join_node_key)
         if not incoming:
-            return False
+            return False, False
         placeholders = ",".join("?" for _ in incoming)
-        row = db.execute(
+        rows = db.execute(
             f"""
-            SELECT COUNT(*) AS cnt
+            SELECT node_key, status, decision
             FROM application_workflow_tasks
             WHERE application_id = ?
               AND graph_version_id = ?
               AND node_key IN ({placeholders})
-              AND status = 'completed'
-              AND decision = 'approve'
+              AND status IN ('completed', 'returned', 'rejected', 'skipped')
+            ORDER BY id DESC
             """,
             (application_id, graph_version_id, *incoming),
-        ).fetchone()
-        return bool(row) and int(row["cnt"]) == len(incoming)
+        ).fetchall()
+        terminal_by_node: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            terminal_by_node.setdefault(str(row["node_key"]), row)
+        ready = all(node_key in terminal_by_node for node_key in incoming)
+        any_rejected = any(
+            row["status"] == "rejected" or row["decision"] == REJECT
+            for row in terminal_by_node.values()
+        )
+        return ready, any_rejected
+
+    def _join_all_outcome_summary(
+        self,
+        db: sqlite3.Connection,
+        application_id: int,
+        graph_version_id: int,
+        join_node_key: str,
+    ) -> list[str]:
+        incoming = self._incoming_sources(db, graph_version_id, join_node_key)
+        if not incoming:
+            return []
+        placeholders = ",".join("?" for _ in incoming)
+        rows = db.execute(
+            f"""
+            SELECT node_key, status, decision
+            FROM application_workflow_tasks
+            WHERE application_id = ?
+              AND graph_version_id = ?
+              AND node_key IN ({placeholders})
+              AND status IN ('completed', 'returned', 'rejected', 'skipped')
+            ORDER BY id DESC
+            """,
+            (application_id, graph_version_id, *incoming),
+        ).fetchall()
+        terminal_by_node: dict[str, sqlite3.Row] = {}
+        for row in rows:
+            terminal_by_node.setdefault(str(row["node_key"]), row)
+        return [
+            f"{node_key}={terminal_by_node[node_key]['status']}/{terminal_by_node[node_key]['decision'] or 'none'}"
+            for node_key in incoming
+            if node_key in terminal_by_node
+        ]
+
+    def _append_workflow_note(self, db: sqlite3.Connection, application_id: int, note: str) -> None:
+        row = self._get_application(db, application_id)
+        existing = row["workflow_notes"] or ""
+        next_notes = f"{existing}\n{note}" if existing else note
+        db.execute(
+            """
+            UPDATE applications
+            SET workflow_notes = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (next_notes, _now_iso(), application_id),
+        )
 
     def _skip_join_siblings(
         self,
