@@ -14,10 +14,12 @@ type SessionUser = {
 
 type StepRequiredInput = {
   input_key: string;
-  input_label: string;
-  input_type: "text" | "number" | "dropdown" | "multiselect";
+  input_label?: string;
+  label?: string;
+  input_type: "text" | "number" | "dropdown" | "select" | "multiselect" | "checkbox";
   options?: string[];
-  is_required: number;
+  is_required?: number;
+  required?: boolean;
 };
 
 type PipelineStep = {
@@ -86,6 +88,14 @@ function labelFromKey(key: string): string {
   return key
     .replace(/_/g, " ")
     .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function requiredInputLabel(input: StepRequiredInput): string {
+  return input.input_label || input.label || labelFromKey(input.input_key);
+}
+
+function requiredInputType(input: StepRequiredInput): StepRequiredInput["input_type"] {
+  return input.input_type === "select" ? "dropdown" : input.input_type;
 }
 
 export default function ReviewerApplicationDetail() {
@@ -334,19 +344,19 @@ export default function ReviewerApplicationDetail() {
                     <Card key={input.input_key} className="border border-slate-200 shadow-none">
                       <div className="p-4">
                         <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
-                          {input.input_label}
+                          {requiredInputLabel(input)}
                         </label>
 
-                        {(input.input_type === "text" || input.input_type === "number") && (
+                        {(requiredInputType(input) === "text" || requiredInputType(input) === "number") && (
                           <input
-                            type={input.input_type === "number" ? "number" : "text"}
+                            type={requiredInputType(input) === "number" ? "number" : "text"}
                             value={String(dynamicInputs[input.input_key] || "")}
                             onChange={(e) => setDynamicInputs((prev) => ({ ...prev, [input.input_key]: e.target.value }))}
                             className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm bg-white"
                           />
                         )}
 
-                        {input.input_type === "dropdown" && (
+                        {requiredInputType(input) === "dropdown" && (
                           <select
                             className="w-full h-10 border border-slate-200 rounded-lg px-3 text-sm bg-white"
                             value={String(dynamicInputs[input.input_key] || "")}
@@ -361,7 +371,18 @@ export default function ReviewerApplicationDetail() {
                           </select>
                         )}
 
-                        {input.input_type === "multiselect" && (
+                        {requiredInputType(input) === "checkbox" && (
+                          <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(dynamicInputs[input.input_key])}
+                              onChange={(e) => setDynamicInputs((prev) => ({ ...prev, [input.input_key]: e.target.checked }))}
+                            />
+                            Confirm
+                          </label>
+                        )}
+
+                        {requiredInputType(input) === "multiselect" && (
                           <div className="border border-slate-200 rounded-lg p-2 bg-white space-y-2 max-h-32 overflow-y-auto">
                             {(input.options || []).map((option) => {
                               const selected = Array.isArray(dynamicInputs[input.input_key])

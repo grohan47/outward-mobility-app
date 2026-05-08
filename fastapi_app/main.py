@@ -325,6 +325,31 @@ def infer_term_from_prompt(prompt: str) -> str:
     return f"{season} {year}"
 
 
+def infer_generator_visibility_emails(prompt: str) -> list[str]:
+    prompt_lower = prompt.lower()
+    emails = {
+        re.sub(r"^ug(20\d{2})@", r"ug.\1@", email.strip().lower())
+        for email in re.findall(r"[A-Za-z0-9._%+-]+@plaksha\.edu\.in", prompt)
+    }
+    cohort_years = set(re.findall(r"\bug\.?\s*(20(?:22|23|24|25))\b", prompt_lower))
+    cohort_years.update(re.findall(r"\bug\s*(20(?:22|23|24|25))\b", prompt_lower))
+    if "faculty" in prompt_lower or "professor" in prompt_lower:
+        emails.add("professors@plaksha.edu.in")
+    if "undergraduate" in prompt_lower or "undergrad" in prompt_lower or "ug student" in prompt_lower:
+        cohort_years.update({"2022", "2023", "2024", "2025"})
+    excludes_final_year = "not a final-year" in prompt_lower or "not final-year" in prompt_lower or "not final year" in prompt_lower
+    if excludes_final_year:
+        cohort_years.discard("2022")
+        cohort_years.update({"2023", "2024", "2025"})
+    if not excludes_final_year and ("final year" in prompt_lower or "graduating students" in prompt_lower):
+        cohort_years = {"2022"}
+    if "master" in prompt_lower or "phd" in prompt_lower or "postgraduate" in prompt_lower or "graduate level" in prompt_lower:
+        cohort_years = {"2022"}
+    for year in sorted(cohort_years):
+        emails.add(f"ug.{year}@plaksha.edu.in")
+    return sorted(emails) or ["ug.2024@plaksha.edu.in"]
+
+
 def build_ai_opportunity_draft(
     conn: sqlite3.Connection,
     prompt: str,
@@ -400,7 +425,7 @@ def build_ai_opportunity_draft(
 
     normalized_visibility_rules = normalize_visibility_rules(requested_visibility_rules)
     if not normalized_visibility_rules:
-        normalized_visibility_rules = [{"rule_type": "GROUP_EMAIL", "rule_value": "ug2024@plaksha.edu.in"}]
+        normalized_visibility_rules = normalize_visibility_rules(infer_generator_visibility_emails(prompt_clean))
 
     detail_fields = [
         {
@@ -1085,9 +1110,33 @@ def seed_data(conn: sqlite3.Connection) -> None:
                 (summary_source_hash(dict(opp), fields), opportunity_id),
             )
 
+    conn.execute(
+        """
+        UPDATE email_groups
+        SET email_address = 'ug.2024@plaksha.edu.in',
+            display_name = 'UG 2024 Cohort'
+        WHERE id = 1
+          AND LOWER(email_address) = 'ug2024@plaksha.edu.in'
+          AND NOT EXISTS (
+              SELECT 1 FROM email_groups WHERE LOWER(email_address) = 'ug.2024@plaksha.edu.in'
+          )
+        """
+    )
+    conn.execute(
+        """
+        UPDATE opportunity_visibility_rules
+        SET rule_value = 'ug.2024@plaksha.edu.in'
+        WHERE LOWER(rule_value) = 'ug2024@plaksha.edu.in'
+        """
+    )
+
     email_groups = [
-        (1, "ug2024@plaksha.edu.in", "UG 2024 Cohort"),
+        (1, "ug.2024@plaksha.edu.in", "UG 2024 Cohort"),
         (2, "professors@plaksha.edu.in", "All Professors"),
+        (3, "ug.2022@plaksha.edu.in", "UG 2022 Cohort"),
+        (4, "ug.2023@plaksha.edu.in", "UG 2023 Cohort"),
+        (5, "ug.2025@plaksha.edu.in", "UG 2025 Cohort"),
+        (6, "ug2024@plaksha.edu.in", "UG 2024 Cohort (legacy alias)"),
     ]
     for group_id, email_address, display_name in email_groups:
         conn.execute(
@@ -1104,6 +1153,11 @@ def seed_data(conn: sqlite3.Connection) -> None:
         (1, 3),
         (2, 5),
         (2, 6),
+        (3, 1),
+        (3, 2),
+        (6, 1),
+        (6, 2),
+        (6, 3),
     ]
     for group_id, user_id in email_group_memberships:
         conn.execute(
@@ -1115,7 +1169,7 @@ def seed_data(conn: sqlite3.Connection) -> None:
         )
 
     visibility_rules = [
-        (1, "GROUP_EMAIL", "ug2024@plaksha.edu.in"),
+        (1, "GROUP_EMAIL", "ug.2024@plaksha.edu.in"),
         (1, "EMAIL", "john.doe@plaksha.edu.in"),
     ]
     for opportunity_id, rule_type, rule_value in visibility_rules:
@@ -1265,6 +1319,67 @@ def ensure_db_initialized() -> None:
             conn.execute("UPDATE form_field_catalog SET field_hint = COALESCE(field_hint, description)")
             conn.commit()
 
+        if "email_groups" in list_tables(conn):
+            conn.execute(
+                """
+                UPDATE email_groups
+                SET email_address = 'ug.2024@plaksha.edu.in',
+                    display_name = 'UG 2024 Cohort'
+                WHERE id = 1
+                  AND LOWER(email_address) = 'ug2024@plaksha.edu.in'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM email_groups WHERE LOWER(email_address) = 'ug.2024@plaksha.edu.in'
+                  )
+                """
+            )
+            now = now_iso()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
+                VALUES (6, 'ug2024@plaksha.edu.in', 'UG 2024 Cohort (legacy alias)', 1, ?)
+                """,
+                (now,),
+            )
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
+                VALUES (?, ?, ?, 1, ?)
+                """,
+                [
+                    (3, "ug.2022@plaksha.edu.in", "UG 2022 Cohort", now),
+                    (4, "ug.2023@plaksha.edu.in", "UG 2023 Cohort", now),
+                    (5, "ug.2025@plaksha.edu.in", "UG 2025 Cohort", now),
+                ],
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
+                SELECT 6, memberships.user_id, ?
+                FROM email_group_memberships memberships
+                WHERE memberships.group_id = 1
+                """,
+                (now,),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
+                SELECT 3, profiles.user_id, ?
+                FROM student_profiles profiles
+                WHERE profiles.student_id LIKE 'PL-2022-%'
+                """,
+                (now,),
+            )
+            conn.commit()
+        if "opportunity_visibility_rules" in list_tables(conn):
+            conn.execute(
+                """
+                UPDATE opportunity_visibility_rules
+                SET rule_value = 'ug.2024@plaksha.edu.in'
+                WHERE LOWER(rule_value) = 'ug2024@plaksha.edu.in'
+                """
+            )
+            conn.commit()
+
         required = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         if required == 0:
             seed_data(conn)
@@ -1359,6 +1474,9 @@ class OpportunityDetailFieldPayload(BaseModel):
     is_student_visible: bool | None = None
 
 
+VisibilityRuleInput = Any
+
+
 class OpportunityPatchBody(BaseModel):
     title: str | None = None
     description: str | None = None
@@ -1370,7 +1488,7 @@ class OpportunityPatchBody(BaseModel):
     status: str | None = None
     formFields: list[str] | None = None
     customFields: list[CustomFormFieldPayload] | None = None
-    generatorVisibilityRules: list["VisibilityRulePayload"] | None = None
+    generatorVisibilityRules: list[VisibilityRuleInput] | None = None
     detailFields: list[OpportunityDetailFieldPayload] | None = None
     aiSummaryBullets: list[str] | None = None
 
@@ -1381,7 +1499,7 @@ class OpportunityCreatePayload(BaseModel):
     customFields: list[CustomFormFieldPayload] = Field(default_factory=list)
     detailFields: list[OpportunityDetailFieldPayload] = Field(default_factory=list)
     aiSummaryBullets: list[str] = Field(default_factory=list)
-    generatorVisibilityRules: list["VisibilityRulePayload"] = Field(default_factory=list)
+    generatorVisibilityRules: list[VisibilityRuleInput] = Field(default_factory=list)
 
 
 class OpportunityAIGenerateBody(BaseModel):
@@ -1396,6 +1514,7 @@ class WorkflowDraftManualBody(BaseModel):
     opportunityId: int | None = None
     opportunity: dict[str, Any]
     graph: GraphModel
+    generatorVisibilityRules: list[VisibilityRuleInput] = Field(default_factory=list)
     clarifyingQuestions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.75, ge=0.0, le=1.0)
@@ -1406,6 +1525,7 @@ class WorkflowDraftValidateBody(BaseModel):
     opportunityId: int | None = None
     opportunity: dict[str, Any]
     graph: GraphModel
+    generatorVisibilityRules: list[VisibilityRuleInput] = Field(default_factory=list)
     clarifyingQuestions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.75, ge=0.0, le=1.0)
@@ -1434,7 +1554,7 @@ class SLABreachAcknowledgeBody(BaseModel):
 
 
 class VisibilityRulePayload(BaseModel):
-    ruleType: Literal["EMAIL", "GROUP_EMAIL"]
+    ruleType: Literal["EMAIL", "GROUP_EMAIL"] = "EMAIL"
     ruleValue: str
 
 
@@ -1560,10 +1680,9 @@ def get_user_workspaces(conn: sqlite3.Connection, email: str) -> list[dict[str, 
               FROM opportunity_visibility_rules rules
               WHERE rules.opportunity_id = o.id
                 AND (
-                    (rules.rule_type = 'EMAIL' AND LOWER(rules.rule_value) = LOWER(?))
+                    LOWER(rules.rule_value) = LOWER(?)
                     OR (
-                        rules.rule_type = 'GROUP_EMAIL'
-                        AND EXISTS (
+                        EXISTS (
                             SELECT 1
                             FROM email_groups groups
                             JOIN email_group_memberships memberships ON memberships.group_id = groups.id
@@ -1631,7 +1750,7 @@ def can_user_view_opportunity(conn: sqlite3.Connection, user_id: int, opportunit
         """
         SELECT 1
         FROM opportunity_visibility_rules rules
-        JOIN users u ON rules.rule_type = 'EMAIL' AND LOWER(u.email) = LOWER(rules.rule_value)
+        JOIN users u ON LOWER(u.email) = LOWER(rules.rule_value)
         WHERE rules.opportunity_id = ? AND u.id = ?
         LIMIT 1
         """,
@@ -1645,8 +1764,7 @@ def can_user_view_opportunity(conn: sqlite3.Connection, user_id: int, opportunit
         SELECT 1
         FROM opportunity_visibility_rules rules
         JOIN email_groups groups
-          ON rules.rule_type = 'GROUP_EMAIL'
-         AND LOWER(groups.email_address) = LOWER(rules.rule_value)
+          ON LOWER(groups.email_address) = LOWER(rules.rule_value)
          AND groups.is_active = 1
         JOIN email_group_memberships memberships ON memberships.group_id = groups.id
         WHERE rules.opportunity_id = ? AND memberships.user_id = ?
@@ -1657,13 +1775,18 @@ def can_user_view_opportunity(conn: sqlite3.Connection, user_id: int, opportunit
     return bool(group_match)
 
 
-def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[str, Any]] | None) -> list[dict[str, str]]:
+def normalize_visibility_rules(rules: list[Any] | None) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for raw_rule in rules or []:
-        rule = raw_rule if isinstance(raw_rule, VisibilityRulePayload) else VisibilityRulePayload(**raw_rule)
-        rule_type = rule.ruleType.strip().upper()
-        rule_value = rule.ruleValue.strip().lower()
+        if isinstance(raw_rule, str):
+            rule_type = "EMAIL"
+            rule_value = raw_rule.strip().lower()
+        else:
+            rule = raw_rule if isinstance(raw_rule, VisibilityRulePayload) else VisibilityRulePayload(**raw_rule)
+            rule_type = (rule.ruleType or "EMAIL").strip().upper()
+            rule_value = rule.ruleValue.strip().lower()
+        rule_value = re.sub(r"^ug(20\d{2})@", r"ug.\1@", rule_value)
         if not rule_value:
             continue
         if not valid_email(rule_value):
@@ -1671,6 +1794,8 @@ def normalize_visibility_rules(rules: list[VisibilityRulePayload] | list[dict[st
                 status_code=400,
                 detail=f'Visibility rule "{rule_value}" must be a valid email address.',
             )
+        if re.fullmatch(r"ug\.?20\d{2}@plaksha\.edu\.in", rule_value) or rule_value == "professors@plaksha.edu.in":
+            rule_type = "GROUP_EMAIL"
         key = (rule_type, rule_value)
         if key in seen:
             continue
@@ -2895,6 +3020,7 @@ def admin_create_manual_workflow_draft(
     parsed = AIWorkflowDraftOutput(
         opportunity=OpportunityDraftModel(**body.opportunity),
         graph=body.graph,
+        generator_visibility_rules=[rule["rule_value"] for rule in normalize_visibility_rules(body.generatorVisibilityRules)],
         clarifying_questions=body.clarifyingQuestions,
         confidence=body.confidence,
         warnings=body.warnings,
@@ -2947,6 +3073,7 @@ def admin_validate_workflow_draft(
     parsed = AIWorkflowDraftOutput(
         opportunity=OpportunityDraftModel(**body.opportunity),
         graph=body.graph,
+        generator_visibility_rules=[rule["rule_value"] for rule in normalize_visibility_rules(body.generatorVisibilityRules)],
         clarifying_questions=body.clarifyingQuestions,
         confidence=body.confidence,
         warnings=body.warnings,

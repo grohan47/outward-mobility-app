@@ -74,6 +74,7 @@ from fastapi_app.main import (
     list_applications,
     list_opportunities,
     my_applications,
+    normalize_visibility_rules,
     opportunity_detail,
     opportunity_ai_nomination_insights,
     post_comment,
@@ -460,6 +461,17 @@ class ApiEndpointTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             admin_create_opportunity(payload, session=self.session_for("oge@plaksha.edu.in"))
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_visibility_rules_accept_plain_email_strings(self):
+        rules = normalize_visibility_rules(["ug2024@plaksha.edu.in", "rohan@plaksha.edu.in"])
+
+        self.assertEqual(
+            rules,
+            [
+                {"rule_type": "GROUP_EMAIL", "rule_value": "ug.2024@plaksha.edu.in"},
+                {"rule_type": "EMAIL", "rule_value": "rohan@plaksha.edu.in"},
+            ],
+        )
 
     def test_opportunity_code_autogenerates_from_database(self):
         admin = self.session_for("oge@plaksha.edu.in")
@@ -1446,7 +1458,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 ],
             ),
             applicant_form_fields=["full_name", "cgpa", "email"],
-            generator_visibility_rules=["ug2024@plaksha.edu.in"],
+            generator_visibility_rules=["ug.2024@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.95,
             warnings=[],
@@ -1499,7 +1511,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
         self.assertEqual(
             visibility_rules,
             [
-                ("GROUP_EMAIL", "ug2024@plaksha.edu.in"),
+                ("GROUP_EMAIL", "ug.2024@plaksha.edu.in"),
             ],
         )
 
@@ -1555,7 +1567,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 ],
             ),
             applicant_form_fields=["full_name", "email"],
-            generator_visibility_rules=["ug2025@plaksha.edu.in"],
+            generator_visibility_rules=["ug.2025@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.95,
             warnings=[],
@@ -1610,7 +1622,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
         self.assertEqual([row["field_key"] for row in field_rows], ["full_name", "email"])
         self.assertEqual(
             [(row["rule_type"], row["rule_value"]) for row in visibility_rows],
-            [("GROUP_EMAIL", "ug2025@plaksha.edu.in")],
+            [("GROUP_EMAIL", "ug.2025@plaksha.edu.in")],
         )
 
     def test_sla_notifications_endpoint_returns_summary(self):
@@ -1660,7 +1672,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 ],
             ),
             applicant_form_fields=[],
-            generator_visibility_rules=["ug2024@plaksha.edu.in"],
+            generator_visibility_rules=["ug.2024@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.9,
             warnings=[],
@@ -1693,7 +1705,7 @@ class GraphPublishingRouteTests(unittest.TestCase):
                 "SELECT rule_value FROM opportunity_visibility_rules WHERE opportunity_id = ?",
                 (opportunity_id,),
             ).fetchall()
-        self.assertIn("ug2024@plaksha.edu.in", [row["rule_value"] for row in visibility])
+        self.assertIn("ug.2024@plaksha.edu.in", [row["rule_value"] for row in visibility])
 
         # ── Submit an application as Rohan ──
         student = self.session_for("rohan@plaksha.edu.in")
@@ -1976,7 +1988,7 @@ class GoldenPathTests(unittest.TestCase):
                 ],
             ),
             applicant_form_fields=["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
-            generator_visibility_rules=["ug2024@plaksha.edu.in"],
+            generator_visibility_rules=["ug.2024@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.95,
             warnings=[],

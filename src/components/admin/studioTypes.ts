@@ -53,7 +53,7 @@ export type WorkflowStep = {
 export type GeneratorVisibilityRuleType = "EMAIL" | "GROUP_EMAIL";
 
 export type GeneratorVisibilityRule = {
-  ruleType: GeneratorVisibilityRuleType;
+  ruleType?: GeneratorVisibilityRuleType;
   ruleValue: string;
 };
 
@@ -135,6 +135,7 @@ export type DraftOutput = {
     edges: StudioGraphEdge[];
   };
   applicant_form_fields?: string[];
+  generator_visibility_rules?: string[];
   clarifying_questions: string[];
   confidence: number;
   warnings: string[];

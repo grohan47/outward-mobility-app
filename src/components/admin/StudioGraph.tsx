@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactFlow, {
   Background,
   Handle,
@@ -256,6 +256,7 @@ export default function StudioGraph({
   onRedo,
 }: StudioGraphProps) {
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
 
   const reactFlowNodes = useMemo(
     () => layoutNodes(nodes, edges, selectedNodeKey, validationWarnings),
@@ -291,6 +292,50 @@ export default function StudioGraph({
   );
 
   const selectedNode = nodes.find((node) => node.node_key === selectedNodeKey);
+  const graphShapeKey = useMemo(
+    () => `${nodes.map((node) => node.node_key).join("|")}::${edges.map((edge) => `${edge.from_node_key}->${edge.to_node_key}`).join("|")}`,
+    [edges, nodes]
+  );
+
+  const refreshZoomLevel = useCallback(
+    (delay = 0) => {
+      if (!flowInstance) return;
+      window.setTimeout(() => setZoomLevel(flowInstance.getZoom()), delay);
+    },
+    [flowInstance]
+  );
+
+  const fitGraph = useCallback(() => {
+    if (!flowInstance) return;
+    flowInstance.fitView({ padding: 0.22, minZoom: 0.35, maxZoom: 1.05, duration: 220 });
+    refreshZoomLevel(240);
+  }, [flowInstance, refreshZoomLevel]);
+
+  const handleZoomIn = useCallback(() => {
+    if (!flowInstance) return;
+    flowInstance.zoomIn({ duration: 160 });
+    refreshZoomLevel(180);
+  }, [flowInstance, refreshZoomLevel]);
+
+  const handleZoomOut = useCallback(() => {
+    if (!flowInstance) return;
+    flowInstance.zoomOut({ duration: 160 });
+    refreshZoomLevel(180);
+  }, [flowInstance, refreshZoomLevel]);
+
+  const handleResetLayout = useCallback(() => {
+    onResetLayout();
+    window.setTimeout(() => fitGraph(), 80);
+  }, [fitGraph, onResetLayout]);
+
+  useEffect(() => {
+    if (!flowInstance || nodes.length === 0) return;
+    const timer = window.setTimeout(() => {
+      flowInstance.fitView({ padding: 0.22, minZoom: 0.35, maxZoom: 1.05, duration: 220 });
+      window.setTimeout(() => setZoomLevel(flowInstance.getZoom()), 240);
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [flowInstance, graphShapeKey, nodes.length]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -345,9 +390,9 @@ export default function StudioGraph({
   }
 
   return (
-    <section className="relative flex min-h-[780px] flex-1 flex-col overflow-hidden bg-[#fcfcfd]">
+    <section className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#fcfcfd]">
       <div
-        className="relative flex-1 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] bg-[size:20px_20px]"
+        className="relative min-h-0 flex-1 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] bg-[size:20px_20px]"
         role="application"
         aria-label="Approval workflow graph editor"
         tabIndex={0}
@@ -371,24 +416,25 @@ export default function StudioGraph({
           </div>
         )}
 
-        {!connectMode && nodes.length > 0 && (
-          <div className="pointer-events-none absolute right-5 top-5 z-20 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 text-[11px] font-medium text-slate-500 shadow-sm">
-            Drag nodes to arrange the canvas. Use Fit or Auto layout anytime.
-          </div>
-        )}
-
         {nodes.length === 0 ? (
           <EmptyCanvas onAddReviewer={onAddReviewer} onAddParallel={onAddParallel} />
         ) : (
           <ReactFlow
+            className="h-full w-full"
             nodes={reactFlowNodes}
             edges={reactFlowEdges}
             nodeTypes={nodeTypes}
             nodesDraggable
             fitView
-            fitViewOptions={{ padding: 0.28 }}
+            fitViewOptions={{ padding: 0.22, minZoom: 0.35, maxZoom: 1.05 }}
+            minZoom={0.25}
+            maxZoom={1.6}
             panOnDrag
-            onInit={setFlowInstance}
+            onInit={(instance) => {
+              setFlowInstance(instance);
+              window.setTimeout(() => setZoomLevel(instance.getZoom()), 0);
+            }}
+            onMoveEnd={(_, viewport) => setZoomLevel(viewport.zoom)}
             onNodeDragStop={(_, node) => onMoveNode(node.id, node.position)}
             onNodeClick={(_, node) => {
               onSelectNode(node.id);
@@ -407,11 +453,13 @@ export default function StudioGraph({
           </ReactFlow>
         )}
 
-        <div className="absolute bottom-8 left-8 z-20 flex flex-col gap-2">
-          <CanvasIconButton icon="add" label="Zoom in" onClick={() => void flowInstance?.zoomIn()} />
-          <CanvasIconButton icon="remove" label="Zoom out" onClick={() => void flowInstance?.zoomOut()} />
-          <CanvasIconButton icon="fit_screen" label="Fit graph" onClick={() => void flowInstance?.fitView({ padding: 0.28 })} />
-          <CanvasIconButton icon="auto_fix_high" label="Auto layout" onClick={onResetLayout} />
+        <div className="absolute right-5 top-5 z-20 flex items-center gap-1 rounded-xl border border-slate-200 bg-white/95 p-1 shadow-lg shadow-slate-200/70">
+          <CanvasIconButton icon="remove" label="Zoom out" onClick={handleZoomOut} disabled={!flowInstance} />
+          <span className="min-w-[3.25rem] select-none text-center text-[11px] font-bold text-slate-500">{Math.round(zoomLevel * 100)}%</span>
+          <CanvasIconButton icon="add" label="Zoom in" onClick={handleZoomIn} disabled={!flowInstance} />
+          <div className="mx-1 h-6 w-px bg-slate-200" />
+          <CanvasIconButton icon="fit_screen" label="Fit graph" onClick={fitGraph} disabled={!flowInstance} />
+          <CanvasIconButton icon="auto_fix_high" label="Auto layout" onClick={handleResetLayout} disabled={!flowInstance} />
         </div>
 
         <div className="absolute bottom-5 left-1/2 z-20 flex -translate-x-1/2 items-center rounded-2xl border border-slate-200 bg-white p-1 shadow-lg shadow-slate-200/70">
@@ -439,7 +487,7 @@ export default function StudioGraph({
 
 function EmptyCanvas({ onAddReviewer, onAddParallel }: { onAddReviewer: () => void; onAddParallel: () => void }) {
   return (
-    <div className="flex h-full min-h-[620px] items-center justify-center p-8">
+    <div className="flex h-full min-h-0 items-center justify-center p-8">
       <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white/95 p-10 text-center shadow-sm">
         <span className="material-symbols-outlined text-5xl text-slate-300">account_tree</span>
         <h3 className="mt-4 text-lg font-semibold text-slate-900">Start the approval workflow</h3>
@@ -471,18 +519,21 @@ function CanvasIconButton({
   icon,
   label,
   onClick,
+  disabled,
 }: {
   icon: string;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
+      disabled={disabled}
       onClick={onClick}
-      className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-50"
+      className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
     >
       <span className="material-symbols-outlined text-[18px]">{icon}</span>
     </button>

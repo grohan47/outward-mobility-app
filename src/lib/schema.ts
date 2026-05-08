@@ -501,17 +501,39 @@ export function seedDemoData() {
     `INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
      VALUES (?, ?, ?, 1, ?)`
   );
-  insertGroup.run(1, "ug2024@plaksha.edu.in", "UG 2024 Cohort", now);
+  db.prepare(
+    `UPDATE email_groups
+     SET email_address = 'ug.2024@plaksha.edu.in', display_name = 'UG 2024 Cohort'
+     WHERE id = 1
+       AND LOWER(email_address) = 'ug2024@plaksha.edu.in'
+       AND NOT EXISTS (
+         SELECT 1 FROM email_groups WHERE LOWER(email_address) = 'ug.2024@plaksha.edu.in'
+       )`
+  ).run();
+  db.prepare(
+    `UPDATE opportunity_visibility_rules
+     SET rule_value = 'ug.2024@plaksha.edu.in'
+     WHERE LOWER(rule_value) = 'ug2024@plaksha.edu.in'`
+  ).run();
+  insertGroup.run(1, "ug.2024@plaksha.edu.in", "UG 2024 Cohort", now);
   insertGroup.run(2, "professors@plaksha.edu.in", "All Professors", now);
+  insertGroup.run(3, "ug.2022@plaksha.edu.in", "UG 2022 Cohort", now);
+  insertGroup.run(4, "ug.2023@plaksha.edu.in", "UG 2023 Cohort", now);
+  insertGroup.run(5, "ug.2025@plaksha.edu.in", "UG 2025 Cohort", now);
+  insertGroup.run(6, "ug2024@plaksha.edu.in", "UG 2024 Cohort (legacy alias)", now);
 
   const insertMembership = db.prepare(
     `INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
      VALUES (?, ?, ?)`
   );
-  // ug2024 group members
+  // ug.2024 group members
   insertMembership.run(1, 1, now);
   insertMembership.run(1, 2, now);
   insertMembership.run(1, 3, now);
+  insertMembership.run(3, 1, now);
+  insertMembership.run(6, 1, now);
+  insertMembership.run(6, 2, now);
+  insertMembership.run(6, 3, now);
   // professors group members
   insertMembership.run(2, 5, now);
   insertMembership.run(2, 6, now);
@@ -521,7 +543,7 @@ export function seedDemoData() {
      VALUES (?, ?, ?, ?, ?)`
   );
   // TU Delft visible to UG2024 cohort + explicit John Doe
-  insertVisibilityRule.run(1, "GROUP_EMAIL", "ug2024@plaksha.edu.in", 13, now);
+  insertVisibilityRule.run(1, "GROUP_EMAIL", "ug.2024@plaksha.edu.in", 13, now);
   insertVisibilityRule.run(1, "EMAIL", "john.doe@plaksha.edu.in", 13, now);
   // NUS visible to professors cohort
   insertVisibilityRule.run(2, "GROUP_EMAIL", "professors@plaksha.edu.in", 13, now);

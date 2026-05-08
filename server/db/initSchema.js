@@ -384,23 +384,50 @@ export function seedDemoData(db) {
     }
 
     db.prepare(
+        `UPDATE email_groups
+         SET email_address = 'ug.2024@plaksha.edu.in', display_name = 'UG 2024 Cohort'
+         WHERE id = 1
+           AND LOWER(email_address) = 'ug2024@plaksha.edu.in'
+           AND NOT EXISTS (
+             SELECT 1 FROM email_groups WHERE LOWER(email_address) = 'ug.2024@plaksha.edu.in'
+           )`
+    ).run();
+    db.prepare(
+        `UPDATE opportunity_visibility_rules
+         SET rule_value = 'ug.2024@plaksha.edu.in'
+         WHERE LOWER(rule_value) = 'ug2024@plaksha.edu.in'`
+    ).run();
+
+    db.prepare(
         `INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
-         VALUES (1, 'ug2024@plaksha.edu.in', 'UG 2024 Cohort', 1, ?)`
+         VALUES (1, 'ug.2024@plaksha.edu.in', 'UG 2024 Cohort', 1, ?)`
     ).run(now);
     db.prepare(
         `INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
          VALUES (2, 'professors@plaksha.edu.in', 'All Professors', 1, ?)`
     ).run(now);
+    db.prepare(
+        `INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
+         VALUES
+         (3, 'ug.2022@plaksha.edu.in', 'UG 2022 Cohort', 1, ?),
+         (4, 'ug.2023@plaksha.edu.in', 'UG 2023 Cohort', 1, ?),
+         (5, 'ug.2025@plaksha.edu.in', 'UG 2025 Cohort', 1, ?),
+         (6, 'ug2024@plaksha.edu.in', 'UG 2024 Cohort (legacy alias)', 1, ?)`
+    ).run(now, now, now, now);
 
     db.prepare(
         `INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
          VALUES (1, 1, ?), (1, 2, ?), (1, 3, ?), (2, 4, ?), (2, 5, ?)`
     ).run(now, now, now, now, now);
+    db.prepare(
+        `INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
+         VALUES (3, 1, ?), (6, 1, ?), (6, 2, ?), (6, 3, ?)`
+    ).run(now, now, now, now);
 
     db.prepare(
         `INSERT OR IGNORE INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_by, created_at)
          VALUES
-         (1, 'GROUP_EMAIL', 'ug2024@plaksha.edu.in', 99, ?),
+         (1, 'GROUP_EMAIL', 'ug.2024@plaksha.edu.in', 99, ?),
          (1, 'EMAIL', 'john.doe@plaksha.edu.in', 99, ?),
          (2, 'GROUP_EMAIL', 'professors@plaksha.edu.in', 99, ?)`
     ).run(now, now, now);

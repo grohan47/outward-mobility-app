@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -79,12 +80,14 @@ def _normalize_generator_visibility_rules(rules: list[str]) -> list[dict[str, st
     seen: set[str] = set()
     for raw_rule in rules:
         rule_value = raw_rule.strip().lower()
+        rule_value = re.sub(r"^ug(20\d{2})@", r"ug.\1@", rule_value)
         if not rule_value or rule_value in seen:
             continue
-        if not rule_value.endswith("@plaksha.edu.in"):
-            raise ValueError(f'Visibility rule "{rule_value}" must be a valid @plaksha.edu.in email address.')
+        if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", rule_value):
+            raise ValueError(f'Visibility rule "{rule_value}" must be a valid email address.')
         seen.add(rule_value)
-        normalized.append({"rule_type": "GROUP_EMAIL", "rule_value": rule_value})
+        rule_type = "GROUP_EMAIL" if re.fullmatch(r"ug\.?20\d{2}@plaksha\.edu\.in", rule_value) or rule_value == "professors@plaksha.edu.in" else "EMAIL"
+        normalized.append({"rule_type": rule_type, "rule_value": rule_value})
     return normalized
 
 
@@ -238,7 +241,7 @@ class GraphPublishingService:
         replace_detail_fields(db, opportunity_id, normalize_detail_fields(opp.detail_fields), ts)
         if parsed.applicant_form_fields:
             replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
-        visibility_rules = parsed.generator_visibility_rules or ["ug2024@plaksha.edu.in"]
+        visibility_rules = parsed.generator_visibility_rules or ["ug.2024@plaksha.edu.in"]
         _replace_opportunity_visibility_rules(
             db,
             opportunity_id,
@@ -284,7 +287,7 @@ class GraphPublishingService:
         replace_detail_fields(db, opportunity_id, detail_fields, ts)
         if parsed.applicant_form_fields:
             replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
-        visibility_rules = parsed.generator_visibility_rules or ["ug2024@plaksha.edu.in"]
+        visibility_rules = parsed.generator_visibility_rules or ["ug.2024@plaksha.edu.in"]
         _replace_opportunity_visibility_rules(
             db,
             opportunity_id,

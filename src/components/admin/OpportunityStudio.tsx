@@ -271,7 +271,7 @@ export default function OpportunityStudio({
   const [selectedFields, setSelectedFields] = useState<string[]>(initialSelectedFields);
   const [customFields, setCustomFields] = useState<CustomFieldDraft[]>(initialCustomFields);
   const [visibilityRules, setVisibilityRules] = useState<GeneratorVisibilityRule[]>(
-    initialGeneratorVisibilityRules.length > 0 ? initialGeneratorVisibilityRules : [{ ruleType: "GROUP_EMAIL", ruleValue: "" }]
+    initialGeneratorVisibilityRules.length > 0 ? initialGeneratorVisibilityRules : [{ ruleValue: "" }]
   );
   const fallbackGraph = useMemo(() => workflowStepsToGraph(defaultPipeline), [defaultPipeline]);
   const [graphNodes, setGraphNodes] = useState<StudioGraphNode[]>(
@@ -687,6 +687,7 @@ export default function OpportunityStudio({
         visibility: "plaksha_only",
       },
       graph: { nodes: graphNodes, edges: graphEdges },
+      generatorVisibilityRules: visibilityRules.map((rule) => rule.ruleValue).filter(Boolean),
       clarifyingQuestions: openQuestions,
       warnings: draftOutput?.warnings || [],
       confidence: draftOutput?.confidence ?? 0.78,
@@ -718,6 +719,9 @@ export default function OpportunityStudio({
       const available = new Set(selectableFields.map((f) => f.field_key));
       const aiFields = draftData.applicant_form_fields.filter((key) => available.has(key));
       if (aiFields.length > 0) setSelectedFields(aiFields);
+    }
+    if (draftData.generator_visibility_rules?.length) {
+      setVisibilityRules(draftData.generator_visibility_rules.map((email) => ({ ruleValue: email })));
     }
   }
 
@@ -917,7 +921,7 @@ export default function OpportunityStudio({
           options: field.optionsText.split(/[,;\n]+/).map((item) => item.trim()).filter(Boolean),
           persistForFuture: field.persistForFuture !== false,
         })),
-        generatorVisibilityRules: visibilityRules,
+        generatorVisibilityRules: visibilityRules.map((rule) => rule.ruleValue).filter(Boolean),
         detailFields: detailFields.map((field, index) => ({
           key: field.field_key,
           label: field.label,
@@ -1049,7 +1053,7 @@ export default function OpportunityStudio({
           onContinue={() => setStudioStep("pipeline")}
         />
       ) : (
-        <div className="hidden flex-1 lg:grid lg:grid-cols-[220px_1fr_280px]">
+        <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[220px_minmax(0,1fr)_280px]">
           <PipelineRail
             opportunity={opportunity}
             nodes={graphNodes}
@@ -1067,7 +1071,7 @@ export default function OpportunityStudio({
             onAddRejectRoute={addRejectRoute}
             onStartConnect={startConnectMode}
           />
-          <main className="flex min-w-0 flex-col">
+          <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
             <StudioGraph
               nodes={graphNodes}
               edges={graphEdges}
@@ -1563,29 +1567,19 @@ function ApplicationFormScreen({
           <RailSection title="Eligibility">
             <div className="space-y-2">
               {visibilityRules.map((rule, index) => (
-                <div key={`${rule.ruleType}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
-                  <select
-                    className="min-h-[40px] rounded-lg border border-slate-200 bg-white p-2 text-sm"
-                    value={rule.ruleType}
-                    onChange={(event) =>
-                      setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleType: event.target.value as GeneratorVisibilityRule["ruleType"] } : item)))
-                    }
-                  >
-                    <option value="GROUP_EMAIL">Group</option>
-                    <option value="EMAIL">Email</option>
-                  </select>
+                <div key={`${rule.ruleValue || "visibility"}-${index}`}>
                   <input
-                    className="min-h-[40px] rounded-lg border border-slate-200 p-2 text-sm"
+                    className="min-h-[40px] w-full rounded-lg border border-slate-200 p-2 text-sm"
                     value={rule.ruleValue}
                     onChange={(event) => setVisibilityRules((prev) => prev.map((item, ruleIndex) => (ruleIndex === index ? { ...item, ruleValue: event.target.value } : item)))}
-                    placeholder="e.g. ug2024@university.edu"
+                    placeholder="e.g. ug.2024@plaksha.edu.in"
                   />
                 </div>
               ))}
             </div>
-            <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleType: "EMAIL", ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
+            <button type="button" onClick={() => setVisibilityRules((prev) => [...prev, { ruleValue: "" }])} className="inline-flex min-h-[36px] items-center gap-1 text-sm font-semibold text-primary-dark">
               <span className="material-symbols-outlined text-[18px]">add</span>
-              Add Rule
+              Add Email
             </button>
           </RailSection>
           <div className="mt-6 flex flex-wrap justify-between gap-2 border-t border-slate-100 pt-4">
@@ -2083,6 +2077,7 @@ function normalizeDraftRow(row: any): DraftOutput {
   return {
     ...parsed,
     applicant_form_fields: Array.isArray(parsed.applicant_form_fields) ? parsed.applicant_form_fields : undefined,
+    generator_visibility_rules: Array.isArray(parsed.generator_visibility_rules) ? parsed.generator_visibility_rules : undefined,
     clarifying_questions: parseJson<string[]>(row?.clarifying_questions, parsed.clarifying_questions || []),
     warnings: parseJson<string[]>(row?.warnings, parsed.warnings || []),
     confidence: Number(row?.confidence ?? parsed.confidence ?? 0),

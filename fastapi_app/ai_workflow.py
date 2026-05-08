@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -81,7 +82,7 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
     ]
   },
   "applicant_form_fields": ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
-  "generator_visibility_rules": ["ug2024@plaksha.edu.in"],
+  "generator_visibility_rules": ["ug.2024@plaksha.edu.in"],
   "clarifying_questions": [],
   "confidence": 0.85,
   "warnings": [],
@@ -108,6 +109,8 @@ BATCH / ELIGIBILITY INFERENCE:
 - Current year is 2026. Plaksha undergraduate batches: UG 2022 (4th year), UG 2023 (3rd year), UG 2024 (2nd year), UG 2025 (1st year).
 - If the opportunity is master's, PhD, postgraduate, or graduate level: eligible batch is UG 2022 only (oldest batch). Add detail_field eligible_batch = "UG 2022".
 - If the email says "final year" or "graduating students": eligible batch is UG 2022.
+- If the email says undergraduate students but excludes final-year students, eligible batches are UG 2023, UG 2024, and UG 2025.
+- If the email says undergraduate students and does not exclude any year, include every applicable current UG cohort.
 - If the email says a specific batch or year, use that.
 
 APPLICANT FORM FIELDS RULES:
@@ -118,11 +121,12 @@ APPLICANT FORM FIELDS RULES:
 - Add language_score if language proficiency or IELTS/TOEFL is required.
 
 VISIBILITY RULES:
-- generator_visibility_rules must contain at least one @plaksha.edu.in group email.
-- Default to ["ug2024@plaksha.edu.in"] unless the email explicitly maps to a seeded group or names an exact @plaksha.edu.in group email.
-- Seeded GROUP_EMAIL groups currently available: ug2024@plaksha.edu.in and professors@plaksha.edu.in.
+- generator_visibility_rules is a simple array of email addresses. Do not output rule type objects.
+- Cohort emails follow the exact format ug.202x@plaksha.edu.in, for example ug.2023@plaksha.edu.in.
+- Automatically include the correct cohort email(s) from the eligibility text: UG 2022 -> ug.2022@plaksha.edu.in, UG 2023 -> ug.2023@plaksha.edu.in, UG 2024 -> ug.2024@plaksha.edu.in, UG 2025 -> ug.2025@plaksha.edu.in.
+- Default to ["ug.2024@plaksha.edu.in"] only if no eligibility clue is present.
+- Available group emails currently include ug.2022@plaksha.edu.in, ug.2023@plaksha.edu.in, ug.2024@plaksha.edu.in, ug.2025@plaksha.edu.in, and professors@plaksha.edu.in.
 - Use professors@plaksha.edu.in only when the opportunity is meant for professors/faculty.
-- If the email names a different Plaksha group email explicitly, include that exact lowercase @plaksha.edu.in address; otherwise do not invent unseeded cohort groups.
 - Use lowercase email addresses only. Do not include non-Plaksha addresses.
 
 STANDARD PLAKSHA APPROVAL PATHWAY:
@@ -174,7 +178,23 @@ def _normalize_ai_output(parsed: AIWorkflowDraftOutput) -> AIWorkflowDraftOutput
     parsed.opportunity.code = None
     _ensure_application_deadline(parsed)
     _ensure_resume_field_aliases(parsed)
+    _normalize_generator_visibility_emails(parsed)
     return parsed
+
+
+def _normalize_generator_visibility_emails(parsed: AIWorkflowDraftOutput) -> None:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_rule in parsed.generator_visibility_rules or []:
+        email = str(raw_rule).strip().lower()
+        email = re.sub(r"^ug(20\d{2})@", r"ug.\1@", email)
+        if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            continue
+        if email in seen:
+            continue
+        seen.add(email)
+        normalized.append(email)
+    parsed.generator_visibility_rules = normalized or ["ug.2024@plaksha.edu.in"]
 
 
 def _ensure_application_deadline(parsed: AIWorkflowDraftOutput) -> None:
@@ -498,7 +518,7 @@ class AIWorkflowDraftService:
                     GraphEdgeModel(from_node_key="oge_review", to_node_key="end"),
                 ],
             ),
-            generator_visibility_rules=["ug2024@plaksha.edu.in"],
+            generator_visibility_rules=["ug.2024@plaksha.edu.in"],
             clarifying_questions=[],
             confidence=0.0,
             warnings=["AI generation unavailable — fallback draft used. Review and edit before publishing."],
