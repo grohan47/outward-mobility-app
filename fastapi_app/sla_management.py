@@ -142,16 +142,23 @@ class SLAManagementService:
         reminder_days: list[int],
         escalation_email: str | None,
     ) -> dict[str, Any]:
-        node = db.execute("SELECT id FROM graph_nodes WHERE id = ?", (graph_node_id,)).fetchone()
+        node = db.execute(
+            "SELECT id FROM graph_nodes WHERE id = ?", (graph_node_id,)
+        ).fetchone()
         if not node:
             raise ValueError("Graph node not found")
         if sla_days < 1:
             raise ValueError("SLA days must be at least 1")
 
-        normalized_reminders = sorted({day for day in reminder_days if day >= 0}, reverse=True) or self.DEFAULT_REMINDER_DAYS
+        normalized_reminders = (
+            sorted({day for day in reminder_days if day >= 0}, reverse=True)
+            or self.DEFAULT_REMINDER_DAYS
+        )
         ts = now_iso()
         with db:
-            existing = db.execute("SELECT id FROM sla_policies WHERE graph_node_id = ?", (graph_node_id,)).fetchone()
+            existing = db.execute(
+                "SELECT id FROM sla_policies WHERE graph_node_id = ?", (graph_node_id,)
+            ).fetchone()
             if existing:
                 db.execute(
                     """
@@ -159,7 +166,13 @@ class SLAManagementService:
                     SET sla_days = ?, reminder_days = ?, escalation_email = ?, updated_at = ?
                     WHERE graph_node_id = ?
                     """,
-                    (sla_days, json.dumps(normalized_reminders), escalation_email, ts, graph_node_id),
+                    (
+                        sla_days,
+                        json.dumps(normalized_reminders),
+                        escalation_email,
+                        ts,
+                        graph_node_id,
+                    ),
                 )
             else:
                 db.execute(
@@ -168,9 +181,18 @@ class SLAManagementService:
                       (graph_node_id, sla_days, reminder_days, escalation_email, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (graph_node_id, sla_days, json.dumps(normalized_reminders), escalation_email, ts, ts),
+                    (
+                        graph_node_id,
+                        sla_days,
+                        json.dumps(normalized_reminders),
+                        escalation_email,
+                        ts,
+                        ts,
+                    ),
                 )
-        row = db.execute("SELECT * FROM sla_policies WHERE graph_node_id = ?", (graph_node_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM sla_policies WHERE graph_node_id = ?", (graph_node_id,)
+        ).fetchone()
         return self.serialize_policy(row)
 
     def list_policies(self, db: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -199,7 +221,9 @@ class SLAManagementService:
             "breached_tasks": [item.to_dict() for item in breached],
         }
 
-    def reviewer_tasks(self, db: sqlite3.Connection, reviewer_email: str) -> list[dict[str, Any]]:
+    def reviewer_tasks(
+        self, db: sqlite3.Connection, reviewer_email: str
+    ) -> list[dict[str, Any]]:
         evaluations = self.evaluate_active_tasks(db, reviewer_email=reviewer_email)
         return [item.to_dict() for item in evaluations]
 
@@ -219,10 +243,20 @@ class SLAManagementService:
         ).fetchone()
         if not task:
             raise ValueError("Active task not found")
-        if task["assigned_reviewer_email"].strip().lower() != reviewer_email.strip().lower():
+        if (
+            task["assigned_reviewer_email"].strip().lower()
+            != reviewer_email.strip().lower()
+        ):
             raise ValueError("Actor is not assigned to this task")
 
-        evaluation = next((item for item in self.evaluate_active_tasks(db) if item.task_id == task_id), None)
+        evaluation = next(
+            (
+                item
+                for item in self.evaluate_active_tasks(db)
+                if item.task_id == task_id
+            ),
+            None,
+        )
         if not evaluation or evaluation.status != "breached":
             raise ValueError("Task has not breached SLA")
 
@@ -238,11 +272,20 @@ class SLAManagementService:
                   acknowledged_at = excluded.acknowledged_at,
                   resolution_notes = excluded.resolution_notes
                 """,
-                (task_id, evaluation.deadline_at, evaluation.escalation_email, reviewer_email, ts, notes),
+                (
+                    task_id,
+                    evaluation.deadline_at,
+                    evaluation.escalation_email,
+                    reviewer_email,
+                    ts,
+                    notes,
+                ),
             )
         return {"acknowledged": True, "acknowledged_at": ts}
 
-    def run_check(self, db: sqlite3.Connection, sender: SLAEmailSender | None = None) -> dict[str, Any]:
+    def run_check(
+        self, db: sqlite3.Connection, sender: SLAEmailSender | None = None
+    ) -> dict[str, Any]:
         sender = sender or SLAEmailSender()
         sent = 0
         breached = 0
@@ -276,9 +319,16 @@ class SLAManagementService:
                     f"{evaluation.student_name}'s task at {evaluation.current_node} is due {evaluation.deadline_at}.",
                 ):
                     sent += 1
-        return {"checked": True, "sent": sent, "breached": breached, "timestamp": now_iso()}
+        return {
+            "checked": True,
+            "sent": sent,
+            "breached": breached,
+            "timestamp": now_iso(),
+        }
 
-    def evaluate_active_tasks(self, db: sqlite3.Connection, reviewer_email: str | None = None) -> list[SLAEvaluation]:
+    def evaluate_active_tasks(
+        self, db: sqlite3.Connection, reviewer_email: str | None = None
+    ) -> list[SLAEvaluation]:
         params: list[Any] = []
         reviewer_clause = ""
         if reviewer_email:
@@ -296,6 +346,7 @@ class SLAManagementService:
               n.node_key,
               n.display_name,
               n.metadata,
+              n.visible_sections,
               p.sla_days,
               p.reminder_days,
               p.escalation_email,
@@ -333,7 +384,16 @@ class SLAManagementService:
             else:
                 sla_days = self.DEFAULT_SLA_DAYS
             reminder_days = json_list(row["reminder_days"], self.DEFAULT_REMINDER_DAYS)
-            deadline = assigned_at + timedelta(days=sla_days)
+            duration = (
+                timedelta(days=policy_days)
+                if policy_days
+                else (
+                    timedelta(hours=metadata_hours)
+                    if metadata_hours
+                    else timedelta(days=sla_days)
+                )
+            )
+            deadline = assigned_at + duration
             remaining = deadline - now
             hours_remaining = int(remaining.total_seconds() // 3600)
             days_remaining = int(remaining.total_seconds() // 86400)
@@ -349,7 +409,9 @@ class SLAManagementService:
                     graph_node_id=int(row["graph_node_id"]),
                     application_id=int(row["application_id"]),
                     opportunity_title=str(row["opportunity_title"]),
-                    student_name=str(row["student_name"]),
+                    student_name=str(row["student_name"])
+                    if "full_name" in json.loads(row["visible_sections"] or "[]")
+                    else "Student",
                     reviewer_email=str(row["assigned_reviewer_email"]),
                     current_node=str(row["display_name"] or row["node_key"]),
                     assigned_at=assigned_at.isoformat(),
@@ -358,7 +420,9 @@ class SLAManagementService:
                     days_remaining=days_remaining,
                     hours_remaining=hours_remaining,
                     status=status,
-                    escalation_email=str(row["escalation_email"]) if row["escalation_email"] else None,
+                    escalation_email=str(row["escalation_email"])
+                    if row["escalation_email"]
+                    else None,
                     breach_acknowledged=bool(row["acknowledged_at"]),
                 )
             )
@@ -366,7 +430,9 @@ class SLAManagementService:
 
     def serialize_policy(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)
-        data["reminder_days"] = json_list(data.get("reminder_days"), self.DEFAULT_REMINDER_DAYS)
+        data["reminder_days"] = json_list(
+            data.get("reminder_days"), self.DEFAULT_REMINDER_DAYS
+        )
         return data
 
     def _send_once(
@@ -408,7 +474,11 @@ class SLAManagementService:
                   (task_id, breached_at, escalation_sent_to)
                 VALUES (?, ?, ?)
                 """,
-                (evaluation.task_id, evaluation.deadline_at, evaluation.escalation_email),
+                (
+                    evaluation.task_id,
+                    evaluation.deadline_at,
+                    evaluation.escalation_email,
+                ),
             )
 
 

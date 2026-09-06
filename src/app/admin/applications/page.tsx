@@ -4,9 +4,10 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Table } from "@/components/ui/Table";
 import { Badge } from "@/components/ui/Badge";
+import type { ApplicationListItem } from "@/lib/types";
 
 export default function AdminApplicationsLedger() {
-  const [items, setItems] = useState<any[]>([]);
+  const [items, setItems] = useState<ApplicationListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
@@ -46,13 +47,13 @@ export default function AdminApplicationsLedger() {
     {
       key: "id",
       header: "App ID",
-      cell: (item: any) => <span className="font-mono text-xs text-slate-500">#{item.id}</span>,
+      cell: (item: ApplicationListItem) => <span className="font-mono text-xs text-slate-500">#{item.id}</span>,
       width: "80px",
     },
     {
       key: "applicant",
       header: "Applicant / Program",
-      cell: (item: any) => (
+      cell: (item: ApplicationListItem) => (
         <div>
           <p className="font-bold text-slate-900">{item.student_user?.full_name}</p>
           <p className="text-[10px] text-slate-500">{item.student_profile?.program} • {item.student_profile?.student_id}</p>
@@ -62,13 +63,13 @@ export default function AdminApplicationsLedger() {
     {
       key: "opportunity",
       header: "Opportunity",
-      cell: (item: any) => <span className="text-sm text-slate-700 font-medium">{item.opportunity?.title}</span>,
+      cell: (item: ApplicationListItem) => <span className="text-sm text-slate-700 font-medium">{item.opportunity?.title}</span>,
     },
     {
       key: "status",
       header: "Workflow State",
-      cell: (item: any) => {
-        let variant: any = "info";
+      cell: (item: ApplicationListItem) => {
+        let variant: "info" | "danger" | "success" = "info";
         if (item.workflow.finalStatus === "REJECTED") variant = "danger";
         if (item.workflow.finalStatus === "APPROVED") variant = "success";
 
@@ -90,7 +91,7 @@ export default function AdminApplicationsLedger() {
             )}
             <div className="w-48 mt-1">
               <div className="flex items-center gap-1">
-                {steps.map((step: any, idx: number) => {
+                {steps.map((step, idx) => {
                   const stepOrder = Number(step.step_order);
                   const done = closed || stepOrder < currentStep;
                   const active = !closed && stepOrder === currentStep;
@@ -118,12 +119,12 @@ export default function AdminApplicationsLedger() {
     {
       key: "date",
       header: "Last Update",
-      cell: (item: any) => <span className="text-xs text-slate-500 font-medium">{new Date(item.updated_at).toLocaleString()}</span>,
+      cell: (item: ApplicationListItem) => <span className="text-xs text-slate-500 font-medium">{new Date(item.updated_at).toLocaleString()}</span>,
     },
     {
       key: "actions",
       header: "Actions",
-      cell: (item: any) => (
+      cell: (item: ApplicationListItem) => (
         <div className="flex items-center gap-2">
           <Link
             href={`/admin/applications/${item.id}`}

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi_app.graph_models import AIWorkflowDraftOutput
+from fastapi_app.graph_execution import transaction
+from fastapi_app.graph_validation import GraphPolicyValidator
 from fastapi_app.opportunity_details import (
     normalize_ai_summary_bullets,
     normalize_detail_fields,
@@ -33,7 +35,11 @@ def _generate_backend_opportunity_code(db: sqlite3.Connection) -> str:
 
 def _derive_name_from_email(email: str) -> str:
     local = email.split("@", 1)[0]
-    parts = [chunk for chunk in local.replace(".", " ").replace("_", " ").replace("-", " ").split() if chunk]
+    parts = [
+        chunk
+        for chunk in local.replace(".", " ").replace("_", " ").replace("-", " ").split()
+        if chunk
+    ]
     return " ".join(part.capitalize() for part in parts) or "Reviewer"
 
 
@@ -49,12 +55,16 @@ def _ensure_reviewer_account(
 
     role = db.execute("SELECT id FROM roles WHERE code = 'REVIEWER'").fetchone()
     if not role:
-        cursor = db.execute("INSERT INTO roles (code, display_name) VALUES ('REVIEWER', 'Reviewer')")
+        cursor = db.execute(
+            "INSERT INTO roles (code, display_name) VALUES ('REVIEWER', 'Reviewer')"
+        )
         role_id = int(cursor.lastrowid)
     else:
         role_id = int(role["id"])
 
-    user = db.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (email,)).fetchone()
+    user = db.execute(
+        "SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (email,)
+    ).fetchone()
     if user:
         user_id = int(user["id"])
     else:
@@ -75,7 +85,7 @@ def _ensure_reviewer_account(
     )
 
 
-def _normalize_generator_visibility_rules(rules: list[str]) -> list[dict[str, str]]:
+def _normalize_student_visibility_rules(rules: list[str]) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
     for raw_rule in rules:
@@ -84,9 +94,16 @@ def _normalize_generator_visibility_rules(rules: list[str]) -> list[dict[str, st
         if not rule_value or rule_value in seen:
             continue
         if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", rule_value):
-            raise ValueError(f'Visibility rule "{rule_value}" must be a valid email address.')
+            raise ValueError(
+                f'Visibility rule "{rule_value}" must be a valid email address.'
+            )
         seen.add(rule_value)
-        rule_type = "GROUP_EMAIL" if re.fullmatch(r"ug\.?20\d{2}@plaksha\.edu\.in", rule_value) or rule_value == "professors@plaksha.edu.in" else "EMAIL"
+        rule_type = (
+            "GROUP_EMAIL"
+            if re.fullmatch(r"ug\.?20\d{2}@plaksha\.edu\.in", rule_value)
+            or rule_value == "professors@plaksha.edu.in"
+            else "EMAIL"
+        )
         normalized.append({"rule_type": rule_type, "rule_value": rule_value})
     return normalized
 
@@ -97,7 +114,10 @@ def _replace_opportunity_visibility_rules(
     rules: list[dict[str, str]],
     created_at: str,
 ) -> None:
-    db.execute("DELETE FROM opportunity_visibility_rules WHERE opportunity_id = ?", (opportunity_id,))
+    db.execute(
+        "DELETE FROM opportunity_visibility_rules WHERE opportunity_id = ?",
+        (opportunity_id,),
+    )
     for rule in rules:
         db.execute(
             """
@@ -127,18 +147,52 @@ class GraphPublishingService:
     """
 
     def publish(self, db: sqlite3.Connection, draft_id: int, admin_email: str) -> int:
-        draft = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
-        if not draft:
-            raise ValueError(f"Draft {draft_id} not found")
-        if not draft["publish_ready"]:
-            raise ValueError("Draft is not publish_ready — resolve validation errors and open questions first")
+        from fastapi_app.main import (
+            CustomFormFieldPayload,
+            normalize_custom_form_fields,
+            upsert_custom_form_fields,
+            serialize_form_field,
+        )
 
-        raw = draft["draft_output"]
-        if not raw:
-            raise ValueError("Draft has no output to publish")
-        parsed = AIWorkflowDraftOutput.model_validate_json(raw)
+        with transaction(db):
+            draft = db.execute(
+                "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+            ).fetchone()
+            if not draft:
+                raise ValueError(f"Draft {draft_id} not found")
+            if draft["status"] == "published":
+                raise ValueError("This draft is already published")
+            if not draft["publish_ready"]:
+                raise ValueError(
+                    "Draft is not publish_ready — resolve validation errors and open questions first"
+                )
+            if draft["created_by_email"] != admin_email:
+                raise ValueError("Draft belongs to another organizer")
 
-        with db:
+            raw = draft["draft_output"]
+            if not raw:
+                raise ValueError("Draft has no output to publish")
+            parsed = AIWorkflowDraftOutput.model_validate_json(raw)
+            errors = GraphPolicyValidator().validate_graph(
+                parsed.graph, parsed.applicant_form_fields
+            )
+            if (
+                errors
+                or not parsed.student_visibility_rules
+                or not parsed.opportunity.title.strip()
+                or not parsed.opportunity.description.strip()
+            ):
+                raise ValueError(
+                    "; ".join(errors)
+                    or "Title, description, and student eligibility are required"
+                )
+
+            upsert_custom_form_fields(
+                db,
+                normalize_custom_form_fields(
+                    [CustomFormFieldPayload(**f) for f in parsed.custom_fields]
+                ),
+            )
             opportunity_id = draft["opportunity_id"]
             if not opportunity_id:
                 opportunity_id = self._create_opportunity(db, parsed, admin_email)
@@ -162,9 +216,24 @@ class GraphPublishingService:
             )
             graph_version_id = int(cursor.lastrowid)
 
+            snapshot = parsed.model_dump()
+            snapshot["form_schema"] = [
+                serialize_form_field(
+                    db.execute(
+                        "SELECT * FROM form_field_catalog WHERE field_key=?", (key,)
+                    ).fetchone()
+                )
+                for key in parsed.applicant_form_fields
+            ]
+            db.execute(
+                "UPDATE graph_versions SET definition_json=? WHERE id=?",
+                (json.dumps(snapshot), graph_version_id),
+            )
             for node in parsed.graph.nodes:
                 if node.node_type == "reviewer":
-                    _ensure_reviewer_account(db, node.reviewer_email, node.display_name, ts)
+                    _ensure_reviewer_account(
+                        db, node.reviewer_email, node.display_name, ts
+                    )
                 db.execute(
                     """
                     INSERT INTO graph_nodes
@@ -195,7 +264,9 @@ class GraphPublishingService:
                         graph_version_id,
                         edge.from_node_key,
                         edge.to_node_key,
-                        json.dumps(edge.condition_json) if edge.condition_json else None,
+                        json.dumps(edge.condition_json)
+                        if edge.condition_json
+                        else None,
                         edge.label,
                         edge.action,
                     ),
@@ -213,7 +284,11 @@ class GraphPublishingService:
     ) -> int:
         opp = parsed.opportunity
         ts = _now_iso()
-        code = _generate_backend_opportunity_code(db)
+        code = (
+            opp.code.strip()
+            if opp.code and opp.code.strip()
+            else _generate_backend_opportunity_code(db)
+        )
 
         cursor = db.execute(
             """
@@ -227,30 +302,42 @@ class GraphPublishingService:
                 opp.title,
                 opp.description,
                 validate_cover_image_url(opp.cover_image_url),
-                opp.term or "TBD",
-                opp.destination or opp.host_institution or "Global",
-                opp.deadline or f"{datetime.now(timezone.utc).year}-12-31",
-                opp.seats or 10,
-                json.dumps(normalize_ai_summary_bullets(opp.ai_summary_bullets)) if opp.ai_summary_bullets else None,
-                summary_source_hash(opp.model_dump(), normalize_detail_fields(opp.detail_fields)) if opp.ai_summary_bullets else None,
+                opp.term,
+                opp.destination or opp.host_institution,
+                opp.deadline,
+                opp.seats,
+                json.dumps(normalize_ai_summary_bullets(opp.ai_summary_bullets))
+                if opp.ai_summary_bullets
+                else None,
+                summary_source_hash(
+                    opp.model_dump(), normalize_detail_fields(opp.detail_fields)
+                )
+                if opp.ai_summary_bullets
+                else None,
                 ts,
                 ts,
             ),
         )
         opportunity_id = int(cursor.lastrowid)
-        replace_detail_fields(db, opportunity_id, normalize_detail_fields(opp.detail_fields), ts)
+        replace_detail_fields(
+            db, opportunity_id, normalize_detail_fields(opp.detail_fields), ts
+        )
         if parsed.applicant_form_fields:
-            replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
-        visibility_rules = parsed.generator_visibility_rules or ["ug.2024@plaksha.edu.in"]
+            replace_opportunity_form_fields(
+                db, opportunity_id, parsed.applicant_form_fields
+            )
+        visibility_rules = parsed.student_visibility_rules
         _replace_opportunity_visibility_rules(
             db,
             opportunity_id,
-            _normalize_generator_visibility_rules(visibility_rules),
+            _normalize_student_visibility_rules(visibility_rules),
             ts,
         )
         return opportunity_id
 
-    def _update_opportunity(self, db: sqlite3.Connection, opportunity_id: int, parsed: AIWorkflowDraftOutput) -> None:
+    def _update_opportunity(
+        self, db: sqlite3.Connection, opportunity_id: int, parsed: AIWorkflowDraftOutput
+    ) -> None:
         opp = parsed.opportunity
         ts = _now_iso()
         detail_fields = normalize_detail_fields(opp.detail_fields)
@@ -279,19 +366,23 @@ class GraphPublishingService:
                 opp.deadline,
                 opp.seats,
                 json.dumps(bullets) if bullets else None,
-                summary_source_hash(opp.model_dump(), detail_fields) if bullets else None,
+                summary_source_hash(opp.model_dump(), detail_fields)
+                if bullets
+                else None,
                 ts,
                 opportunity_id,
             ),
         )
         replace_detail_fields(db, opportunity_id, detail_fields, ts)
         if parsed.applicant_form_fields:
-            replace_opportunity_form_fields(db, opportunity_id, parsed.applicant_form_fields)
-        visibility_rules = parsed.generator_visibility_rules or ["ug.2024@plaksha.edu.in"]
+            replace_opportunity_form_fields(
+                db, opportunity_id, parsed.applicant_form_fields
+            )
+        visibility_rules = parsed.student_visibility_rules
         _replace_opportunity_visibility_rules(
             db,
             opportunity_id,
-            _normalize_generator_visibility_rules(visibility_rules),
+            _normalize_student_visibility_rules(visibility_rules),
             ts,
         )
 

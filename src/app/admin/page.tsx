@@ -91,7 +91,7 @@ export default function AdminDashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight">OGE Master Dashboard</h1>
+          <h1 className="text-3xl font-black text-slate-900 tracking-tight">Administrator Dashboard</h1>
           <p className="text-slate-500 mt-2">Platform overview and recent activity.</p>
         </div>
         <div className="flex gap-3">
@@ -125,7 +125,7 @@ export default function AdminDashboard() {
         </Card>
         <Card className="bg-amber-500/10 border-amber-500/20">
           <div className="flex flex-col">
-            <span className="text-sm font-bold text-amber-800 uppercase tracking-wider mb-2">Awaiting OGE Action</span>
+            <span className="text-sm font-bold text-amber-800 uppercase tracking-wider mb-2">Awaiting Administrator Action</span>
             <span className="text-4xl font-black text-amber-900">{loading ? "-" : stats?.awaitingMe ?? 0}</span>
           </div>
         </Card>

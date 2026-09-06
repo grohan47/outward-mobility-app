@@ -77,7 +77,7 @@ def _load_email(filename: str) -> str:
     return (FIXTURES_DIR / filename).read_text()
 
 
-def _valid_ai_output_json(generator_visibility_rules=_VISIBILITY_OMITTED) -> str:
+def _valid_ai_output_json(student_visibility_rules=_VISIBILITY_OMITTED) -> str:
     payload = {
         "opportunity": {
             "title": "Singapore AI Exchange",
@@ -121,8 +121,8 @@ def _valid_ai_output_json(generator_visibility_rules=_VISIBILITY_OMITTED) -> str
         "warnings": [],
         "is_fallback": False,
     }
-    if generator_visibility_rules is not _VISIBILITY_OMITTED:
-        payload["generator_visibility_rules"] = generator_visibility_rules
+    if student_visibility_rules is not _VISIBILITY_OMITTED:
+        payload["student_visibility_rules"] = student_visibility_rules
     return json.dumps(payload)
 
 
@@ -177,7 +177,7 @@ def _assert_has_deadline(parsed) -> None:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_parsed_ai_output_preserves_seeded_generator_visibility_rules():
+def test_parsed_ai_output_preserves_seeded_student_visibility_rules():
     from fastapi_app.ai_workflow import AIWorkflowDraftService
     from fastapi_app.graph_models import AIWorkflowDraftOutput
 
@@ -189,10 +189,10 @@ def test_parsed_ai_output_preserves_seeded_generator_visibility_rules():
     row = service.generate_draft(db, "test@plaksha.edu.in", "Faculty research opportunity")
     parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
 
-    assert parsed.generator_visibility_rules == ["professors@plaksha.edu.in"]
+    assert parsed.student_visibility_rules == ["professors@plaksha.edu.in"]
 
 
-def test_parsed_ai_output_defaults_generator_visibility_rules_to_ug_2024():
+def test_parsed_ai_output_defaults_student_visibility_rules_to_ug_2024():
     from fastapi_app.ai_workflow import AIWorkflowDraftService
     from fastapi_app.graph_models import AIWorkflowDraftOutput
 
@@ -202,10 +202,10 @@ def test_parsed_ai_output_defaults_generator_visibility_rules_to_ug_2024():
     row = service.generate_draft(db, "test@plaksha.edu.in", "General student opportunity")
     parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
 
-    assert parsed.generator_visibility_rules == ["ug.2024@plaksha.edu.in"]
+    assert parsed.student_visibility_rules == ["ug.2024@plaksha.edu.in"]
 
 
-def test_fallback_draft_includes_default_generator_visibility_rules():
+def test_fallback_draft_includes_default_student_visibility_rules():
     from fastapi_app.ai_workflow import AIWorkflowDraftService
     from fastapi_app.graph_models import AIWorkflowDraftOutput
 
@@ -216,7 +216,7 @@ def test_fallback_draft_includes_default_generator_visibility_rules():
     parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
 
     assert parsed.is_fallback is True
-    assert parsed.generator_visibility_rules == ["ug.2024@plaksha.edu.in"]
+    assert parsed.student_visibility_rules == ["ug.2024@plaksha.edu.in"]
 
 
 @pytest.mark.integration

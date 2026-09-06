@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import hmac
+import hashlib
+import secrets
+import time
 import os
 import re
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -14,10 +18,18 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from fastapi_app.ai_service import ai_approval_assist, ai_nomination_insights, ai_thread_summary
+from fastapi_app.ai_service import (
+    ai_approval_assist,
+    ai_nomination_insights,
+    ai_thread_summary,
+)
 from fastapi_app.ai_workflow import AIWorkflowDraftService
 from fastapi_app.graph_execution import GraphExecutionService
-from fastapi_app.graph_models import AIWorkflowDraftOutput, GraphModel, OpportunityDraftModel
+from fastapi_app.graph_models import (
+    AIWorkflowDraftOutput,
+    GraphModel,
+    OpportunityDraftModel,
+)
 from fastapi_app.graph_publishing import GraphPublishingService
 from fastapi_app.graph_validation import GraphPolicyValidator
 from fastapi_app.opportunity_details import (
@@ -32,57 +44,51 @@ from fastapi_app.opportunity_details import (
     summary_source_hash,
     validate_cover_image_url,
 )
-from fastapi_app.sla_management import SLAEmailSender, SLAManagementService, sla_check_job
+from fastapi_app.sla_management import (
+    SLAEmailSender,
+    SLAManagementService,
+    sla_check_job,
+)
 
-try:
-    from apscheduler.schedulers.background import BackgroundScheduler
-except ImportError:  # pragma: no cover - dependency is optional in stripped envs
-    BackgroundScheduler = None  # type: ignore[assignment]
-
-DB_PATH = Path(__file__).resolve().parent.parent / "server" / "db" / "prism.sqlite"
-MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+DB_PATH = Path(
+    os.environ.get(
+        "PRISM_DB_PATH",
+        str(Path(__file__).resolve().parent.parent / "data" / "prism.sqlite"),
+    )
+)
 SESSION_COOKIE = "prism_session"
+SESSION_SECRET = secrets.token_bytes(32)
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 CANONICAL_TABLES = {
-    "users",
     "roles",
-    "user_roles",
-    "user_scope_roles",
-    "student_profiles",
-    "form_field_catalog",
-    "opportunities",
-    "opportunity_detail_fields",
-    "email_groups",
-    "email_group_memberships",
-    "opportunity_visibility_rules",
-    "opportunity_required_fields",
-    "opportunity_pipeline_steps",
-    "opportunity_step_field_access",
-    "opportunity_step_required_inputs",
-    "applications",
-    "application_reviews",
-    "application_comments",
-    "timeline_events",
-    # Graph workflow tables (Chunk 1)
-    "workflow_drafts",
-    "graph_versions",
     "graph_nodes",
-    "graph_edges",
-    "application_workflow_tasks",
-    # SLA management tables (Chunk F)
-    "sla_policies",
+    "user_roles",
+    "opportunity_required_fields",
     "sla_reminders_sent",
+    "opportunity_detail_fields",
+    "student_profiles",
+    "email_groups",
+    "users",
+    "graph_versions",
+    "application_comments",
+    "sla_policies",
+    "email_group_memberships",
+    "application_workflow_tasks",
     "sla_breaches",
+    "timeline_events",
+    "form_field_catalog",
+    "graph_edges",
+    "opportunities",
+    "opportunity_visibility_rules",
+    "workflow_drafts",
+    "applications",
 }
 
-GENERATOR_ROLE = "GENERATOR"
+STUDENT_ROLE = "STUDENT"
 REVIEWER_ROLE = "REVIEWER"
 ADMIN_ROLE = "ADMIN"
 REVIEWER_ROLES = {REVIEWER_ROLE}
-# Backward naming alias for student-centric code paths.
-STUDENT_ROLE = GENERATOR_ROLE
-SLA_SCHEDULER = None
 CUSTOM_FIELD_INPUT_TYPES = {"text", "textarea", "single_select", "multiselect"}
 
 
@@ -154,7 +160,16 @@ def extract_ctas_from_description(description: str | None) -> list[str]:
     if not description:
         return []
     snippets = re.split(r"[.\n;]+", description)
-    action_terms = ("submit", "prepare", "highlight", "show", "include", "share", "explain", "attach")
+    action_terms = (
+        "submit",
+        "prepare",
+        "highlight",
+        "show",
+        "include",
+        "share",
+        "explain",
+        "attach",
+    )
     ctas: list[str] = []
     for snippet in snippets:
         text = snippet.strip()
@@ -168,333 +183,12 @@ def extract_ctas_from_description(description: str | None) -> list[str]:
     return dedupe_preserve_order(ctas)[:4]
 
 
-def flatten_comment_points(comments: list[dict[str, Any]], limit: int = 5) -> list[str]:
-    points: list[str] = []
-    for item in comments[:limit]:
-        author = str(item.get("author_email") or "unknown")
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        compact = " ".join(text.split())
-        points.append(f"{author}: {compact[:140]}")
-    return points
-
-
-def flatten_review_points(reviews: list[dict[str, Any]], limit: int = 5) -> list[str]:
-    points: list[str] = []
-    for item in reviews[:limit]:
-        decision = str(item.get("decision") or "REVIEW")
-        reviewer = str(item.get("reviewer_name") or item.get("reviewer_email") or "reviewer")
-        remarks = str(item.get("remarks") or "").strip()
-        if remarks:
-            points.append(f"{decision} by {reviewer}: {' '.join(remarks.split())[:140]}")
-        else:
-            points.append(f"{decision} by {reviewer}")
-    return points
-
-
-def build_thread_summary_payload(detail: dict[str, Any]) -> dict[str, Any]:
-    comments = detail.get("comments") or []
-    reviews = detail.get("reviews") or []
-    timeline = detail.get("timeline") or []
-    application = detail.get("application") or {}
-    opportunity = detail.get("opportunity") or {}
-
-    status_line = (
-        f"Stage: {application.get('current_stage_label') or 'Unknown'}; "
-        f"Final status: {application.get('final_status') or 'IN_PROGRESS'}."
-    )
-    evidence = dedupe_preserve_order(flatten_review_points(reviews, 4) + flatten_comment_points(comments, 4))
-    if not evidence:
-        evidence = ["No review notes or comments yet."]
-
-    return {
-        "summary": {
-            "headline": f"{opportunity.get('title', 'Application')} review thread snapshot",
-            "status": status_line,
-            "key_points": evidence[:6],
-            "activity_counts": {
-                "comments": len(comments),
-                "reviews": len(reviews),
-                "timeline_events": len(timeline),
-            },
-            "last_updated_at": application.get("updated_at"),
-        },
-        "prompt_template": (
-            "Summarize the review thread. Highlight blockers, unresolved asks, and recommended next action."
-        ),
-        "is_dummy_ai": True,
-    }
-
-
-def build_approval_assist_payload(detail: dict[str, Any]) -> dict[str, Any]:
-    application_file = detail.get("application_file") or {}
-    labels = detail.get("field_labels") if isinstance(detail.get("field_labels"), dict) else {}
-    checks: list[dict[str, Any]] = []
-    for key, value in list(application_file.items())[:8]:
-        label = str(labels.get(key, key))
-        if value is None or (isinstance(value, str) and not value.strip()):
-            checks.append({"field": key, "label": label, "status": "missing", "note": "Value is empty."})
-        else:
-            checks.append(
-                {
-                    "field": key,
-                    "label": label,
-                    "status": "present",
-                    "note": f"Captured value preview: {str(value)[:80]}",
-                }
-            )
-
-    missing_count = sum(1 for item in checks if item["status"] == "missing")
-    recommendation = "APPROVE_OR_ADVANCE" if missing_count == 0 else "REQUEST_CHANGES"
-    rationale = (
-        "All visible fields appear populated."
-        if missing_count == 0
-        else f"{missing_count} visible field(s) look incomplete; consider send-back."
-    )
-
-    return {
-        "recommendation": recommendation,
-        "rationale": rationale,
-        "quality_checks": checks,
-        "review_prompt_template": (
-            "Given the visible application file and review history, draft concise approval remarks."
-        ),
-        "is_dummy_ai": True,
-    }
-
-
-def build_nomination_insights_payload(opportunity: sqlite3.Row, required_fields: list[sqlite3.Row]) -> dict[str, Any]:
-    field_labels = [str(row["label"]) for row in required_fields]
-    title = str(opportunity["title"])
-    description = str(opportunity["description"] or "")
-    focus_areas = dedupe_preserve_order(
-        [segment.strip()[:60] for segment in re.split(r"[.\n;]+", description) if segment.strip()]
-    )[:3]
-
-    return {
-        "opportunity_id": int(opportunity["id"]),
-        "nominations_assist": {
-            "fit_signals_to_look_for": field_labels[:6] or ["Academic fit", "Statement quality", "Readiness"],
-            "screening_questions": [
-                f"Why is the candidate a fit for {title}?",
-                "What evidence supports readiness for this opportunity?",
-                "Are there any compliance or documentation gaps?",
-            ],
-            "focus_areas": focus_areas,
-        },
-        "prompt_template": (
-            "Rank nominations by fit, evidence quality, and readiness. Return top candidates with rationale."
-        ),
-        "is_dummy_ai": True,
-    }
-
-
-def parse_prompt_tokens(prompt: str) -> list[str]:
-    return [token for token in re.split(r"[^a-z0-9]+", prompt.lower()) if token]
-
-
-def infer_term_from_prompt(prompt: str) -> str:
-    month_to_term = {
-        "jan": "Spring",
-        "feb": "Spring",
-        "mar": "Spring",
-        "apr": "Spring",
-        "may": "Summer",
-        "jun": "Summer",
-        "jul": "Summer",
-        "aug": "Fall",
-        "sep": "Fall",
-        "oct": "Fall",
-        "nov": "Winter",
-        "dec": "Winter",
-    }
-    year_match = re.search(r"(20\d{2})", prompt)
-    year = year_match.group(1) if year_match else str(datetime.now(timezone.utc).year)
-    short_month_match = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\b", prompt.lower())
-    if short_month_match:
-        season = month_to_term.get(short_month_match.group(1), "Fall")
-    elif "spring" in prompt.lower():
-        season = "Spring"
-    elif "summer" in prompt.lower():
-        season = "Summer"
-    elif "winter" in prompt.lower():
-        season = "Winter"
-    else:
-        season = "Fall"
-    return f"{season} {year}"
-
-
-def infer_generator_visibility_emails(prompt: str) -> list[str]:
-    prompt_lower = prompt.lower()
-    emails = {
-        re.sub(r"^ug(20\d{2})@", r"ug.\1@", email.strip().lower())
-        for email in re.findall(r"[A-Za-z0-9._%+-]+@plaksha\.edu\.in", prompt)
-    }
-    cohort_years = set(re.findall(r"\bug\.?\s*(20(?:22|23|24|25))\b", prompt_lower))
-    cohort_years.update(re.findall(r"\bug\s*(20(?:22|23|24|25))\b", prompt_lower))
-    if "faculty" in prompt_lower or "professor" in prompt_lower:
-        emails.add("professors@plaksha.edu.in")
-    if "undergraduate" in prompt_lower or "undergrad" in prompt_lower or "ug student" in prompt_lower:
-        cohort_years.update({"2022", "2023", "2024", "2025"})
-    excludes_final_year = "not a final-year" in prompt_lower or "not final-year" in prompt_lower or "not final year" in prompt_lower
-    if excludes_final_year:
-        cohort_years.discard("2022")
-        cohort_years.update({"2023", "2024", "2025"})
-    if not excludes_final_year and ("final year" in prompt_lower or "graduating students" in prompt_lower):
-        cohort_years = {"2022"}
-    if "master" in prompt_lower or "phd" in prompt_lower or "postgraduate" in prompt_lower or "graduate level" in prompt_lower:
-        cohort_years = {"2022"}
-    for year in sorted(cohort_years):
-        emails.add(f"ug.{year}@plaksha.edu.in")
-    return sorted(emails) or ["ug.2024@plaksha.edu.in"]
-
-
-def build_ai_opportunity_draft(
-    conn: sqlite3.Connection,
-    prompt: str,
-    requested_visibility_rules: list[VisibilityRulePayload] | None = None,
-) -> dict[str, Any]:
-    prompt_clean = " ".join(prompt.split())
-    tokens = parse_prompt_tokens(prompt_clean)
-    ts_label = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
-
-    destination = "Global Exchange"
-    if "singapore" in tokens:
-        destination = "Singapore"
-    elif "tokyo" in tokens or "japan" in tokens:
-        destination = "Japan"
-    elif "germany" in tokens or "berlin" in tokens:
-        destination = "Germany"
-    elif "usa" in tokens or "united" in tokens or "california" in tokens:
-        destination = "United States"
-
-    title_match = re.search(r"(?:for|about)\s+(.+)", prompt_clean, flags=re.IGNORECASE)
-    inferred_topic = title_match.group(1).strip() if title_match else prompt_clean[:60]
-    inferred_topic = inferred_topic[:80].strip(" .")
-    title = inferred_topic.title() if inferred_topic else "AI Generated Opportunity"
-    code_seed = slugify_input_key(title).upper()[:20] or "AI_OPP"
-    code = f"{code_seed}_{ts_label}"
-    term = infer_term_from_prompt(prompt_clean)
-    deadline = f"{datetime.now(timezone.utc).year}-12-31"
-
-    all_fields = conn.execute(
-        """
-        SELECT field_key
-        FROM form_field_catalog
-        WHERE is_active = 1
-        ORDER BY section_key ASC, label ASC
-        """
-    ).fetchall()
-    available_keys = {str(row["field_key"]) for row in all_fields}
-    base_fields = ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"]
-    if any(keyword in tokens for keyword in {"resume", "cv", "portfolio"}):
-        base_fields.append("resume_url")
-    selected_fields = [field for field in base_fields if field in available_keys]
-    if not selected_fields and available_keys:
-        selected_fields = sorted(available_keys)[:4]
-
-    custom_fields: list[dict[str, Any]] = []
-    if any(keyword in tokens for keyword in {"budget", "funding", "scholarship"}):
-        custom_fields.append(
-            {
-                "key": "custom_funding_plan",
-                "label": "Funding Plan",
-                "description": "Explain the expected budget and how expenses will be managed.",
-                "fieldHint": "Mention scholarship, self-funding, or department support.",
-                "inputType": "textarea",
-                "options": [],
-            }
-        )
-        selected_fields.append("custom_funding_plan")
-
-    if any(keyword in tokens for keyword in {"project", "research", "lab"}):
-        custom_fields.append(
-            {
-                "key": "custom_project_focus",
-                "label": "Project Focus Area",
-                "description": "Primary project/research track the student expects to work on.",
-                "fieldHint": "Pick one primary focus area.",
-                "inputType": "single_select",
-                "options": ["AI/ML", "Robotics", "Bioengineering", "Climate Tech", "Entrepreneurship"],
-            }
-        )
-        selected_fields.append("custom_project_focus")
-
-    review_stage_count = 2 if any(keyword in tokens for keyword in {"interview", "panel"}) else 1
-
-    normalized_visibility_rules = normalize_visibility_rules(requested_visibility_rules)
-    if not normalized_visibility_rules:
-        normalized_visibility_rules = normalize_visibility_rules(infer_generator_visibility_emails(prompt_clean))
-
-    detail_fields = [
-        {
-            "field_key": "destination",
-            "label": "Destination",
-            "value": destination,
-            "value_type": "text",
-            "display_order": 1,
-            "is_student_visible": True,
-        },
-        {
-            "field_key": "term",
-            "label": "Term",
-            "value": term,
-            "value_type": "text",
-            "display_order": 2,
-            "is_student_visible": True,
-        },
-        {
-            "field_key": "application_deadline",
-            "label": "Application Deadline",
-            "value": deadline,
-            "value_type": "date",
-            "display_order": 3,
-            "is_student_visible": True,
-        },
-        {
-            "field_key": "seats",
-            "label": "Seats",
-            "value": "25",
-            "value_type": "number",
-            "display_order": 4,
-            "is_student_visible": True,
-        },
-    ]
-
-    return {
-        "draft": {
-            "opportunity": {
-                "code": code,
-                "title": title,
-                "description": f"AI-generated draft from prompt: {prompt_clean}",
-                "detail_fields": detail_fields,
-                "ai_summary_bullets": [
-                    f"{title} is prepared for {destination}.",
-                    f"Applications are due by {deadline}.",
-                    f"PRISM selected {review_stage_count} reviewer stage(s) from the prompt.",
-                ],
-            },
-            "formFields": dedupe_preserve_order(selected_fields),
-            "customFields": custom_fields,
-            "generatorVisibilityRules": [
-                {"ruleType": item["rule_type"], "ruleValue": item["rule_value"]} for item in normalized_visibility_rules
-            ],
-        },
-        "review_instructions": [
-            "Review all AI-generated labels and descriptions before publishing.",
-            "Confirm reviewer emails and SLAs reflect the latest process.",
-            "Adjust visibility rules to match the intended generator audience.",
-        ],
-        "is_dummy_ai": True,
-    }
-
-
 @contextmanager
 def db_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 10000")
     try:
         yield conn
     finally:
@@ -518,1057 +212,106 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 def schema_needs_reset(conn: sqlite3.Connection) -> bool:
-    existing = list_tables(conn)
-    if existing != CANONICAL_TABLES:
-        return True
-
-    required_columns: dict[str, set[str]] = {
-        "opportunity_pipeline_steps": {"sla_hours", "can_view_comments"},
-        "opportunity_step_required_inputs": {"options_json", "display_order"},
-        "applications": {"return_to_step_order", "return_to_stage_label", "graph_version_id", "workflow_notes"},
-        "form_field_catalog": {"field_hint", "options_json"},
-        "application_workflow_tasks": {"reviewer_data_json"},
-        "opportunities": {"ai_summary_json", "ai_summary_source_hash"},
-        "graph_edges": {"action"},
-        "workflow_drafts": {"original_prompt"},
-    }
-    for table, columns in required_columns.items():
-        if not columns.issubset(table_columns(conn, table)):
-            return True
-
-    if "roles" in existing:
-        role_rows = conn.execute("SELECT code FROM roles").fetchall()
-        role_codes = {row["code"] for row in role_rows}
-        expected_role_codes = {GENERATOR_ROLE, REVIEWER_ROLE, ADMIN_ROLE}
-        if role_codes and (role_codes - expected_role_codes):
-            return True
-
-    fk_rows = conn.execute("PRAGMA foreign_key_list(opportunity_step_field_access)").fetchall()
-    for row in fk_rows:
-        if row["from"] == "field_key":
-            return True
-    return False
-
-
-def apply_schema_migrations(conn: sqlite3.Connection) -> None:
-    if not MIGRATIONS_DIR.exists():
-        return
-
-    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        execute_script(conn, path.read_text())
-
-    if "applications" in list_tables(conn) and "graph_version_id" not in table_columns(conn, "applications"):
-        conn.execute("ALTER TABLE applications ADD COLUMN graph_version_id INTEGER REFERENCES graph_versions(id)")
-    if "applications" in list_tables(conn) and "workflow_notes" not in table_columns(conn, "applications"):
-        conn.execute("ALTER TABLE applications ADD COLUMN workflow_notes TEXT")
-    if "application_workflow_tasks" in list_tables(conn) and "reviewer_data_json" not in table_columns(conn, "application_workflow_tasks"):
-        conn.execute("ALTER TABLE application_workflow_tasks ADD COLUMN reviewer_data_json TEXT DEFAULT '{}'")
-    if "graph_edges" in list_tables(conn) and "action" not in table_columns(conn, "graph_edges"):
-        conn.execute("ALTER TABLE graph_edges ADD COLUMN action TEXT")
-    if "workflow_drafts" in list_tables(conn) and "original_prompt" not in table_columns(conn, "workflow_drafts"):
-        conn.execute("ALTER TABLE workflow_drafts ADD COLUMN original_prompt TEXT")
-    if "users" in list_tables(conn):
-        user_columns = table_columns(conn, "users")
-        if "reviewer_onboarded" not in user_columns:
-            conn.execute("ALTER TABLE users ADD COLUMN reviewer_onboarded INTEGER NOT NULL DEFAULT 1")
-        if "pronouns" not in user_columns:
-            conn.execute("ALTER TABLE users ADD COLUMN pronouns TEXT")
-        if "department" not in user_columns:
-            conn.execute("ALTER TABLE users ADD COLUMN department TEXT")
-        if "notify_email" not in user_columns:
-            conn.execute("ALTER TABLE users ADD COLUMN notify_email INTEGER NOT NULL DEFAULT 1")
-        if "notify_digest" not in user_columns:
-            conn.execute("ALTER TABLE users ADD COLUMN notify_digest INTEGER NOT NULL DEFAULT 0")
-    if "opportunities" in list_tables(conn):
-        opportunity_columns = table_columns(conn, "opportunities")
-        if "ai_summary_json" not in opportunity_columns:
-            conn.execute("ALTER TABLE opportunities ADD COLUMN ai_summary_json TEXT")
-        if "ai_summary_source_hash" not in opportunity_columns:
-            conn.execute("ALTER TABLE opportunities ADD COLUMN ai_summary_source_hash TEXT")
-    if "opportunity_detail_fields" not in list_tables(conn):
-        conn.execute(
-            """
-            CREATE TABLE opportunity_detail_fields (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              opportunity_id INTEGER NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
-              field_key TEXT NOT NULL,
-              label TEXT NOT NULL,
-              value TEXT NOT NULL,
-              value_type TEXT NOT NULL DEFAULT 'text',
-              display_order INTEGER NOT NULL,
-              is_student_visible INTEGER NOT NULL DEFAULT 1,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              UNIQUE(opportunity_id, field_key)
-            )
-            """
-        )
-    conn.commit()
+    return conn.execute("PRAGMA user_version").fetchone()[0] != 1
 
 
 def reset_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA foreign_keys = OFF")
-    tables = list_tables(conn)
-    for table in tables:
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
-
-    execute_script(
-        conn,
-        """
-CREATE TABLE users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT NOT NULL UNIQUE,
-  full_name TEXT NOT NULL,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  reviewer_onboarded INTEGER NOT NULL DEFAULT 1,
-  pronouns TEXT,
-  department TEXT,
-  notify_email INTEGER NOT NULL DEFAULT 1,
-  notify_digest INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE roles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  code TEXT NOT NULL UNIQUE,
-  display_name TEXT NOT NULL
-);
-
-CREATE TABLE user_roles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  role_id INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(user_id, role_id),
-  FOREIGN KEY (user_id) REFERENCES users(id),
-  FOREIGN KEY (role_id) REFERENCES roles(id)
-);
-
-CREATE TABLE user_scope_roles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  role_id INTEGER NOT NULL,
-  scope_type TEXT NOT NULL CHECK(scope_type IN ('SYSTEM', 'OPPORTUNITY')),
-  scope_id INTEGER,
-  created_at TEXT NOT NULL,
-  UNIQUE(user_id, role_id, scope_type, scope_id),
-  FOREIGN KEY (user_id) REFERENCES users(id),
-  FOREIGN KEY (role_id) REFERENCES roles(id),
-  FOREIGN KEY (scope_id) REFERENCES opportunities(id)
-);
-
-CREATE TABLE student_profiles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL UNIQUE,
-  student_id TEXT NOT NULL UNIQUE,
-  program TEXT NOT NULL,
-  official_cgpa REAL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
-
-CREATE TABLE form_field_catalog (
-  field_key TEXT PRIMARY KEY,
-  label TEXT NOT NULL,
-  description TEXT,
-  field_hint TEXT,
-  input_type TEXT NOT NULL,
-  options_json TEXT,
-  section_key TEXT NOT NULL,
-  is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE opportunities (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  code TEXT NOT NULL UNIQUE,
-  title TEXT NOT NULL,
-  description TEXT,
-  cover_image_url TEXT,
-  term TEXT,
-  destination TEXT,
-  deadline TEXT,
-  seats INTEGER,
-  ai_summary_json TEXT,
-  ai_summary_source_hash TEXT,
-  status TEXT NOT NULL DEFAULT 'published',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE opportunity_detail_fields (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  opportunity_id INTEGER NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
-  field_key TEXT NOT NULL,
-  label TEXT NOT NULL,
-  value TEXT NOT NULL,
-  value_type TEXT NOT NULL DEFAULT 'text',
-  display_order INTEGER NOT NULL,
-  is_student_visible INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(opportunity_id, field_key)
-);
-
-CREATE TABLE email_groups (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email_address TEXT NOT NULL UNIQUE,
-  display_name TEXT NOT NULL,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE email_group_memberships (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  group_id INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(group_id, user_id),
-  FOREIGN KEY (group_id) REFERENCES email_groups(id),
-  FOREIGN KEY (user_id) REFERENCES users(id)
-);
-
-CREATE TABLE opportunity_visibility_rules (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  opportunity_id INTEGER NOT NULL,
-  rule_type TEXT NOT NULL CHECK(rule_type IN ('EMAIL', 'GROUP_EMAIL')),
-  rule_value TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(opportunity_id, rule_type, rule_value),
-  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
-);
-
-CREATE TABLE opportunity_required_fields (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  opportunity_id INTEGER NOT NULL,
-  field_key TEXT NOT NULL,
-  display_order INTEGER NOT NULL,
-  UNIQUE(opportunity_id, field_key),
-  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
-  FOREIGN KEY (field_key) REFERENCES form_field_catalog(field_key)
-);
-
-CREATE TABLE opportunity_pipeline_steps (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  opportunity_id INTEGER NOT NULL,
-  step_order INTEGER NOT NULL,
-  step_name TEXT NOT NULL,
-  reviewer_email TEXT NOT NULL,
-  reviewer_display_name TEXT,
-  sla_hours INTEGER NOT NULL DEFAULT 72,
-  can_view_comments INTEGER NOT NULL DEFAULT 0,
-  allowed_actions_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(opportunity_id, step_order),
-  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE
-);
-
-CREATE TABLE opportunity_step_field_access (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  pipeline_step_id INTEGER NOT NULL,
-  field_key TEXT NOT NULL,
-  UNIQUE(pipeline_step_id, field_key),
-  FOREIGN KEY (pipeline_step_id) REFERENCES opportunity_pipeline_steps(id) ON DELETE CASCADE
-);
-
-CREATE TABLE opportunity_step_required_inputs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  pipeline_step_id INTEGER NOT NULL,
-  input_key TEXT NOT NULL,
-  input_label TEXT NOT NULL,
-  input_type TEXT NOT NULL DEFAULT 'text',
-  options_json TEXT,
-  is_required INTEGER NOT NULL DEFAULT 1,
-  display_order INTEGER NOT NULL DEFAULT 1,
-  FOREIGN KEY (pipeline_step_id) REFERENCES opportunity_pipeline_steps(id) ON DELETE CASCADE
-);
-
-CREATE TABLE applications (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  student_profile_id INTEGER NOT NULL,
-  opportunity_id INTEGER NOT NULL,
-  current_step_order INTEGER NOT NULL,
-  current_stage_label TEXT NOT NULL,
-  return_to_step_order INTEGER,
-  return_to_stage_label TEXT,
-  graph_version_id INTEGER REFERENCES graph_versions(id),
-  final_status TEXT,
-  workflow_notes TEXT,
-  submitted_data_json TEXT,
-  submitted_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (student_profile_id) REFERENCES student_profiles(id),
-  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id)
-);
-
-CREATE TABLE application_reviews (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  application_id INTEGER NOT NULL,
-  step_order INTEGER NOT NULL,
-  reviewer_email TEXT NOT NULL,
-  reviewer_role TEXT NOT NULL,
-  decision TEXT NOT NULL,
-  remarks TEXT,
-  required_inputs_json TEXT,
-  visibility_scope TEXT NOT NULL DEFAULT 'INTERNAL',
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (application_id) REFERENCES applications(id)
-);
-
-CREATE TABLE application_comments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  application_id INTEGER NOT NULL,
-  author_email TEXT NOT NULL,
-  text TEXT NOT NULL,
-  visibility TEXT NOT NULL DEFAULT 'internal',
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (application_id) REFERENCES applications(id)
-);
-
-CREATE TABLE timeline_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  application_id INTEGER NOT NULL,
-  event_type TEXT NOT NULL,
-  event_payload_json TEXT,
-  actor_email TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (application_id) REFERENCES applications(id)
-);
-
-CREATE TABLE workflow_drafts (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  opportunity_id INTEGER REFERENCES opportunities(id),
-  original_prompt TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  draft_output TEXT,
-  clarifying_questions TEXT,
-  admin_answers TEXT,
-  warnings TEXT,
-  confidence REAL DEFAULT 0.0,
-  publish_ready INTEGER DEFAULT 0,
-  created_by_email TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE graph_versions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  opportunity_id INTEGER NOT NULL REFERENCES opportunities(id),
-  version INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'draft',
-  created_by_email TEXT,
-  published_by_email TEXT,
-  published_at TEXT,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE TABLE graph_nodes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  graph_version_id INTEGER NOT NULL REFERENCES graph_versions(id),
-  node_key TEXT NOT NULL,
-  node_type TEXT NOT NULL,
-  display_name TEXT,
-  reviewer_email TEXT,
-  visible_sections TEXT DEFAULT '["all"]',
-  allowed_actions TEXT DEFAULT '["approve","reject","request_changes","comment"]',
-  metadata TEXT DEFAULT '{}'
-);
-
-CREATE TABLE graph_edges (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  graph_version_id INTEGER NOT NULL REFERENCES graph_versions(id),
-  from_node_key TEXT NOT NULL,
-  to_node_key TEXT NOT NULL,
-  condition_json TEXT,
-  label TEXT,
-  action TEXT
-);
-
-CREATE TABLE application_workflow_tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  application_id INTEGER NOT NULL REFERENCES applications(id),
-  graph_version_id INTEGER NOT NULL REFERENCES graph_versions(id),
-  node_key TEXT NOT NULL,
-  assigned_reviewer_email TEXT NOT NULL,
-  assigned_at TEXT DEFAULT (datetime('now')),
-  acted_at TEXT,
-  status TEXT NOT NULL DEFAULT 'active',
-  decision TEXT,
-  comment_summary TEXT,
-  return_to_task_id INTEGER REFERENCES application_workflow_tasks(id),
-  reviewer_data_json TEXT DEFAULT '{}',
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
-CREATE INDEX idx_awt_status_email
-  ON application_workflow_tasks(status, assigned_reviewer_email);
-CREATE INDEX idx_awt_app_version_node
-  ON application_workflow_tasks(application_id, graph_version_id, node_key);
-
-CREATE TABLE sla_policies (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  graph_node_id INTEGER NOT NULL REFERENCES graph_nodes(id),
-  sla_days INTEGER NOT NULL,
-  reminder_days TEXT NOT NULL,
-  escalation_email TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(graph_node_id)
-);
-
-CREATE TABLE sla_reminders_sent (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id INTEGER NOT NULL REFERENCES application_workflow_tasks(id),
-  reminder_type TEXT NOT NULL,
-  sent_at TEXT NOT NULL,
-  sent_to_email TEXT NOT NULL,
-  UNIQUE(task_id, reminder_type, sent_to_email)
-);
-
-CREATE TABLE sla_breaches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id INTEGER NOT NULL REFERENCES application_workflow_tasks(id),
-  breached_at TEXT NOT NULL,
-  escalation_sent_to TEXT,
-  acknowledged_by_email TEXT,
-  acknowledged_at TEXT,
-  resolution_notes TEXT,
-  UNIQUE(task_id)
-);
-
-CREATE INDEX idx_sla_policies_node
-  ON sla_policies(graph_node_id);
-CREATE INDEX idx_sla_reminders_task
-  ON sla_reminders_sent(task_id);
-CREATE INDEX idx_sla_breaches_task
-  ON sla_breaches(task_id);
-CREATE INDEX idx_ge_from
-  ON graph_edges(graph_version_id, from_node_key);
-CREATE INDEX idx_ge_to
-  ON graph_edges(graph_version_id, to_node_key);
-CREATE INDEX idx_gn_version_key
-  ON graph_nodes(graph_version_id, node_key);
-""",
-    )
-    conn.execute("PRAGMA foreign_keys = ON")
+    """Initialize an empty database. Destructive reset is only in the CLI."""
+    if list_tables(conn):
+        raise ValueError("Database is not empty; use the explicit reset command")
+    conn.executescript((Path(__file__).parent / "schema.sql").read_text())
 
 
-def seed_data(conn: sqlite3.Connection) -> None:
-    now = now_iso()
+def seed_data(conn):
+    from fastapi_app.seed import seed_data as seed
 
-    role_rows = [
-        (GENERATOR_ROLE, "Generator"),
-        (REVIEWER_ROLE, "Reviewer"),
-        (ADMIN_ROLE, "Administrator"),
-    ]
-    for code, display_name in role_rows:
-        conn.execute(
-            "INSERT OR IGNORE INTO roles (code, display_name) VALUES (?, ?)", (code, display_name)
-        )
-
-    user_rows = [
-        (1, "rohan@plaksha.edu.in", "Rohan", 1),
-        (2, "siddharth@plaksha.edu.in", "Siddharth", 1),
-        (3, "john.doe@plaksha.edu.in", "John Doe", 1),
-        (4, "jane.roe@plaksha.edu.in", "Jane Roe", 1),
-        (5, "prof.a@plaksha.edu.in", "Prof A", 1),
-        (6, "prof.b@plaksha.edu.in", "Prof B", 1),
-        (11, "student-life@plaksha.edu.in", "Ananya Iyer", 1),
-        (12, "program-chair@plaksha.edu.in", "Prof. Rajesh Gupta", 1),
-        (13, "oge@plaksha.edu.in", "Rajesh Kumar", 1),
-        (14, "dean@plaksha.edu.in", "Dr. Sarah Jenkins", 1),
-        (15, "vc@plaksha.edu.in", "Vice Chancellor", 1),
-        (16, "oaa@plaksha.edu.in", "Office of Academic Affairs", 1),
-        (17, "ug-academics@plaksha.edu.in", "UG Academics", 1),
-        (18, "shashikant.pawar@plaksha.edu.in", "Prof. Shashikant Pawar", 1),
-    ]
-    for user in user_rows:
-        conn.execute(
-            "INSERT OR IGNORE INTO users (id, email, full_name, is_active, created_at) VALUES (?, ?, ?, ?, ?)",
-            (*user, now),
-        )
-
-    role_assignments = [
-        ("rohan@plaksha.edu.in", GENERATOR_ROLE),
-        ("siddharth@plaksha.edu.in", GENERATOR_ROLE),
-        ("siddharth@plaksha.edu.in", REVIEWER_ROLE),
-        ("john.doe@plaksha.edu.in", GENERATOR_ROLE),
-        ("jane.roe@plaksha.edu.in", GENERATOR_ROLE),
-        ("prof.a@plaksha.edu.in", REVIEWER_ROLE),
-        ("prof.b@plaksha.edu.in", REVIEWER_ROLE),
-        ("student-life@plaksha.edu.in", REVIEWER_ROLE),
-        ("program-chair@plaksha.edu.in", REVIEWER_ROLE),
-        ("dean@plaksha.edu.in", REVIEWER_ROLE),
-        ("vc@plaksha.edu.in", REVIEWER_ROLE),
-        ("oge@plaksha.edu.in", REVIEWER_ROLE),
-        ("oge@plaksha.edu.in", ADMIN_ROLE),
-        ("oaa@plaksha.edu.in", REVIEWER_ROLE),
-        ("ug-academics@plaksha.edu.in", REVIEWER_ROLE),
-        ("shashikant.pawar@plaksha.edu.in", REVIEWER_ROLE),
-    ]
-    for email, role_code in role_assignments:
-        user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
-        role = conn.execute("SELECT id FROM roles WHERE code = ?", (role_code,)).fetchone()
-        if user and role:
-            conn.execute(
-                "INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)",
-                (user["id"], role["id"], now),
-            )
-
-    profile_rows = [
-        (1, 1, "PL-2022-ROH", "Computer Science", 8.5),
-        (2, 2, "PL-2022-SID", "Electronics Engineering", 9.2),
-    ]
-    for profile in profile_rows:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO student_profiles (id, user_id, student_id, program, official_cgpa, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (*profile, now),
-        )
-
-    form_fields = [
-        ("full_name", "Full Name", "Enter the applicant's legal full name.", "Use your passport/legal record name.", "text", None, "personal"),
-        ("student_id", "Student ID", "Enter the institutional student ID.", "Format: PL-YYYY-XXX", "text", None, "personal"),
-        ("email", "Email Address", "Enter the applicant's official email address.", "Prefer your Plaksha email.", "email", None, "personal"),
-        ("phone", "Phone Number", "Enter a reachable phone number.", "Include country code.", "text", None, "personal"),
-        ("program", "Academic Program", "Enter the current academic program or department.", "Example: BTech CSE", "text", None, "academic"),
-        ("cgpa", "Current CGPA", "Enter the latest approved CGPA/GPA.", "Use official transcript value.", "number", None, "academic"),
-        ("passport_number", "Passport Number", "Enter passport number if travel documentation is required.", "Type NA if unavailable.", "text", None, "documents"),
-        ("statement_of_purpose", "Statement of Purpose", "Provide a short motivation statement.", "Explain goals and fit in 200-400 words.", "textarea", None, "documents"),
-        ("language_score", "Language Score (IELTS/TOEFL)", "Enter the latest validated language test score.", "Numeric value only.", "number", None, "academic"),
-        ("prior_exchange_experience", "Prior Exchange Experience", "List prior exchange or mobility participation, if any.", "Mention location, duration, and outcome.", "text", None, "experience"),
-        ("disciplinary_history", "Declared Disciplinary History", "Declare relevant disciplinary history or write none.", "Be transparent and concise.", "text", None, "compliance"),
-        ("transcript_upload", "Transcript Upload", "Add the transcript file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
-        ("recommendation_upload", "Recommendation Upload", "Add recommendation letter file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
-        ("resume_upload", "Resume Upload", "Add the resume/CV file link or document reference.", "Paste drive/share link.", "file", None, "documents"),
-        ("custom_funding_plan", "Funding Plan", "Explain how you will fund the exchange, including any scholarships applied for.", "Mention scholarship, self-funding, or department support.", "textarea", None, "documents"),
-        ("custom_research_focus", "Research Focus Area", "Describe your primary research interest or project focus for this opportunity.", "Be specific — mention lab, topic, or faculty if applicable.", "textarea", None, "documents"),
-    ]
-    for row in form_fields:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO form_field_catalog (field_key, label, description, field_hint, input_type, options_json, section_key, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            """,
-            row,
-        )
-
-    # ── NTU Singapore AI & Robotics Exchange (graph-backed, matches demo_fixture.json) ──
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO opportunities (
-          id, code, title, description, cover_image_url, term, destination, deadline, seats, status, ai_summary_json, ai_summary_source_hash, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            1,
-            "NTU-AIR-SU2026",
-            "Summer 2026 AI & Robotics Research Exchange — NTU Singapore",
-            "Five-seat summer research exchange at Nanyang Technological University Singapore. "
-            "Students join NTU's AI and Robotics labs for two months, working alongside PhD researchers. "
-            "Covers programme fee; students fund travel and accommodation. Need-based travel grants available.",
-            "https://images.unsplash.com/photo-1546412414-8035e1776c9a",
-            "Summer 2026 (July 1 – August 31)",
-            "Singapore, NTU",
-            "2026-06-15",
-            5,
-            "published",
-            json.dumps([
-                "5-seat research exchange at NTU Singapore, July–August 2026.",
-                "Open to UG 2023 batch only. Minimum CGPA 7.5, no active backlogs.",
-                "Programme fee (SGD 1,200) covered by Plaksha. Travel grants available.",
-                "Application deadline: June 15, 2026. Nomination due to NTU: June 20.",
-                "Standard 4-stage Plaksha approval: OAA + UG Academics → Program Chair → Dean.",
-            ]),
-            None,
-            now,
-            now,
-        ),
-    )
-
-    seed_detail_fields = {
-        1: [
-            {"field_key": "destination",          "label": "Destination",          "value": "Singapore, NTU",                        "value_type": "text",   "display_order": 1, "is_student_visible": 1},
-            {"field_key": "term",                 "label": "Programme Term",       "value": "July 1 – Aug 31 2026",                   "value_type": "text",   "display_order": 2, "is_student_visible": 1},
-            {"field_key": "application_deadline", "label": "Application Deadline", "value": "2026-06-15",                             "value_type": "date",   "display_order": 3, "is_student_visible": 1},
-            {"field_key": "seats",                "label": "Seats Available",      "value": "5",                                      "value_type": "number", "display_order": 4, "is_student_visible": 1},
-            {"field_key": "min_cgpa",             "label": "Minimum CGPA",         "value": "7.5",                                    "value_type": "number", "display_order": 5, "is_student_visible": 1},
-            {"field_key": "programme_fee",        "label": "Programme Fee",        "value": "SGD 1,200 (covered by Plaksha)",         "value_type": "text",   "display_order": 6, "is_student_visible": 1},
-            {"field_key": "estimated_cost",       "label": "Est. Personal Cost",   "value": "~SGD 1,800/month (travel + accommodation)", "value_type": "text", "display_order": 7, "is_student_visible": 1},
-            {"field_key": "eligible_batch",       "label": "Eligible Batch",       "value": "UG 2023 only",                           "value_type": "text",   "display_order": 8, "is_student_visible": 1},
-            {"field_key": "host_contact",         "label": "NTU Partner Contact",  "value": "partners@ntu.edu.sg",                    "value_type": "text",   "display_order": 9, "is_student_visible": 0},
-        ],
-    }
-    for opportunity_id, fields in seed_detail_fields.items():
-        replace_detail_fields(conn, opportunity_id, fields, now)
-        opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
-        if opp:
-            conn.execute(
-                "UPDATE opportunities SET ai_summary_source_hash = ? WHERE id = ?",
-                (summary_source_hash(dict(opp), fields), opportunity_id),
-            )
-
-    conn.execute(
-        """
-        UPDATE email_groups
-        SET email_address = 'ug.2024@plaksha.edu.in',
-            display_name = 'UG 2024 Cohort'
-        WHERE id = 1
-          AND LOWER(email_address) = 'ug2024@plaksha.edu.in'
-          AND NOT EXISTS (
-              SELECT 1 FROM email_groups WHERE LOWER(email_address) = 'ug.2024@plaksha.edu.in'
-          )
-        """
-    )
-    conn.execute(
-        """
-        UPDATE opportunity_visibility_rules
-        SET rule_value = 'ug.2024@plaksha.edu.in'
-        WHERE LOWER(rule_value) = 'ug2024@plaksha.edu.in'
-        """
-    )
-
-    email_groups = [
-        (1, "ug.2024@plaksha.edu.in", "UG 2024 Cohort"),
-        (2, "professors@plaksha.edu.in", "All Professors"),
-        (3, "ug.2022@plaksha.edu.in", "UG 2022 Cohort"),
-        (4, "ug.2023@plaksha.edu.in", "UG 2023 Cohort"),
-        (5, "ug.2025@plaksha.edu.in", "UG 2025 Cohort"),
-        (6, "ug2024@plaksha.edu.in", "UG 2024 Cohort (legacy alias)"),
-    ]
-    for group_id, email_address, display_name in email_groups:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
-            VALUES (?, ?, ?, 1, ?)
-            """,
-            (group_id, email_address, display_name, now),
-        )
-
-    email_group_memberships = [
-        (1, 1),
-        (1, 2),
-        (1, 3),
-        (2, 5),
-        (2, 6),
-        (3, 1),
-        (3, 2),
-        (6, 1),
-        (6, 2),
-        (6, 3),
-    ]
-    for group_id, user_id in email_group_memberships:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
-            VALUES (?, ?, ?)
-            """,
-            (group_id, user_id, now),
-        )
-
-    visibility_rules = [
-        (1, "GROUP_EMAIL", "ug.2024@plaksha.edu.in"),
-        (1, "EMAIL", "john.doe@plaksha.edu.in"),
-    ]
-    for opportunity_id, rule_type, rule_value in visibility_rules:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO opportunity_visibility_rules (opportunity_id, rule_type, rule_value, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (opportunity_id, rule_type, rule_value, now),
-        )
-
-    required_fields_by_opp = {
-        1: [
-            "full_name",
-            "student_id",
-            "email",
-            "cgpa",
-            "statement_of_purpose",
-            "resume_upload",
-        ],
-    }
-    for opp_id, fields in required_fields_by_opp.items():
-        for order, field_key in enumerate(fields, start=1):
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO opportunity_required_fields (opportunity_id, field_key, display_order)
-                VALUES (?, ?, ?)
-                """,
-                (opp_id, field_key, order),
-            )
-
-    # ── Graph version for NTU Singapore (matches demo_fixture.json) ──
-    gv_cursor = conn.execute(
-        """
-        INSERT OR IGNORE INTO graph_versions (opportunity_id, version, status, created_by_email, created_at)
-        VALUES (1, 1, 'active', 'oge@plaksha.edu.in', ?)
-        """,
-        (now,),
-    )
-    gv_id = int(gv_cursor.lastrowid or conn.execute("SELECT id FROM graph_versions WHERE opportunity_id = 1 LIMIT 1").fetchone()["id"])
-
-    backlog_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "backlog_status", "label": "Backlog / Misconduct Status", "input_type": "select", "options": ["Clear — no active backlogs or misconduct", "Active backlog — details in remarks", "Misconduct record — details in remarks"], "required": True}]})
-    cgpa_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "cgpa_verified", "label": "CGPA Verification", "input_type": "select", "options": ["Verified ≥ 7.5 — meets requirement", "Below 7.5 — does not meet minimum", "Cannot verify at this time"], "required": True}]})
-    chair_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "coursework_alignment", "label": "Coursework Alignment with NTU AI/Robotics Programme", "input_type": "select", "options": ["Strong alignment — student's coursework directly relevant", "Adequate alignment — conditional approval", "Weak alignment — details in remarks", "No alignment — recommend rejection"], "required": True}]})
-    dean_input = json.dumps({"sla_hours": 72, "required_inputs": [{"input_key": "dean_decision", "label": "Final Nomination Decision", "input_type": "select", "options": ["Approved — submit to NTU", "Rejected — details in remarks"], "required": True}]})
-
-    graph_nodes = [
-        ("start",               "start",    "Application Submitted",                  None,                              '["all"]', '[]',                                          '{}'),
-        ("oaa_review",          "reviewer", "Office of Academic Affairs",              "oaa@plaksha.edu.in",              '["all"]', '["approve","request_changes","comment"]',     backlog_input),
-        ("ug_academics_review", "reviewer", "UG Academics (CGPA ≥ 7.5)",              "ug-academics@plaksha.edu.in",     '["all"]', '["approve","request_changes","comment"]',     cgpa_input),
-        ("parallel_join",       "join_all", "OAA + UG Academics Complete",            None,                              '["all"]', '[]',                                          '{}'),
-        ("program_chair_review","reviewer", "Freshmore Coordinator (Prof. S. Pawar)", "shashikant.pawar@plaksha.edu.in", '["all"]', '["approve","request_changes","comment"]',     chair_input),
-        ("dean_approval",       "reviewer", "Dean — Final Approval",                  "dean@plaksha.edu.in",             '["all"]', '["approve","reject","comment"]',               dean_input),
-        ("end",                 "end",      "Nominated — Submitted to NTU",           None,                              '["all"]', '[]',                                          '{}'),
-    ]
-    for node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata in graph_nodes:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO graph_nodes (graph_version_id, node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (gv_id, node_key, node_type, display_name, reviewer_email, visible_sections, allowed_actions, metadata),
-        )
-
-    graph_edges = [
-        ("start",               "oaa_review"),
-        ("start",               "ug_academics_review"),
-        ("oaa_review",          "parallel_join"),
-        ("ug_academics_review", "parallel_join"),
-        ("parallel_join",       "program_chair_review"),
-        ("program_chair_review","dean_approval"),
-        ("dean_approval",       "end"),
-    ]
-    for from_key, to_key in graph_edges:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO graph_edges (graph_version_id, from_node_key, to_node_key)
-            VALUES (?, ?, ?)
-            """,
-            (gv_id, from_key, to_key),
-        )
-
-    # ── Sample application: Rohan applying to NTU Singapore ──
-    submitted_rohan_ntu = {
-        "full_name": "Rohan",
-        "student_id": "PL-2022-ROH",
-        "email": "rohan@plaksha.edu.in",
-        "cgpa": 8.5,
-        "statement_of_purpose": "I am deeply interested in AI and robotics research. NTU's labs offer the perfect environment to apply my coursework in real-world research projects alongside leading PhD students.",
-        "resume_upload": "https://drive.google.com/file/rohan_resume",
-    }
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO applications
-        (id, student_profile_id, opportunity_id, current_step_order, current_stage_label,
-         graph_version_id, final_status, submitted_data_json, submitted_at, created_at, updated_at)
-        VALUES (1, 1, 1, 1, 'Office of Academic Affairs', ?, NULL, ?, ?, ?, ?)
-        """,
-        (gv_id, json.dumps(submitted_rohan_ntu), now, now, now),
-    )
-    # Parallel tasks: both OAA and UG Academics start simultaneously.
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO application_workflow_tasks
-        (application_id, graph_version_id, node_key, assigned_reviewer_email, status, assigned_at)
-        VALUES (1, ?, 'oaa_review', 'oaa@plaksha.edu.in', 'active', ?)
-        """,
-        (gv_id, now),
-    )
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO application_workflow_tasks
-        (application_id, graph_version_id, node_key, assigned_reviewer_email, status, assigned_at)
-        VALUES (1, ?, 'ug_academics_review', 'ug-academics@plaksha.edu.in', 'active', ?)
-        """,
-        (gv_id, now),
-    )
-    conn.execute(
-        """
-        INSERT INTO timeline_events
-        (application_id, event_type, event_payload_json, actor_email, created_at)
-        VALUES (1, 'APPLICATION_CREATED', ?, ?, ?)
-        """,
-        (json.dumps({"current_stage": "Office of Academic Affairs"}), "rohan@plaksha.edu.in", now),
-    )
-
-    conn.commit()
+    seed(conn)
 
 
 def ensure_db_initialized() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not DB_PATH.exists():
+        raise HTTPException(
+            status_code=503, detail="Database is not initialized. Run npm run db:init."
+        )
     with db_conn() as conn:
-        apply_schema_migrations(conn)
         if schema_needs_reset(conn):
-            reset_schema(conn)
-            seed_data(conn)
-            return
+            raise HTTPException(
+                status_code=503,
+                detail="Database schema is incompatible. Run the explicit database command; startup will not reset data.",
+            )
 
-        form_field_columns = table_columns(conn, "form_field_catalog")
-        if "description" not in form_field_columns:
-            conn.execute("ALTER TABLE form_field_catalog ADD COLUMN description TEXT")
-        if "field_hint" not in form_field_columns:
-            conn.execute("ALTER TABLE form_field_catalog ADD COLUMN field_hint TEXT")
-        if "options_json" not in form_field_columns:
-            conn.execute("ALTER TABLE form_field_catalog ADD COLUMN options_json TEXT")
-        if "field_hint" in table_columns(conn, "form_field_catalog"):
-            conn.execute("UPDATE form_field_catalog SET field_hint = COALESCE(field_hint, description)")
-            conn.commit()
 
-        if "email_groups" in list_tables(conn):
-            conn.execute(
-                """
-                UPDATE email_groups
-                SET email_address = 'ug.2024@plaksha.edu.in',
-                    display_name = 'UG 2024 Cohort'
-                WHERE id = 1
-                  AND LOWER(email_address) = 'ug2024@plaksha.edu.in'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM email_groups WHERE LOWER(email_address) = 'ug.2024@plaksha.edu.in'
-                  )
-                """
-            )
-            now = now_iso()
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
-                VALUES (6, 'ug2024@plaksha.edu.in', 'UG 2024 Cohort (legacy alias)', 1, ?)
-                """,
-                (now,),
-            )
-            conn.executemany(
-                """
-                INSERT OR IGNORE INTO email_groups (id, email_address, display_name, is_active, created_at)
-                VALUES (?, ?, ?, 1, ?)
-                """,
-                [
-                    (3, "ug.2022@plaksha.edu.in", "UG 2022 Cohort", now),
-                    (4, "ug.2023@plaksha.edu.in", "UG 2023 Cohort", now),
-                    (5, "ug.2025@plaksha.edu.in", "UG 2025 Cohort", now),
-                ],
-            )
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
-                SELECT 6, memberships.user_id, ?
-                FROM email_group_memberships memberships
-                WHERE memberships.group_id = 1
-                """,
-                (now,),
-            )
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO email_group_memberships (group_id, user_id, created_at)
-                SELECT 3, profiles.user_id, ?
-                FROM student_profiles profiles
-                WHERE profiles.student_id LIKE 'PL-2022-%'
-                """,
-                (now,),
-            )
-            conn.commit()
-        if "opportunity_visibility_rules" in list_tables(conn):
-            conn.execute(
-                """
-                UPDATE opportunity_visibility_rules
-                SET rule_value = 'ug.2024@plaksha.edu.in'
-                WHERE LOWER(rule_value) = 'ug2024@plaksha.edu.in'
-                """
-            )
-            conn.commit()
-
-        required = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
-        if required == 0:
-            seed_data(conn)
+def encode_session(payload: dict) -> str:
+    body = quote(json.dumps({**payload, "expires": int(time.time()) + 86400}), safe="")
+    return (
+        body + "." + hmac.new(SESSION_SECRET, body.encode(), hashlib.sha256).hexdigest()
+    )
 
 
 def parse_session(raw_session: str | None) -> dict[str, Any] | None:
-    if not raw_session:
-        return None
     try:
-        parsed = json.loads(unquote(raw_session))
-    except json.JSONDecodeError:
+        body, signature = (raw_session or "").rsplit(".", 1)
+        expected = hmac.new(SESSION_SECRET, body.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return None
+        parsed = json.loads(unquote(body))
+        if not isinstance(parsed, dict) or parsed.get("expires", 0) < time.time():
+            return None
+        return parsed
+    except (ValueError, TypeError):
         return None
 
-    required_keys = {"email", "name", "role", "roleDisplayName", "userId"}
-    if not required_keys.issubset(parsed.keys()):
-        return None
-    return parsed
+
+from fastapi_app.contracts import (
+    SessionUser,
+    LoginBody,
+    WorkspaceSelectBody,
+    ReviewerOnboardingBody,
+    CommentCreateBody,
+    DecisionBody,
+    StudentResponseBody,
+    AdminApplicationPatchBody,
+    CustomFormFieldPayload,
+    OpportunityDetailFieldPayload,
+    VisibilityRulePayload,
+    OpportunityPatchBody,
+    OpportunityAIGenerateBody,
+    ClarificationAnswerBody,
+    WorkflowDraftManualBody,
+    WorkflowDraftValidateBody,
+    TaskDecideBody,
+    SLAPolicyBody,
+    SLATestReminderBody,
+    SLABreachAcknowledgeBody,
+    ApplicationCreateBody,
+)
 
 
-class SessionUser(BaseModel):
-    email: str
-    name: str
-    role: str
-    roleDisplayName: str
-    userId: int
-    reviewerOnboarded: bool = True
-    pronouns: str | None = None
-    department: str | None = None
-    notifyEmail: bool = True
-    notifyDigest: bool = False
-    availableWorkspaces: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class LoginBody(BaseModel):
-    email: str
-
-
-class WorkspaceSelectBody(BaseModel):
-    role: str
-
-
-class ReviewerOnboardingBody(BaseModel):
-    displayName: str = Field(min_length=1, max_length=120)
-    pronouns: str | None = Field(default=None, max_length=80)
-    department: str | None = Field(default=None, max_length=120)
-    notifyEmail: bool = True
-    notifyDigest: bool = False
-
-
-class CommentCreateBody(BaseModel):
-    text: str = Field(min_length=1)
-    visibility: str = "internal"
-    authorEmail: str | None = None
-
-
-class DecisionBody(BaseModel):
-    remarks: str | None = None
-    reason: str | None = None
-    reviewerEmail: str | None = None
-    requiredInputs: dict[str, Any] | None = None
-    targetStepOrder: int | None = None
-
-
-class StudentResponseBody(BaseModel):
-    text: str = Field(min_length=1)
-
-
-class AdminApplicationPatchBody(BaseModel):
-    submittedData: dict[str, Any]
-
-
-class CustomFormFieldPayload(BaseModel):
-    key: str | None = None
-    label: str
-    description: str | None = None
-    fieldHint: str | None = None
-    inputType: Literal["text", "textarea", "single_select", "multiselect"] = "text"
-    options: list[str] = Field(default_factory=list)
-    persistForFuture: bool = True
-
-
-class OpportunityDetailFieldPayload(BaseModel):
-    key: str | None = None
-    field_key: str | None = None
-    label: str
-    value: str
-    valueType: Literal["text", "number", "date"] = "text"
-    value_type: str | None = None
-    displayOrder: int | None = None
-    display_order: int | None = None
-    isStudentVisible: bool = True
-    is_student_visible: bool | None = None
-
-
-VisibilityRuleInput = Any
-
-
-class OpportunityPatchBody(BaseModel):
-    title: str | None = None
-    description: str | None = None
-    cover_image_url: str | None = None
-    term: str | None = None
-    destination: str | None = None
-    deadline: str | None = None
-    seats: int | None = None
-    status: str | None = None
-    formFields: list[str] | None = None
-    customFields: list[CustomFormFieldPayload] | None = None
-    generatorVisibilityRules: list[VisibilityRuleInput] | None = None
-    detailFields: list[OpportunityDetailFieldPayload] | None = None
-    aiSummaryBullets: list[str] | None = None
-
-
-class OpportunityCreatePayload(BaseModel):
-    opportunity: dict[str, Any]
-    formFields: list[str]
-    customFields: list[CustomFormFieldPayload] = Field(default_factory=list)
-    detailFields: list[OpportunityDetailFieldPayload] = Field(default_factory=list)
-    aiSummaryBullets: list[str] = Field(default_factory=list)
-    generatorVisibilityRules: list[VisibilityRuleInput] = Field(default_factory=list)
-
-
-class OpportunityAIGenerateBody(BaseModel):
-    prompt: str = Field(min_length=10, max_length=4000)
-
-
-class ClarificationAnswerBody(BaseModel):
-    answers: dict[str, Any]
-
-
-class WorkflowDraftManualBody(BaseModel):
-    opportunityId: int | None = None
-    opportunity: dict[str, Any]
-    graph: GraphModel
-    generatorVisibilityRules: list[VisibilityRuleInput] = Field(default_factory=list)
-    clarifyingQuestions: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.75, ge=0.0, le=1.0)
-    isFallback: bool = False
-
-
-class WorkflowDraftValidateBody(BaseModel):
-    opportunityId: int | None = None
-    opportunity: dict[str, Any]
-    graph: GraphModel
-    generatorVisibilityRules: list[VisibilityRuleInput] = Field(default_factory=list)
-    clarifyingQuestions: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.75, ge=0.0, le=1.0)
-    isFallback: bool = False
-
-
-class TaskDecideBody(BaseModel):
-    decision: str
-    comment: str | None = None
-    reviewer_data: dict[str, Any] | None = None
-
-
-class SLAPolicyBody(BaseModel):
-    graphNodeId: int
-    slaDays: int = Field(ge=1)
-    reminderDays: list[int] = Field(default_factory=lambda: [1])
-    escalationEmail: str | None = None
-
-
-class SLATestReminderBody(BaseModel):
-    toEmail: str | None = None
-
-
-class SLABreachAcknowledgeBody(BaseModel):
-    notes: str | None = None
-
-
-class VisibilityRulePayload(BaseModel):
-    ruleType: Literal["EMAIL", "GROUP_EMAIL"] = "EMAIL"
-    ruleValue: str
-
-
-class ApplicationCreateBody(BaseModel):
-    opportunityId: int
-    studentProfileId: int | None = None
-    submittedData: dict[str, Any] | None = None
-
-
-def get_session(raw_session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> SessionUser:
+def get_session(
+    raw_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+) -> SessionUser:
+    if os.environ.get("PRISM_ENV", "development") != "development":
+        raise HTTPException(
+            status_code=503,
+            detail="Clerk authentication must be configured before deployment.",
+        )
     parsed = parse_session(raw_session)
     if not parsed:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return SessionUser(**parsed)
+    try:
+        session = SessionUser(**parsed)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid session") from None
+    with db_conn() as conn:
+        user = get_user_identity(conn, session.email)
+        workspaces = get_user_workspaces(conn, session.email)
+        if (
+            not user
+            or user["id"] != session.userId
+            or session.role not in {w["role"] for w in workspaces}
+        ):
+            raise HTTPException(status_code=403, detail="Workspace access was revoked")
+    return session
 
 
 def require_roles(*allowed_roles: str):
@@ -1581,13 +324,15 @@ def require_roles(*allowed_roles: str):
 
 
 def get_role_display_name(conn: sqlite3.Connection, role_code: str) -> str:
-    row = conn.execute("SELECT display_name FROM roles WHERE code = ?", (role_code,)).fetchone()
+    row = conn.execute(
+        "SELECT display_name FROM roles WHERE code = ?", (role_code,)
+    ).fetchone()
     return row["display_name"] if row else role_code
 
 
 def role_dashboard_path(role_code: str) -> str:
-    if role_code == GENERATOR_ROLE:
-        return "/generator"
+    if role_code == STUDENT_ROLE:
+        return "/student"
     if role_code == ADMIN_ROLE:
         return "/admin"
     return "/reviewer"
@@ -1605,110 +350,30 @@ def get_user_identity(conn: sqlite3.Connection, email: str) -> sqlite3.Row | Non
     ).fetchone()
 
 
-def get_user_workspaces(conn: sqlite3.Connection, email: str) -> list[dict[str, Any]]:
+def get_user_workspaces(conn, email):
     user = get_user_identity(conn, email)
     if not user:
         return []
-
-    user_id = int(user["id"])
-    normalized_email = email.strip().lower()
-
-    workspaces: list[dict[str, Any]] = []
-    admin_role = conn.execute(
-        """
-        SELECT 1
-        FROM user_roles ur
-        JOIN roles r ON r.id = ur.role_id
-        WHERE ur.user_id = ? AND r.code = ?
-        LIMIT 1
-        """,
-        (user_id, ADMIN_ROLE),
-    ).fetchone()
-    if admin_role:
-        workspaces.append(
-            {
-                "role": ADMIN_ROLE,
-                "roleDisplayName": get_role_display_name(conn, ADMIN_ROLE),
-                "dashboardPath": role_dashboard_path(ADMIN_ROLE),
-            }
+    roles = {
+        r[0]
+        for r in conn.execute(
+            "SELECT r.code FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=?",
+            (user["id"],),
         )
-
-    reviewer_assignment = conn.execute(
-        """
-        SELECT 1
-        FROM opportunity_pipeline_steps
-        WHERE LOWER(reviewer_email) = LOWER(?)
-        LIMIT 1
-        """,
-        (normalized_email,),
-    ).fetchone() or conn.execute(
-        """
-        SELECT 1
-        FROM graph_nodes gn
-        JOIN graph_versions gv ON gv.id = gn.graph_version_id
-        WHERE gn.node_type = 'reviewer'
-          AND LOWER(gn.reviewer_email) = LOWER(?)
-        LIMIT 1
-        """,
-        (normalized_email,),
-    ).fetchone() or conn.execute(
-        """
-        SELECT 1 FROM user_roles ur
-        JOIN roles r ON r.id = ur.role_id
-        JOIN users u ON u.id = ur.user_id
-        WHERE LOWER(u.email) = LOWER(?) AND r.code = ?
-        LIMIT 1
-        """,
-        (normalized_email, REVIEWER_ROLE),
-    ).fetchone()
-    if reviewer_assignment:
-        workspaces.append(
-            {
-                "role": REVIEWER_ROLE,
-                "roleDisplayName": get_role_display_name(conn, REVIEWER_ROLE),
-                "dashboardPath": role_dashboard_path(REVIEWER_ROLE),
-            }
-        )
-
-    generator_assignment = conn.execute(
-        """
-        SELECT 1
-        FROM opportunities o
-        WHERE o.status = 'published'
-          AND EXISTS (
-              SELECT 1
-              FROM opportunity_visibility_rules rules
-              WHERE rules.opportunity_id = o.id
-                AND (
-                    LOWER(rules.rule_value) = LOWER(?)
-                    OR (
-                        EXISTS (
-                            SELECT 1
-                            FROM email_groups groups
-                            JOIN email_group_memberships memberships ON memberships.group_id = groups.id
-                            WHERE LOWER(groups.email_address) = LOWER(rules.rule_value)
-                              AND groups.is_active = 1
-                              AND memberships.user_id = ?
-                        )
-                    )
-                )
-          )
-        LIMIT 1
-        """,
-        (normalized_email, user_id),
-    ).fetchone()
-    if generator_assignment:
-        workspaces.append(
-            {
-                "role": GENERATOR_ROLE,
-                "roleDisplayName": get_role_display_name(conn, GENERATOR_ROLE),
-                "dashboardPath": role_dashboard_path(GENERATOR_ROLE),
-            }
-        )
-
-    order = {GENERATOR_ROLE: 1, REVIEWER_ROLE: 2, ADMIN_ROLE: 3}
-    workspaces.sort(key=lambda item: order.get(item["role"], 99))
-    return workspaces
+    }
+    if conn.execute(
+        "SELECT 1 FROM graph_nodes WHERE LOWER(reviewer_email)=LOWER(?)", (email,)
+    ).fetchone():
+        roles.add(REVIEWER_ROLE)
+    return [
+        {
+            "role": role,
+            "roleDisplayName": get_role_display_name(conn, role),
+            "dashboardPath": role_dashboard_path(role),
+        }
+        for role in [STUDENT_ROLE, REVIEWER_ROLE, ADMIN_ROLE]
+        if role in roles
+    ]
 
 
 def build_session_payload(
@@ -1717,10 +382,16 @@ def build_session_payload(
     active_role: str | None = None,
 ) -> dict[str, Any]:
     if not available_workspaces:
-        raise HTTPException(status_code=403, detail="No workspaces are available for this account.")
+        raise HTTPException(
+            status_code=403, detail="No workspaces are available for this account."
+        )
 
     active_workspace = next(
-        (workspace for workspace in available_workspaces if workspace["role"] == active_role),
+        (
+            workspace
+            for workspace in available_workspaces
+            if workspace["role"] == active_role
+        ),
         available_workspaces[0],
     )
     return {
@@ -1738,7 +409,9 @@ def build_session_payload(
     }
 
 
-def can_user_view_opportunity(conn: sqlite3.Connection, user_id: int, opportunity_id: int) -> bool:
+def can_user_view_opportunity(
+    conn: sqlite3.Connection, user_id: int, opportunity_id: int
+) -> bool:
     rule_count_row = conn.execute(
         "SELECT COUNT(*) AS c FROM opportunity_visibility_rules WHERE opportunity_id = ?",
         (opportunity_id,),
@@ -1783,7 +456,11 @@ def normalize_visibility_rules(rules: list[Any] | None) -> list[dict[str, str]]:
             rule_type = "EMAIL"
             rule_value = raw_rule.strip().lower()
         else:
-            rule = raw_rule if isinstance(raw_rule, VisibilityRulePayload) else VisibilityRulePayload(**raw_rule)
+            rule = (
+                raw_rule
+                if isinstance(raw_rule, VisibilityRulePayload)
+                else VisibilityRulePayload(**raw_rule)
+            )
             rule_type = (rule.ruleType or "EMAIL").strip().upper()
             rule_value = rule.ruleValue.strip().lower()
         rule_value = re.sub(r"^ug(20\d{2})@", r"ug.\1@", rule_value)
@@ -1794,7 +471,10 @@ def normalize_visibility_rules(rules: list[Any] | None) -> list[dict[str, str]]:
                 status_code=400,
                 detail=f'Visibility rule "{rule_value}" must be a valid email address.',
             )
-        if re.fullmatch(r"ug\.?20\d{2}@plaksha\.edu\.in", rule_value) or rule_value == "professors@plaksha.edu.in":
+        if (
+            re.fullmatch(r"ug\.?20\d{2}@plaksha\.edu\.in", rule_value)
+            or rule_value == "professors@plaksha.edu.in"
+        ):
             rule_type = "GROUP_EMAIL"
         key = (rule_type, rule_value)
         if key in seen:
@@ -1804,7 +484,9 @@ def normalize_visibility_rules(rules: list[Any] | None) -> list[dict[str, str]]:
     return normalized
 
 
-def get_opportunity_visibility_rules(conn: sqlite3.Connection, opportunity_id: int) -> list[dict[str, str]]:
+def get_opportunity_visibility_rules(
+    conn: sqlite3.Connection, opportunity_id: int
+) -> list[dict[str, str]]:
     rows = conn.execute(
         """
         SELECT rule_type, rule_value
@@ -1829,7 +511,10 @@ def replace_opportunity_visibility_rules(
     rules: list[dict[str, str]],
     created_at: str,
 ) -> None:
-    conn.execute("DELETE FROM opportunity_visibility_rules WHERE opportunity_id = ?", (opportunity_id,))
+    conn.execute(
+        "DELETE FROM opportunity_visibility_rules WHERE opportunity_id = ?",
+        (opportunity_id,),
+    )
     for rule in rules:
         conn.execute(
             """
@@ -1853,7 +538,7 @@ def get_user_role(conn: sqlite3.Connection, email: str) -> dict[str, Any] | None
         ORDER BY CASE r.code
           WHEN 'ADMIN' THEN 1
           WHEN 'REVIEWER' THEN 2
-          WHEN 'GENERATOR' THEN 3
+          WHEN 'STUDENT' THEN 3
           ELSE 99 END
         LIMIT 1
         """,
@@ -1867,68 +552,6 @@ def derive_name_from_email(email: str) -> str:
     if not parts:
         return "Reviewer"
     return " ".join(part.capitalize() for part in parts)
-
-
-def infer_reviewer_role_code(email: str, step_name: str) -> str:
-    normalized_email = email.strip().lower()
-    _ = step_name
-    if normalized_email == "oge@plaksha.edu.in":
-        return ADMIN_ROLE
-    return REVIEWER_ROLE
-
-
-def ensure_user_has_role(conn: sqlite3.Connection, user_id: int, role_code: str, ts: str) -> None:
-    role = conn.execute("SELECT id FROM roles WHERE code = ?", (role_code,)).fetchone()
-    if not role:
-        display_name = role_code.replace("_", " ").title()
-        cursor = conn.execute(
-            "INSERT INTO roles (code, display_name) VALUES (?, ?)",
-            (role_code, display_name),
-        )
-        role_id = int(cursor.lastrowid)
-    else:
-        role_id = int(role["id"])
-
-    conn.execute(
-        "INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)",
-        (user_id, role_id, ts),
-    )
-
-
-def ensure_reviewer_account(
-    conn: sqlite3.Connection,
-    reviewer_email: str,
-    reviewer_name: str | None,
-    step_name: str,
-    ts: str,
-) -> None:
-    email = reviewer_email.strip().lower()
-    if not email:
-        return
-
-    user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
-    user_id: int
-    if user:
-        user_id = int(user["id"])
-        if reviewer_name:
-            conn.execute(
-                "UPDATE users SET full_name = ? WHERE id = ?",
-                (reviewer_name.strip(), user_id),
-            )
-    else:
-        display_name = (reviewer_name or "").strip() or derive_name_from_email(email)
-        cursor = conn.execute(
-            """
-            INSERT INTO users
-              (email, full_name, is_active, reviewer_onboarded, notify_email, notify_digest, created_at)
-            VALUES (?, ?, 1, 0, 1, 0, ?)
-            """,
-            (email, display_name, ts),
-        )
-        user_id = int(cursor.lastrowid)
-
-    role_code = infer_reviewer_role_code(email, step_name)
-    ensure_user_has_role(conn, user_id, role_code, ts)
 
 
 def normalize_custom_field_key(raw_key: str, fallback_label: str) -> str:
@@ -1946,13 +569,17 @@ def normalize_custom_field_key(raw_key: str, fallback_label: str) -> str:
     return base
 
 
-def normalize_custom_form_fields(custom_fields: list[CustomFormFieldPayload]) -> list[dict[str, Any]]:
+def normalize_custom_form_fields(
+    custom_fields: list[CustomFormFieldPayload],
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     used_keys: set[str] = set()
     for index, field in enumerate(custom_fields, start=1):
         label = field.label.strip()
         if not label:
-            raise HTTPException(status_code=400, detail=f"Custom field #{index} label cannot be empty.")
+            raise HTTPException(
+                status_code=400, detail=f"Custom field #{index} label cannot be empty."
+            )
 
         base_key = normalize_custom_field_key(field.key or "", label)
         key = base_key
@@ -1964,7 +591,10 @@ def normalize_custom_form_fields(custom_fields: list[CustomFormFieldPayload]) ->
 
         input_type = field.inputType.strip().lower()
         if input_type not in CUSTOM_FIELD_INPUT_TYPES:
-            raise HTTPException(status_code=400, detail=f"Unsupported custom field type: {field.inputType}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported custom field type: {field.inputType}",
+            )
 
         options = dedupe_preserve_order(field.options or [])
         if input_type in {"single_select", "multiselect"} and not options:
@@ -1988,7 +618,9 @@ def normalize_custom_form_fields(custom_fields: list[CustomFormFieldPayload]) ->
     return normalized
 
 
-def upsert_custom_form_fields(conn: sqlite3.Connection, custom_fields: list[dict[str, Any]]) -> None:
+def upsert_custom_form_fields(
+    conn: sqlite3.Connection, custom_fields: list[dict[str, Any]]
+) -> None:
     for field in custom_fields:
         existing = conn.execute(
             "SELECT field_key, section_key FROM form_field_catalog WHERE field_key = ?",
@@ -2024,10 +656,14 @@ def upsert_custom_form_fields(conn: sqlite3.Connection, custom_fields: list[dict
         )
 
 
-def ensure_form_fields_exist(conn: sqlite3.Connection, form_fields: list[str]) -> list[str]:
+def ensure_form_fields_exist(
+    conn: sqlite3.Connection, form_fields: list[str]
+) -> list[str]:
     normalized = dedupe_preserve_order(form_fields)
     if not normalized:
-        raise HTTPException(status_code=400, detail="At least one form field is required")
+        raise HTTPException(
+            status_code=400, detail="At least one form field is required"
+        )
 
     rows = conn.execute(
         "SELECT field_key FROM form_field_catalog WHERE is_active = 1",
@@ -2035,7 +671,9 @@ def ensure_form_fields_exist(conn: sqlite3.Connection, form_fields: list[str]) -
     known = {row["field_key"] for row in rows}
     invalid = [key for key in normalized if key not in known]
     if invalid:
-        raise HTTPException(status_code=400, detail=f"Unknown form fields: {', '.join(invalid)}")
+        raise HTTPException(
+            status_code=400, detail=f"Unknown form fields: {', '.join(invalid)}"
+        )
     return normalized
 
 
@@ -2047,63 +685,38 @@ def replace_opportunity_form_fields(
     return _replace_opportunity_form_fields(conn, opportunity_id, form_fields)
 
 
-def get_pipeline_steps(conn: sqlite3.Connection, opportunity_id: int) -> list[dict[str, Any]]:
-    steps = conn.execute(
-        """
-        SELECT * FROM opportunity_pipeline_steps
-        WHERE opportunity_id = ?
-        ORDER BY step_order ASC
-        """,
+def get_pipeline_steps(conn, opportunity_id):
+    row = conn.execute(
+        "SELECT id FROM graph_versions WHERE opportunity_id=? AND status='active' ORDER BY version DESC LIMIT 1",
         (opportunity_id,),
-    ).fetchall()
-
-    results: list[dict[str, Any]] = []
-    for step in steps:
-        access_rows = conn.execute(
-            "SELECT field_key FROM opportunity_step_field_access WHERE pipeline_step_id = ? ORDER BY id ASC",
-            (step["id"],),
-        ).fetchall()
-        input_rows = conn.execute(
-            """
-            SELECT input_key, input_label, input_type, options_json, is_required, display_order
-            FROM opportunity_step_required_inputs
-            WHERE pipeline_step_id = ?
-            ORDER BY display_order ASC, id ASC
-            """,
-            (step["id"],),
-        ).fetchall()
-
-        required_inputs = []
-        for row in input_rows:
-            options: list[str] = []
-            if row["options_json"]:
-                try:
-                    parsed_options = json.loads(row["options_json"])
-                    if isinstance(parsed_options, list):
-                        options = [str(value) for value in parsed_options]
-                except json.JSONDecodeError:
-                    options = []
-            required_inputs.append(
+    ).fetchone()
+    if not row:
+        return []
+    levels = GraphExecutionService()._definition(conn, row["id"])
+    return [
+        {
+            "step_order": i + 1,
+            "step_name": level["name"],
+            "reviewer_email": node["reviewer_email"],
+            "reviewer_display_name": node.get("display_name"),
+            "visible_fields": node.get("visible_sections", []),
+            "allowed_actions": node.get("allowed_actions", []),
+            "can_view_comments": node.get("metadata", {}).get(
+                "can_view_comments", False
+            ),
+            "required_inputs": [
                 {
-                    "input_key": row["input_key"],
-                    "input_label": row["input_label"],
-                    "input_type": row["input_type"],
-                    "options": options,
-                    "is_required": row["is_required"],
-                    "display_order": row["display_order"],
+                    "input_key": f["input_key"],
+                    "input_label": f["label"],
+                    "input_type": f["input_type"],
+                    "is_required": f.get("required", True),
                 }
-            )
-
-        results.append(
-            {
-                **dict(step),
-                "allowed_actions": json.loads(step["allowed_actions_json"]),
-                "visible_fields": [row["field_key"] for row in access_rows],
-                "can_view_comments": int(step["can_view_comments"]),
-                "required_inputs": required_inputs,
-            }
-        )
-    return results
+                for f in node.get("metadata", {}).get("required_inputs", [])
+            ],
+        }
+        for i, level in enumerate(levels)
+        for node in level["reviewers"]
+    ]
 
 
 def build_visibility_audit_for_opportunity(
@@ -2131,7 +744,9 @@ def build_visibility_audit_for_opportunity(
     has_issues = False
 
     for step in steps:
-        current_required_keys = [entry["input_key"] for entry in step["required_inputs"]]
+        current_required_keys = [
+            entry["input_key"] for entry in step["required_inputs"]
+        ]
         for entry in step["required_inputs"]:
             label_lookup[entry["input_key"]] = entry["input_label"]
 
@@ -2143,7 +758,7 @@ def build_visibility_audit_for_opportunity(
         unauthorized_visible: list[str] = []
         for key in visible_fields:
             if key in form_field_set:
-                category = "generator_form"
+                category = "student_form"
             elif key in prior_set:
                 category = "prior_reviewer_input"
             elif key in current_set:
@@ -2161,7 +776,9 @@ def build_visibility_audit_for_opportunity(
             )
 
         visible_prior_inputs = [key for key in visible_fields if key in prior_set]
-        hidden_prior_inputs = [key for key in prior_reviewer_input_keys if key not in visible_fields]
+        hidden_prior_inputs = [
+            key for key in prior_reviewer_input_keys if key not in visible_fields
+        ]
 
         step_has_issue = len(unauthorized_visible) > 0
         if step_has_issue:
@@ -2183,20 +800,25 @@ def build_visibility_audit_for_opportunity(
                     for entry in step["required_inputs"]
                 ],
                 "available_prior_reviewer_inputs": [
-                    {"key": key, "label": label_lookup.get(key, key)} for key in prior_reviewer_input_keys
+                    {"key": key, "label": label_lookup.get(key, key)}
+                    for key in prior_reviewer_input_keys
                 ],
                 "visible_prior_reviewer_inputs": [
-                    {"key": key, "label": label_lookup.get(key, key)} for key in visible_prior_inputs
+                    {"key": key, "label": label_lookup.get(key, key)}
+                    for key in visible_prior_inputs
                 ],
                 "hidden_prior_reviewer_inputs": [
-                    {"key": key, "label": label_lookup.get(key, key)} for key in hidden_prior_inputs
+                    {"key": key, "label": label_lookup.get(key, key)}
+                    for key in hidden_prior_inputs
                 ],
                 "unauthorized_visible_keys": unauthorized_visible,
                 "has_issue": step_has_issue,
             }
         )
 
-        prior_reviewer_input_keys = dedupe_preserve_order(prior_reviewer_input_keys + current_required_keys)
+        prior_reviewer_input_keys = dedupe_preserve_order(
+            prior_reviewer_input_keys + current_required_keys
+        )
 
     return {
         "opportunity": {
@@ -2204,7 +826,9 @@ def build_visibility_audit_for_opportunity(
             "code": opportunity_row["code"],
             "title": opportunity_row["title"],
         },
-        "form_fields": [{"key": row["field_key"], "label": row["label"]} for row in form_rows],
+        "form_fields": [
+            {"key": row["field_key"], "label": row["label"]} for row in form_rows
+        ],
         "steps": step_audit,
         "status": "warning" if has_issues else "ok",
     }
@@ -2233,7 +857,9 @@ def compute_workflow_meta(application_row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def get_enriched_application_list(conn: sqlite3.Connection, where_clause: str = "", params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+def get_enriched_application_list(
+    conn: sqlite3.Connection, where_clause: str = "", params: tuple[Any, ...] = ()
+) -> list[dict[str, Any]]:
     query = f"""
       SELECT a.*, o.title AS opportunity_title, o.term AS opportunity_term, o.destination AS opportunity_destination,
              o.cover_image_url AS opportunity_cover_image_url, o.id AS opportunity_id_join,
@@ -2250,15 +876,7 @@ def get_enriched_application_list(conn: sqlite3.Connection, where_clause: str = 
     output: list[dict[str, Any]] = []
     for row in rows:
         app = dict(row)
-        pipeline_steps = conn.execute(
-            """
-            SELECT step_order, step_name, reviewer_email
-            FROM opportunity_pipeline_steps
-            WHERE opportunity_id = ?
-            ORDER BY step_order ASC
-            """,
-            (app["opportunity_id"],),
-        ).fetchall()
+        pipeline_steps = get_pipeline_steps(conn, app["opportunity_id"])
         output.append(
             {
                 "id": app["id"],
@@ -2296,126 +914,10 @@ def get_enriched_application_list(conn: sqlite3.Connection, where_clause: str = 
     return output
 
 
-def get_application_detail(conn: sqlite3.Connection, application_id: int) -> dict[str, Any] | None:
-    app = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-    if not app:
-        return None
+def get_application_detail(conn, application_id):
+    from fastapi_app.application_data import detail
 
-    opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (app["opportunity_id"],)).fetchone()
-    profile = conn.execute("SELECT * FROM student_profiles WHERE id = ?", (app["student_profile_id"],)).fetchone()
-    user = None
-    if profile:
-        user = conn.execute("SELECT id, email, full_name FROM users WHERE id = ?", (profile["user_id"],)).fetchone()
-
-    reviews = conn.execute(
-        """
-        SELECT ar.*, COALESCE(u.full_name, ar.reviewer_email) AS reviewer_name
-        FROM application_reviews ar
-        LEFT JOIN users u ON LOWER(u.email) = LOWER(ar.reviewer_email)
-        WHERE ar.application_id = ?
-        ORDER BY ar.id ASC
-        """,
-        (application_id,),
-    ).fetchall()
-    comments = conn.execute(
-        "SELECT * FROM application_comments WHERE application_id = ? ORDER BY id ASC",
-        (application_id,),
-    ).fetchall()
-    timeline = conn.execute(
-        "SELECT * FROM timeline_events WHERE application_id = ? ORDER BY id ASC",
-        (application_id,),
-    ).fetchall()
-
-    pipeline_steps = get_pipeline_steps(conn, app["opportunity_id"])
-
-    base_submitted_data: dict[str, Any] = {}
-    if app["submitted_data_json"]:
-        try:
-            parsed = json.loads(app["submitted_data_json"])
-            if isinstance(parsed, dict):
-                base_submitted_data = parsed
-        except json.JSONDecodeError:
-            base_submitted_data = {}
-
-    field_labels: dict[str, str] = {}
-    form_label_rows = conn.execute(
-        """
-        SELECT orf.field_key, f.label
-        FROM opportunity_required_fields orf
-        JOIN form_field_catalog f ON f.field_key = orf.field_key
-        WHERE orf.opportunity_id = ?
-        ORDER BY orf.display_order ASC
-        """,
-        (app["opportunity_id"],),
-    ).fetchall()
-    for row in form_label_rows:
-        field_labels[str(row["field_key"])] = str(row["label"])
-
-    step_label_rows = conn.execute(
-        """
-        SELECT sri.input_key, sri.input_label
-        FROM opportunity_pipeline_steps s
-        JOIN opportunity_step_required_inputs sri ON sri.pipeline_step_id = s.id
-        WHERE s.opportunity_id = ?
-        ORDER BY s.step_order ASC, sri.display_order ASC
-        """,
-        (app["opportunity_id"],),
-    ).fetchall()
-    for row in step_label_rows:
-        field_labels[str(row["input_key"])] = str(row["input_label"])
-
-    review_payload: list[dict[str, Any]] = []
-    review_added_data: dict[str, Any] = {}
-    for row in reviews:
-        record = dict(row)
-        parsed_inputs: dict[str, Any] = {}
-        if row["required_inputs_json"]:
-            try:
-                maybe_dict = json.loads(row["required_inputs_json"])
-                if isinstance(maybe_dict, dict):
-                    parsed_inputs = maybe_dict
-            except json.JSONDecodeError:
-                parsed_inputs = {}
-        for key, value in parsed_inputs.items():
-            review_added_data[str(key)] = value
-            if str(key) not in field_labels:
-                field_labels[str(key)] = str(key)
-        record["required_inputs"] = parsed_inputs
-        review_payload.append(record)
-
-    timeline_payload = []
-    for row in timeline:
-        payload = None
-        if row["event_payload_json"]:
-            payload = json.loads(row["event_payload_json"])
-        timeline_payload.append({**dict(row), "event_payload": payload})
-
-    application_file = {**base_submitted_data, **review_added_data}
-
-    return {
-        "application": dict(app),
-        "opportunity": dict(opp) if opp else None,
-        "student_profile": dict(profile) if profile else None,
-        "student_user": dict(user) if user else None,
-        "reviews": review_payload,
-        "comments": [dict(row) for row in comments],
-        "timeline": timeline_payload,
-        "pipeline_steps": pipeline_steps,
-        "workflow": compute_workflow_meta(app),
-        "application_file": application_file,
-        "field_labels": field_labels,
-    }
-
-
-def get_current_pipeline_step(conn: sqlite3.Connection, application_row: sqlite3.Row) -> sqlite3.Row | None:
-    return conn.execute(
-        """
-        SELECT * FROM opportunity_pipeline_steps
-        WHERE opportunity_id = ? AND step_order = ?
-        LIMIT 1
-        """,
-        (application_row["opportunity_id"], application_row["current_step_order"]),
-    ).fetchone()
+    return detail(conn, application_id)
 
 
 def get_active_graph_task(
@@ -2444,96 +946,36 @@ def get_active_graph_task(
     ).fetchone()
 
 
-def ensure_reviewer_assigned(conn: sqlite3.Connection, application_row: sqlite3.Row, session: SessionUser) -> sqlite3.Row:
-    # Graph-backed applications: check via active graph task.
-    if application_row["graph_version_id"]:
-        task = get_active_graph_task(conn, int(application_row["id"]), session.email)
-        if not task:
-            raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
-        return task
-    # Legacy pipeline fallback.
-    step = get_current_pipeline_step(conn, application_row)
-    if not step:
-        raise HTTPException(status_code=400, detail="No pipeline step configured for current application stage.")
-    if step["reviewer_email"].lower() != session.email.lower():
-        raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
-    return step
-
-
-def ensure_application_access_for_user(
-    conn: sqlite3.Connection,
-    application_id: int,
-    session: SessionUser,
-) -> sqlite3.Row:
-    app_row = conn.execute(
-        """
-        SELECT a.*, sp.user_id
-        FROM applications a
-        JOIN student_profiles sp ON sp.id = a.student_profile_id
-        WHERE a.id = ?
-        """,
+def ensure_application_access_for_user(conn, application_id, session):
+    app = conn.execute(
+        "SELECT a.*,p.user_id FROM applications a JOIN student_profiles p ON p.id=a.student_profile_id WHERE a.id=?",
         (application_id,),
     ).fetchone()
-    if not app_row:
-        raise HTTPException(status_code=404, detail="Application not found")
-
-    if session.role == ADMIN_ROLE:
-        return app_row
-    if session.role == STUDENT_ROLE:
-        if int(app_row["user_id"]) != int(session.userId):
-            raise HTTPException(status_code=403, detail="Forbidden")
-        return app_row
-    if session.role in REVIEWER_ROLES:
-        if app_row["graph_version_id"]:
-            task = get_active_graph_task(conn, application_id, session.email)
-            if not task:
-                raise HTTPException(status_code=403, detail="You are not assigned to this application right now.")
-            return app_row
-        step = get_current_pipeline_step(conn, app_row)
-        if not step or step["reviewer_email"].lower() != session.email.lower():
-            raise HTTPException(status_code=403, detail="You are not assigned to this application right now.")
-        return app_row
-    raise HTTPException(status_code=403, detail="Forbidden")
+    if not app:
+        raise HTTPException(404, "Application not found")
+    if session.role == ADMIN_ROLE or (
+        session.role == STUDENT_ROLE and app["user_id"] == session.userId
+    ):
+        return app
+    if session.role == REVIEWER_ROLE and get_active_graph_task(
+        conn, application_id, session.email
+    ):
+        return app
+    raise HTTPException(403, "Application is not assigned to you")
 
 
-def write_review_and_timeline(
-    conn: sqlite3.Connection,
-    application_id: int,
-    step_order: int,
-    session: SessionUser,
-    decision: Literal["APPROVE", "REQUEST_CHANGES", "REJECT"],
-    remarks: str | None,
-    required_inputs: dict[str, Any] | None,
-    timeline_payload: dict[str, Any],
-) -> None:
-    ts = now_iso()
-    conn.execute(
-        """
-        INSERT INTO application_reviews
-        (application_id, step_order, reviewer_email, reviewer_role, decision, remarks, required_inputs_json, visibility_scope, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'INTERNAL', ?)
-        """,
-        (
-            application_id,
-            step_order,
-            session.email,
-            session.role,
-            decision,
-            remarks,
-            json.dumps(required_inputs or {}),
-            ts,
-        ),
-    )
-    conn.execute(
-        """
-        INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
-        VALUES (?, 'DECISION_RECORDED', ?, ?, ?)
-        """,
-        (application_id, json.dumps(timeline_payload), session.email, ts),
-    )
+@asynccontextmanager
+async def lifespan(app):
+    if os.environ.get("PRISM_ENV", "development") != "development":
+        raise RuntimeError(
+            "Production authentication is not configured. Integrate Clerk before deployment."
+        )
+    ensure_db_initialized()
+    yield
 
 
 app = FastAPI(
+    lifespan=lifespan,
     title="PRISM FastAPI",
     description="FastAPI backend for PRISM approvals platform",
     version="1.0.0",
@@ -2550,40 +992,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup_event() -> None:
-    ensure_db_initialized()
-    start_sla_scheduler()
-
-
-@app.on_event("shutdown")
-def shutdown_event() -> None:
-    global SLA_SCHEDULER
-    if SLA_SCHEDULER:
-        SLA_SCHEDULER.shutdown(wait=False)
-        SLA_SCHEDULER = None
-
-
-def start_sla_scheduler() -> None:
-    global SLA_SCHEDULER
-    if os.environ.get("PRISM_DISABLE_SLA_SCHEDULER") == "1":
-        return
-    if BackgroundScheduler is None or SLA_SCHEDULER is not None:
-        return
-    scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(
-        lambda: sla_check_job(DB_PATH),
-        "interval",
-        hours=1,
-        id="prism_sla_check",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.start()
-    SLA_SCHEDULER = scheduler
-
-
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     ensure_db_initialized()
@@ -2594,62 +1002,23 @@ def health() -> dict[str, Any]:
 
 @app.post("/api/auth/login")
 def auth_login(body: LoginBody, response: Response) -> dict[str, Any]:
+    if os.environ.get("PRISM_ENV", "development") != "development":
+        raise HTTPException(503, "Clerk must be configured before deployment")
     ensure_db_initialized()
-    email = body.email.strip().lower()
     with db_conn() as conn:
-        user = get_user_identity(conn, email)
+        user = get_user_identity(conn, body.email.strip().lower())
         if not user:
-            assignment = conn.execute(
-                """
-                SELECT reviewer_display_name, step_name
-                FROM opportunity_pipeline_steps
-                WHERE LOWER(reviewer_email) = LOWER(?)
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (email,),
-            ).fetchone()
-            if not assignment:
-                assignment = conn.execute(
-                    """
-                    SELECT gn.display_name AS reviewer_display_name,
-                           COALESCE(gn.display_name, gn.node_key) AS step_name
-                    FROM graph_nodes gn
-                    JOIN graph_versions gv ON gv.id = gn.graph_version_id
-                    WHERE gn.node_type = 'reviewer'
-                      AND LOWER(gn.reviewer_email) = LOWER(?)
-                    ORDER BY gv.id DESC, gn.id DESC
-                    LIMIT 1
-                    """,
-                    (email,),
-                ).fetchone()
-            if assignment:
-                ensure_reviewer_account(
-                    conn,
-                    email,
-                    assignment["reviewer_display_name"],
-                    assignment["step_name"] or "Reviewer Stage",
-                    now_iso(),
-                )
-                conn.commit()
-                user = get_user_identity(conn, email)
-
-        if not user:
-            raise HTTPException(status_code=404, detail=f'No account found for "{body.email}".')
-
-        available_workspaces = get_user_workspaces(conn, email)
-        session_payload = build_session_payload(user, available_workspaces)
-
+            raise HTTPException(404, "No development account found for that email")
+        payload = build_session_payload(user, get_user_workspaces(conn, body.email))
     response.set_cookie(
-        key=SESSION_COOKIE,
-        value=quote(json.dumps(session_payload), safe=""),
+        SESSION_COOKIE,
+        encode_session(payload),
         httponly=True,
-        secure=False,
         samesite="lax",
-        max_age=60 * 60 * 24,
+        max_age=86400,
         path="/",
     )
-    return {"user": session_payload}
+    return {"user": payload}
 
 
 @app.post("/api/auth/select-workspace")
@@ -2665,14 +1034,21 @@ def auth_select_workspace(
             raise HTTPException(status_code=404, detail="Account not found")
 
         available_workspaces = get_user_workspaces(conn, session.email)
-        if not any(workspace["role"] == body.role for workspace in available_workspaces):
-            raise HTTPException(status_code=403, detail="That workspace is not available for this account.")
+        if not any(
+            workspace["role"] == body.role for workspace in available_workspaces
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="That workspace is not available for this account.",
+            )
 
-        session_payload = build_session_payload(user, available_workspaces, active_role=body.role)
+        session_payload = build_session_payload(
+            user, available_workspaces, active_role=body.role
+        )
 
     response.set_cookie(
         key=SESSION_COOKIE,
-        value=quote(json.dumps(session_payload), safe=""),
+        value=encode_session(session_payload),
         httponly=True,
         secure=False,
         samesite="lax",
@@ -2737,7 +1113,7 @@ def complete_reviewer_onboarding(
         updated = build_session_payload(user, workspaces, active_role=REVIEWER_ROLE)
     response.set_cookie(
         key=SESSION_COOKIE,
-        value=quote(json.dumps(updated), safe=""),
+        value=encode_session(updated),
         httponly=True,
         secure=False,
         samesite="lax",
@@ -2779,7 +1155,9 @@ def auth_demo_users() -> dict[str, Any]:
 
 
 @app.get("/api/form-fields")
-def form_fields(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def form_fields(
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         rows = conn.execute(
@@ -2809,7 +1187,9 @@ def list_opportunities(session: SessionUser = Depends(get_session)) -> dict[str,
         ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
-            if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, int(row["id"])):
+            if session.role == STUDENT_ROLE and not can_user_view_opportunity(
+                conn, session.userId, int(row["id"])
+            ):
                 continue
             required_fields = conn.execute(
                 """
@@ -2829,14 +1209,23 @@ def list_opportunities(session: SessionUser = Depends(get_session)) -> dict[str,
 
 
 @app.get("/api/opportunities/{opportunity_id}")
-def opportunity_detail(opportunity_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def opportunity_detail(
+    opportunity_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
-        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
-            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
+        if session.role == STUDENT_ROLE and not can_user_view_opportunity(
+            conn, session.userId, opportunity_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="This opportunity is not visible to your account.",
+            )
 
         required_fields = conn.execute(
             """
@@ -2859,26 +1248,45 @@ def opportunity_detail(opportunity_id: int, session: SessionUser = Depends(get_s
 
 
 @app.get("/api/opportunities/{opportunity_id}/ai-cta")
-def opportunity_ai_cta(opportunity_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def opportunity_ai_cta(
+    opportunity_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT id, description FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT id, description FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
-        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
-            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
+        if session.role == STUDENT_ROLE and not can_user_view_opportunity(
+            conn, session.userId, opportunity_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="This opportunity is not visible to your account.",
+            )
     return {"ctas": extract_ctas_from_description(opp["description"])}
 
 
 @app.get("/api/opportunities/{opportunity_id}/ai-nomination-insights")
-def opportunity_ai_nomination_insights(opportunity_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def opportunity_ai_nomination_insights(
+    opportunity_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT id, title, description FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT id, title, description FROM opportunities WHERE id = ?",
+            (opportunity_id,),
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
-        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, opportunity_id):
-            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
+        if session.role == STUDENT_ROLE and not can_user_view_opportunity(
+            conn, session.userId, opportunity_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="This opportunity is not visible to your account.",
+            )
         required_fields = conn.execute(
             """
             SELECT f.label
@@ -2897,26 +1305,34 @@ def opportunity_ai_nomination_insights(opportunity_id: int, session: SessionUser
 
 
 @app.get("/api/applications/{application_id}/ai-thread-summary")
-def application_ai_thread_summary(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def application_ai_thread_summary(
+    application_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     detail = application_detail(application_id, session=session)
     return ai_thread_summary(detail)
 
 
 @app.get("/api/applications/{application_id}/ai-approval-assist")
-def application_ai_approval_assist(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def application_ai_approval_assist(
+    application_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     detail = application_detail(application_id, session=session)
     return ai_approval_assist(detail)
 
 
 @app.post("/api/applications/{application_id}/ai-summary")
-def application_ai_summary(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def application_ai_summary(
+    application_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     detail = application_detail(application_id, session=session)
     summary = AIWorkflowDraftService().generate_application_summary(detail)
     return {"summary": summary, "is_dummy_ai": False}
 
 
 @app.get("/api/admin/opportunities")
-def admin_list_opportunities(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def admin_list_opportunities(
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         rows = conn.execute(
@@ -2932,10 +1348,14 @@ def admin_list_opportunities(session: SessionUser = Depends(require_roles(ADMIN_
 
 
 @app.get("/api/admin/opportunities/{opportunity_id}")
-def admin_get_opportunity(opportunity_id: int, session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def admin_get_opportunity(
+    opportunity_id: int, session: SessionUser = Depends(require_roles(ADMIN_ROLE))
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
 
@@ -2962,7 +1382,7 @@ def admin_get_opportunity(opportunity_id: int, session: SessionUser = Depends(re
         "form_fields": [row["field_key"] for row in required_fields],
         "custom_fields": [serialize_form_field(row) for row in custom_fields],
         "workflow_steps": steps,
-        "generator_visibility_rules": visibility_rules,
+        "student_visibility_rules": visibility_rules,
     }
 
 
@@ -2974,7 +1394,10 @@ def admin_visibility_audit(
     ensure_db_initialized()
     with db_conn() as conn:
         if opportunity_id is not None:
-            opp = conn.execute("SELECT id, code, title FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+            opp = conn.execute(
+                "SELECT id, code, title FROM opportunities WHERE id = ?",
+                (opportunity_id,),
+            ).fetchone()
             if not opp:
                 raise HTTPException(status_code=404, detail="Opportunity not found")
             items = [build_visibility_audit_for_opportunity(conn, opp)]
@@ -2982,7 +1405,9 @@ def admin_visibility_audit(
             opp_rows = conn.execute(
                 "SELECT id, code, title FROM opportunities ORDER BY created_at DESC"
             ).fetchall()
-            items = [build_visibility_audit_for_opportunity(conn, row) for row in opp_rows]
+            items = [
+                build_visibility_audit_for_opportunity(conn, row) for row in opp_rows
+            ]
     return {"count": len(items), "items": items}
 
 
@@ -2993,7 +1418,9 @@ def admin_visibility_audit_single(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT id, code, title FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT id, code, title FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
         item = build_visibility_audit_for_opportunity(conn, opp)
@@ -3007,7 +1434,9 @@ def admin_generate_opportunity_with_ai(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        draft = AIWorkflowDraftService().generate_draft(conn, session.email, body.prompt)
+        draft = AIWorkflowDraftService().generate_draft(
+            conn, session.email, body.prompt
+        )
     return {"draft_id": draft["id"], "draft": draft}
 
 
@@ -3020,23 +1449,90 @@ def admin_create_manual_workflow_draft(
     parsed = AIWorkflowDraftOutput(
         opportunity=OpportunityDraftModel(**body.opportunity),
         graph=body.graph,
-        generator_visibility_rules=[rule["rule_value"] for rule in normalize_visibility_rules(body.generatorVisibilityRules)],
+        applicant_form_fields=body.applicantFormFields,
+        custom_fields=[f.model_dump() for f in body.customFields],
+        student_visibility_rules=[
+            rule["rule_value"]
+            for rule in normalize_visibility_rules(body.studentVisibilityRules)
+        ],
         clarifying_questions=body.clarifyingQuestions,
         confidence=body.confidence,
         warnings=body.warnings,
         is_fallback=body.isFallback,
     )
-    validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
+    validation_errors = GraphPolicyValidator().validate_graph(
+        parsed.graph, parsed.applicant_form_fields
+    )
+    if (
+        not parsed.opportunity.title.strip()
+        or not parsed.opportunity.description.strip()
+    ):
+        validation_errors.append("Title and description are required.")
+    if not parsed.applicant_form_fields:
+        validation_errors.append("Select at least one student field.")
+    if not parsed.student_visibility_rules:
+        validation_errors.append("Define eligible student emails or cohorts.")
     merged_warnings = list(dict.fromkeys([*parsed.warnings, *validation_errors]))
-    publish_ready = 1 if not validation_errors and not parsed.clarifying_questions and not parsed.is_fallback else 0
+    publish_ready = (
+        1
+        if not validation_errors
+        and not parsed.clarifying_questions
+        and not parsed.is_fallback
+        else 0
+    )
     status = "ready" if publish_ready else "pending"
     ts = now_iso()
 
     with db_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         if body.opportunityId is not None:
-            opp = conn.execute("SELECT id FROM opportunities WHERE id = ?", (body.opportunityId,)).fetchone()
+            opp = conn.execute(
+                "SELECT id FROM opportunities WHERE id = ?", (body.opportunityId,)
+            ).fetchone()
             if not opp:
                 raise HTTPException(status_code=404, detail="Opportunity not found")
+        if body.draftId:
+            old = conn.execute(
+                "SELECT * FROM workflow_drafts WHERE id=? AND created_by_email=? AND status!='published'",
+                (body.draftId, session.email),
+            ).fetchone()
+            if not old:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Draft has been published or is not owned by you. Reload the editor.",
+                )
+            if (
+                body.expectedUpdatedAt is not None
+                and old["updated_at"] != body.expectedUpdatedAt
+            ):
+                raise HTTPException(
+                    409, "Draft changed in another editor. Reload before saving."
+                )
+            conn.execute(
+                "UPDATE workflow_drafts SET opportunity_id=?, status=?,draft_output=?,clarifying_questions=?,warnings=?,confidence=?,publish_ready=?,updated_at=? WHERE id=?",
+                (
+                    body.opportunityId,
+                    status,
+                    parsed.model_copy(
+                        update={"warnings": merged_warnings}
+                    ).model_dump_json(),
+                    json.dumps(parsed.clarifying_questions),
+                    json.dumps(merged_warnings),
+                    parsed.confidence,
+                    publish_ready,
+                    ts,
+                    body.draftId,
+                ),
+            )
+            conn.commit()
+            return {
+                "draft_id": body.draftId,
+                "draft": dict(
+                    conn.execute(
+                        "SELECT * FROM workflow_drafts WHERE id=?", (body.draftId,)
+                    ).fetchone()
+                ),
+            }
         cursor = conn.execute(
             """
             INSERT INTO workflow_drafts
@@ -3048,7 +1544,9 @@ def admin_create_manual_workflow_draft(
             (
                 body.opportunityId,
                 status,
-                parsed.model_copy(update={"warnings": merged_warnings}).model_dump_json(),
+                parsed.model_copy(
+                    update={"warnings": merged_warnings}
+                ).model_dump_json(),
                 json.dumps(parsed.clarifying_questions),
                 json.dumps(merged_warnings),
                 parsed.confidence,
@@ -3060,7 +1558,9 @@ def admin_create_manual_workflow_draft(
         )
         draft_id = int(cursor.lastrowid)
         conn.commit()
-        row = conn.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
 
     return {"draft_id": draft_id, "draft": dict(row)}
 
@@ -3073,15 +1573,35 @@ def admin_validate_workflow_draft(
     parsed = AIWorkflowDraftOutput(
         opportunity=OpportunityDraftModel(**body.opportunity),
         graph=body.graph,
-        generator_visibility_rules=[rule["rule_value"] for rule in normalize_visibility_rules(body.generatorVisibilityRules)],
+        applicant_form_fields=body.applicantFormFields,
+        custom_fields=[f.model_dump() for f in body.customFields],
+        student_visibility_rules=[
+            rule["rule_value"]
+            for rule in normalize_visibility_rules(body.studentVisibilityRules)
+        ],
         clarifying_questions=body.clarifyingQuestions,
         confidence=body.confidence,
         warnings=body.warnings,
         is_fallback=body.isFallback,
     )
-    validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
+    validation_errors = GraphPolicyValidator().validate_graph(
+        parsed.graph, parsed.applicant_form_fields
+    )
+    if (
+        not parsed.opportunity.title.strip()
+        or not parsed.opportunity.description.strip()
+    ):
+        validation_errors.append("Title and description are required.")
+    if not parsed.applicant_form_fields:
+        validation_errors.append("Select at least one student field.")
+    if not parsed.student_visibility_rules:
+        validation_errors.append("Define eligible student emails or cohorts.")
     merged_warnings = list(dict.fromkeys([*parsed.warnings, *validation_errors]))
-    publish_ready = len(validation_errors) == 0 and len(parsed.clarifying_questions) == 0 and not parsed.is_fallback
+    publish_ready = (
+        len(validation_errors) == 0
+        and len(parsed.clarifying_questions) == 0
+        and not parsed.is_fallback
+    )
     return {
         "warnings": merged_warnings,
         "validation_errors": validation_errors,
@@ -3101,12 +1621,14 @@ def admin_list_workflow_drafts(
     limit = max(1, min(100, int(limit)))
     query = """
         SELECT * FROM workflow_drafts
-        WHERE (? IS NULL OR opportunity_id = ?)
+        WHERE created_by_email = ? AND (? IS NULL OR opportunity_id = ?)
         ORDER BY updated_at DESC, id DESC
         LIMIT ?
     """
     with db_conn() as conn:
-        rows = conn.execute(query, (opportunity_id, opportunity_id, limit)).fetchall()
+        rows = conn.execute(
+            query, (session.email, opportunity_id, opportunity_id, limit)
+        ).fetchall()
     return {"items": [dict(row) for row in rows]}
 
 
@@ -3117,10 +1639,23 @@ def admin_get_workflow_draft(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        row = conn.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ? AND created_by_email = ?",
+            (draft_id, session.email),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Draft not found")
     return {"draft": dict(row)}
+
+
+def _require_editable_draft(conn, draft_id, email):
+    row = conn.execute(
+        "SELECT * FROM workflow_drafts WHERE id=? AND created_by_email=? AND status!='published'",
+        (draft_id, email),
+    ).fetchone()
+    if not row:
+        raise HTTPException(409, "Draft has been published or is not owned by you.")
+    return row
 
 
 @app.post("/api/admin/workflow-drafts/{draft_id}/answer")
@@ -3131,8 +1666,12 @@ def admin_answer_workflow_draft_clarification(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_editable_draft(conn, draft_id, session.email)
         try:
-            updated = AIWorkflowDraftService().answer_clarification(conn, draft_id, body.answers)
+            updated = AIWorkflowDraftService().answer_clarification(
+                conn, draft_id, body.answers
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
     return {"draft": updated}
@@ -3145,42 +1684,37 @@ def admin_regenerate_workflow_draft(
     session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
 ) -> dict[str, Any]:
     ensure_db_initialized()
-    fields_applied: list[str] = []
     with db_conn() as conn:
+        # Lock draft mutations together so a generation cannot overwrite a publish.
+        conn.execute("BEGIN IMMEDIATE")
+        _require_editable_draft(conn, draft_id, session.email)
         try:
-            updated = AIWorkflowDraftService().regenerate_with_answers(conn, draft_id, body.answers)
+            updated = AIWorkflowDraftService().regenerate_with_answers(
+                conn, draft_id, body.answers
+            )
         except ValueError as exc:
-            status_code = 404 if "not found" in str(exc).lower() else 400
-            raise HTTPException(status_code=status_code, detail=str(exc))
-
-        # If Claude returned updated applicant_form_fields and the draft is already
-        # linked to an opportunity, apply the fields immediately (not just on publish).
-        try:
-            opp_id = updated.get("opportunity_id")
-            raw_output = updated.get("draft_output")
-            if opp_id and raw_output:
-                parsed = AIWorkflowDraftOutput.model_validate_json(raw_output)
-                if parsed.applicant_form_fields:
-                    fields_applied = _replace_opportunity_form_fields(conn, int(opp_id), parsed.applicant_form_fields)
-                    conn.commit()
-        except Exception:
-            pass  # non-fatal — form fields still applied on publish
-
-    return {"draft": updated, "applicant_form_fields": fields_applied or None, "fields_applied": bool(fields_applied)}
+            raise HTTPException(400, str(exc)) from None
+    return {"draft_id": draft_id, "draft": updated}
 
 
 @app.post("/api/admin/workflow-drafts/{draft_id}/publish")
 def admin_publish_workflow_draft(
-    draft_id: int,
-    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+    draft_id: int, session: SessionUser = Depends(require_roles(ADMIN_ROLE))
 ) -> dict[str, Any]:
-    ensure_db_initialized()
     with db_conn() as conn:
         try:
-            graph_version_id = GraphPublishingService().publish(conn, draft_id, session.email)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-    return {"graph_version_id": graph_version_id}
+            graph_version_id = GraphPublishingService().publish(
+                conn, draft_id, session.email
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        row = conn.execute(
+            "SELECT opportunity_id FROM graph_versions WHERE id=?", (graph_version_id,)
+        ).fetchone()
+        return {
+            "graph_version_id": graph_version_id,
+            "opportunity_id": row["opportunity_id"],
+        }
 
 
 @app.post("/api/reviewer/tasks/{task_id}/decide")
@@ -3212,69 +1746,12 @@ def admin_get_opportunity_graph(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT id FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT id FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
         return GraphPublishingService().get_graph(conn, opportunity_id)
-
-
-@app.post("/api/admin/opportunities", status_code=201)
-def admin_create_opportunity(payload: OpportunityCreatePayload, session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
-    ensure_db_initialized()
-
-    opportunity = payload.opportunity
-    title = str(opportunity.get("title", "")).strip()
-
-    if not title:
-        raise HTTPException(status_code=400, detail="Opportunity title is required")
-
-    custom_fields = normalize_custom_form_fields(payload.customFields or [])
-    detail_fields = normalize_detail_fields([field.model_dump() for field in payload.detailFields])
-    ai_summary_bullets = normalize_ai_summary_bullets(payload.aiSummaryBullets)
-    visibility_rules = normalize_visibility_rules(payload.generatorVisibilityRules)
-    if not visibility_rules:
-        raise HTTPException(
-            status_code=400,
-            detail="Define at least one eligible generator email/group rule for this opportunity.",
-        )
-
-    ts = now_iso()
-    with db_conn() as conn:
-        code = str(opportunity.get("code", "")).strip().upper() or generate_unique_opportunity_code(conn, title)
-        try:
-            cursor = conn.execute(
-                """
-                INSERT INTO opportunities
-                (code, title, description, cover_image_url, term, destination, deadline, seats,
-                 ai_summary_json, ai_summary_source_hash, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
-                """,
-                (
-                    code,
-                    title,
-                    opportunity.get("description"),
-                    validate_cover_image_url(opportunity.get("cover_image_url")),
-                    opportunity.get("term"),
-                    opportunity.get("destination"),
-                    opportunity.get("deadline"),
-                    opportunity.get("seats"),
-                    json.dumps(ai_summary_bullets) if ai_summary_bullets else None,
-                    summary_source_hash({**opportunity, "code": code, "title": title}, detail_fields) if ai_summary_bullets else None,
-                    ts,
-                    ts,
-                ),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="Opportunity code already exists") from exc
-
-        opportunity_id = int(cursor.lastrowid)
-        replace_detail_fields(conn, opportunity_id, detail_fields, ts)
-        upsert_custom_form_fields(conn, custom_fields)
-        replace_opportunity_form_fields(conn, opportunity_id, payload.formFields)
-        replace_opportunity_visibility_rules(conn, opportunity_id, visibility_rules, ts)
-        conn.commit()
-
-    return {"id": opportunity_id}
 
 
 @app.patch("/api/admin/opportunities/{opportunity_id}")
@@ -3283,130 +1760,18 @@ def admin_patch_opportunity(
     body: OpportunityPatchBody,
     session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
-    form_fields_override = body.formFields
-    custom_fields_override = body.customFields
-    visibility_rules_override = body.generatorVisibilityRules
-    detail_fields_override = body.detailFields
-    ai_summary_bullets_override = body.aiSummaryBullets
-    core_updates = {
-        k: v
-        for k, v in body.model_dump(exclude={"formFields", "customFields", "generatorVisibilityRules", "detailFields", "aiSummaryBullets"}).items()
-        if v is not None
-    }
-    if "cover_image_url" in core_updates:
-        core_updates["cover_image_url"] = validate_cover_image_url(core_updates["cover_image_url"])
-
-    should_update_form_fields = form_fields_override is not None or custom_fields_override is not None
-    should_update_visibility = visibility_rules_override is not None
-    should_update_details = detail_fields_override is not None or ai_summary_bullets_override is not None
-
-    if not core_updates and not should_update_form_fields and not should_update_visibility and not should_update_details:
-        raise HTTPException(status_code=400, detail="No fields provided")
-
+    updates = body.model_dump(exclude_unset=True)
+    if set(updates) != {"status"} or updates["status"] not in {"published", "archived"}:
+        raise HTTPException(
+            409, "Edit a draft and publish a new version to change an opportunity"
+        )
     with db_conn() as conn:
-        existing = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="Opportunity not found")
-
-        ts = now_iso()
-        if core_updates:
-            core_updates["updated_at"] = ts
-            columns = ", ".join(f"{k} = ?" for k in core_updates.keys())
-            values = tuple(core_updates.values()) + (opportunity_id,)
-            conn.execute(f"UPDATE opportunities SET {columns} WHERE id = ?", values)
-
-        current_form_fields: list[str] | None = None
-        if should_update_form_fields:
-            if form_fields_override is None:
-                rows = conn.execute(
-                    """
-                    SELECT field_key FROM opportunity_required_fields
-                    WHERE opportunity_id = ?
-                    ORDER BY display_order ASC
-                    """,
-                    (opportunity_id,),
-                ).fetchall()
-                form_fields = [row["field_key"] for row in rows]
-            else:
-                form_fields = form_fields_override
-            current_form_fields = form_fields
-
-        if should_update_form_fields:
-            if custom_fields_override is not None:
-                normalized_custom_fields = normalize_custom_form_fields(custom_fields_override)
-                upsert_custom_form_fields(conn, normalized_custom_fields)
-            replace_opportunity_form_fields(conn, opportunity_id, current_form_fields or [])
-
-        if should_update_visibility:
-            normalized_visibility_rules = normalize_visibility_rules(visibility_rules_override)
-            if not normalized_visibility_rules:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Define at least one eligible generator email/group rule for this opportunity.",
-                )
-            replace_opportunity_visibility_rules(conn, opportunity_id, normalized_visibility_rules, ts)
-
-        if should_update_form_fields or should_update_visibility:
-            conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
-
-        if should_update_details:
-            if detail_fields_override is not None:
-                replace_detail_fields(
-                    conn,
-                    opportunity_id,
-                    normalize_detail_fields([field.model_dump() for field in detail_fields_override]),
-                    ts,
-                )
-            if ai_summary_bullets_override is not None:
-                detail_fields = fetch_detail_fields(conn, opportunity_id)
-                current = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
-                bullets = normalize_ai_summary_bullets(ai_summary_bullets_override)
-                conn.execute(
-                    """
-                    UPDATE opportunities
-                    SET ai_summary_json = ?,
-                        ai_summary_source_hash = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        json.dumps(bullets) if bullets else None,
-                        summary_source_hash(dict(current), detail_fields) if bullets and current else None,
-                        ts,
-                        opportunity_id,
-                    ),
-                )
-            conn.execute("UPDATE opportunities SET updated_at = ? WHERE id = ?", (ts, opportunity_id))
-
+        conn.execute(
+            "UPDATE opportunities SET status=?,updated_at=? WHERE id=?",
+            (updates["status"], now_iso(), opportunity_id),
+        )
         conn.commit()
-
-        opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
-        required_fields = conn.execute(
-            "SELECT field_key, display_order FROM opportunity_required_fields WHERE opportunity_id = ? ORDER BY display_order ASC",
-            (opportunity_id,),
-        ).fetchall()
-        custom_fields = conn.execute(
-            """
-            SELECT f.field_key, f.label, f.description, f.field_hint, f.input_type, f.options_json, f.section_key
-            FROM opportunity_required_fields orf
-            JOIN form_field_catalog f ON f.field_key = orf.field_key
-            WHERE orf.opportunity_id = ? AND f.section_key = 'custom'
-            ORDER BY orf.display_order ASC
-            """,
-            (opportunity_id,),
-        ).fetchall()
-        steps = get_pipeline_steps(conn, opportunity_id)
-        visibility_rules = get_opportunity_visibility_rules(conn, opportunity_id)
-        detail_fields = fetch_detail_fields(conn, opportunity_id)
-    return {
-        "opportunity": serialize_opportunity(opp) if opp else None,
-        "detail_fields": detail_fields,
-        "form_fields": [row["field_key"] for row in required_fields],
-        "custom_fields": [serialize_form_field(row) for row in custom_fields],
-        "workflow_steps": steps,
-        "generator_visibility_rules": visibility_rules,
-    }
+    return admin_get_opportunity(opportunity_id, session)
 
 
 @app.delete("/api/admin/opportunities/{opportunity_id}")
@@ -3416,7 +1781,9 @@ def admin_delete_opportunity(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        opp = conn.execute("SELECT id, code, title FROM opportunities WHERE id = ?", (opportunity_id,)).fetchone()
+        opp = conn.execute(
+            "SELECT id, code, title FROM opportunities WHERE id = ?", (opportunity_id,)
+        ).fetchone()
         if not opp:
             raise HTTPException(status_code=404, detail="Opportunity not found")
 
@@ -3429,41 +1796,81 @@ def admin_delete_opportunity(
         if application_ids:
             placeholders = ", ".join("?" for _ in application_ids)
             params = tuple(application_ids)
-            
-            task_rows = conn.execute(f"SELECT id FROM application_workflow_tasks WHERE application_id IN ({placeholders})", params).fetchall()
+
+            task_rows = conn.execute(
+                f"SELECT id FROM application_workflow_tasks WHERE application_id IN ({placeholders})",
+                params,
+            ).fetchall()
             task_ids = [int(row["id"]) for row in task_rows]
             if task_ids:
                 t_placeholders = ", ".join("?" for _ in task_ids)
                 t_params = tuple(task_ids)
-                conn.execute(f"DELETE FROM sla_reminders_sent WHERE task_id IN ({t_placeholders})", t_params)
-                conn.execute(f"DELETE FROM sla_breaches WHERE task_id IN ({t_placeholders})", t_params)
-            
-            conn.execute(f"UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id IN ({placeholders})", params)
-            conn.execute(f"DELETE FROM application_workflow_tasks WHERE application_id IN ({placeholders})", params)
-            conn.execute(f"DELETE FROM timeline_events WHERE application_id IN ({placeholders})", params)
-            conn.execute(f"DELETE FROM application_comments WHERE application_id IN ({placeholders})", params)
-            conn.execute(f"DELETE FROM application_reviews WHERE application_id IN ({placeholders})", params)
-            conn.execute("DELETE FROM applications WHERE opportunity_id = ?", (opportunity_id,))
+                conn.execute(
+                    f"DELETE FROM sla_reminders_sent WHERE task_id IN ({t_placeholders})",
+                    t_params,
+                )
+                conn.execute(
+                    f"DELETE FROM sla_breaches WHERE task_id IN ({t_placeholders})",
+                    t_params,
+                )
 
-        graph_rows = conn.execute("SELECT id FROM graph_versions WHERE opportunity_id = ?", (opportunity_id,)).fetchall()
+            conn.execute(
+                f"UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id IN ({placeholders})",
+                params,
+            )
+            conn.execute(
+                f"DELETE FROM application_workflow_tasks WHERE application_id IN ({placeholders})",
+                params,
+            )
+            conn.execute(
+                f"DELETE FROM timeline_events WHERE application_id IN ({placeholders})",
+                params,
+            )
+            conn.execute(
+                f"DELETE FROM application_comments WHERE application_id IN ({placeholders})",
+                params,
+            )
+
+            conn.execute(
+                "DELETE FROM applications WHERE opportunity_id = ?", (opportunity_id,)
+            )
+
+        graph_rows = conn.execute(
+            "SELECT id FROM graph_versions WHERE opportunity_id = ?", (opportunity_id,)
+        ).fetchall()
         graph_ids = [int(row["id"]) for row in graph_rows]
         if graph_ids:
             g_placeholders = ", ".join("?" for _ in graph_ids)
             g_params = tuple(graph_ids)
-            
-            node_rows = conn.execute(f"SELECT id FROM graph_nodes WHERE graph_version_id IN ({g_placeholders})", g_params).fetchall()
+
+            node_rows = conn.execute(
+                f"SELECT id FROM graph_nodes WHERE graph_version_id IN ({g_placeholders})",
+                g_params,
+            ).fetchall()
             node_ids = [int(row["id"]) for row in node_rows]
             if node_ids:
                 n_placeholders = ", ".join("?" for _ in node_ids)
                 n_params = tuple(node_ids)
-                conn.execute(f"DELETE FROM sla_policies WHERE graph_node_id IN ({n_placeholders})", n_params)
-                
-            conn.execute(f"DELETE FROM graph_edges WHERE graph_version_id IN ({g_placeholders})", g_params)
-            conn.execute(f"DELETE FROM graph_nodes WHERE graph_version_id IN ({g_placeholders})", g_params)
-            conn.execute("DELETE FROM graph_versions WHERE opportunity_id = ?", (opportunity_id,))
+                conn.execute(
+                    f"DELETE FROM sla_policies WHERE graph_node_id IN ({n_placeholders})",
+                    n_params,
+                )
 
-        conn.execute("DELETE FROM workflow_drafts WHERE opportunity_id = ?", (opportunity_id,))
-        conn.execute("DELETE FROM user_scope_roles WHERE scope_type = 'opportunity' AND scope_id = ?", (opportunity_id,))
+            conn.execute(
+                f"DELETE FROM graph_edges WHERE graph_version_id IN ({g_placeholders})",
+                g_params,
+            )
+            conn.execute(
+                f"DELETE FROM graph_nodes WHERE graph_version_id IN ({g_placeholders})",
+                g_params,
+            )
+            conn.execute(
+                "DELETE FROM graph_versions WHERE opportunity_id = ?", (opportunity_id,)
+            )
+
+        conn.execute(
+            "DELETE FROM workflow_drafts WHERE opportunity_id = ?", (opportunity_id,)
+        )
 
         conn.execute("DELETE FROM opportunities WHERE id = ?", (opportunity_id,))
 
@@ -3488,146 +1895,87 @@ def admin_delete_opportunity(
 
 
 @app.post("/api/applications", status_code=201)
-def create_application(body: ApplicationCreateBody, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
-    ensure_db_initialized()
+def create_application(
+    body: ApplicationCreateBody,
+    session: SessionUser = Depends(require_roles(STUDENT_ROLE)),
+) -> dict[str, Any]:
+    from fastapi_app.application_data import form_schema, validate_submission
+    from fastapi_app.graph_execution import transaction
 
-    with db_conn() as conn:
-        profile_id = body.studentProfileId
-        if not profile_id:
-            profile = conn.execute(
-                "SELECT id FROM student_profiles WHERE user_id = ?",
-                (session.userId,),
-            ).fetchone()
-            if not profile:
-                raise HTTPException(status_code=404, detail="Student profile not found for user")
-            profile_id = int(profile["id"])
-
-        opp = conn.execute("SELECT * FROM opportunities WHERE id = ?", (body.opportunityId,)).fetchone()
+    with db_conn() as conn, transaction(conn):
+        profile = conn.execute(
+            "SELECT id FROM student_profiles WHERE user_id=?", (session.userId,)
+        ).fetchone()
+        if not profile or (
+            body.studentProfileId is not None and body.studentProfileId != profile["id"]
+        ):
+            raise HTTPException(403, "You can only submit your own student profile")
+        opp = conn.execute(
+            "SELECT * FROM opportunities WHERE id=?", (body.opportunityId,)
+        ).fetchone()
         if not opp:
-            raise HTTPException(status_code=404, detail="Opportunity not found")
-        if session.role == GENERATOR_ROLE and not can_user_view_opportunity(conn, session.userId, body.opportunityId):
-            raise HTTPException(status_code=403, detail="This opportunity is not visible to your account.")
-
+            raise HTTPException(404, "Opportunity not found")
+        if opp["status"] != "published" or not can_user_view_opportunity(
+            conn, session.userId, body.opportunityId
+        ):
+            raise HTTPException(403, "Opportunity is not open to you")
         deadline = enforced_deadline(conn, body.opportunityId)
         if deadline and datetime.now(timezone.utc).date() > deadline:
-            raise HTTPException(status_code=400, detail="This opportunity deadline has passed.")
-
-        # Check whether this opportunity has an active graph version.
-        active_graph = conn.execute(
-            """
-            SELECT id FROM graph_versions
-            WHERE opportunity_id = ? AND status = 'active'
-            ORDER BY version DESC
-            LIMIT 1
-            """,
+            raise HTTPException(400, "The application deadline has passed")
+        version = conn.execute(
+            "SELECT * FROM graph_versions WHERE opportunity_id=? AND status='active' ORDER BY version DESC LIMIT 1",
             (body.opportunityId,),
         ).fetchone()
-
-        # For legacy opportunities (no graph), require at least one pipeline step.
-        first_step = None
-        if not active_graph:
-            first_step = conn.execute(
-                """
-                SELECT * FROM opportunity_pipeline_steps
-                WHERE opportunity_id = ?
-                ORDER BY step_order ASC
-                LIMIT 1
-                """,
-                (body.opportunityId,),
-            ).fetchone()
-            if not first_step:
-                raise HTTPException(status_code=400, detail="Opportunity has no configured workflow")
-
-        ts = now_iso()
-        submitted_data = body.submittedData or {}
-        required_fields = conn.execute(
-            """
-            SELECT field_key
-            FROM opportunity_required_fields
-            WHERE opportunity_id = ?
-            ORDER BY display_order ASC
-            """,
-            (body.opportunityId,),
-        ).fetchall()
-        missing_fields: list[str] = []
-        for row in required_fields:
-            key = row["field_key"]
-            value = submitted_data.get(key)
-            if value is None:
-                missing_fields.append(key)
-                continue
-            if isinstance(value, str) and not value.strip():
-                missing_fields.append(key)
-                continue
-            if isinstance(value, list) and len(value) == 0:
-                missing_fields.append(key)
-                continue
-        if missing_fields:
+        if not version:
             raise HTTPException(
-                status_code=400,
-                detail=f"Missing required application fields: {', '.join(missing_fields)}",
+                400, "Publish a review workflow before accepting applications"
             )
-
-        if active_graph:
-            graph_version_id = int(active_graph["id"])
-            cursor = conn.execute(
-                """
-                INSERT INTO applications
-                (student_profile_id, opportunity_id, current_step_order, current_stage_label,
-                 graph_version_id, final_status, submitted_data_json, submitted_at, created_at, updated_at)
-                VALUES (?, ?, 0, 'Submitted', ?, NULL, ?, ?, ?, ?)
-                """,
-                (profile_id, body.opportunityId, graph_version_id, json.dumps(submitted_data), ts, ts, ts),
-            )
-            application_id = int(cursor.lastrowid)
-            try:
-                GraphExecutionService().instantiate(conn, application_id, graph_version_id)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            stage_label = "Graph Workflow"
-        else:
-            cursor = conn.execute(
-                """
-                INSERT INTO applications
-                (student_profile_id, opportunity_id, current_step_order, current_stage_label,
-                 final_status, submitted_data_json, submitted_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)
-                """,
-                (
-                    profile_id,
-                    body.opportunityId,
-                    first_step["step_order"],
-                    first_step["step_name"],
-                    json.dumps(submitted_data),
-                    ts,
-                    ts,
-                    ts,
-                ),
-            )
-            application_id = int(cursor.lastrowid)
-            stage_label = first_step["step_name"]
-
-        conn.execute(
-            """
-            INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
-            VALUES (?, 'APPLICATION_CREATED', ?, ?, ?)
-            """,
+        data = body.submittedData or {}
+        validate_submission(
+            form_schema(
+                conn,
+                {
+                    "graph_version_id": version["id"],
+                    "opportunity_id": body.opportunityId,
+                },
+            ),
+            data,
+        )
+        ts = now_iso()
+        cursor = conn.execute(
+            "INSERT INTO applications (student_profile_id,opportunity_id,current_step_order,current_stage_label,graph_version_id,submitted_data_json,submitted_at,created_at,updated_at) VALUES (?,?,1,'Submitted',?,?,?,?,?)",
             (
-                application_id,
-                json.dumps({"current_stage": stage_label}),
-                session.email,
+                profile["id"],
+                body.opportunityId,
+                version["id"],
+                json.dumps(data),
+                ts,
+                ts,
                 ts,
             ),
         )
-        conn.commit()
-
-        app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-
-    return {"application": dict(app_row) if app_row else None}
+        application_id = cursor.lastrowid
+        GraphExecutionService().instantiate(conn, application_id, version["id"])
+        GraphExecutionService()._event(
+            conn,
+            application_id,
+            "APPLICATION_CREATED",
+            session.email,
+            {"version": version["id"]},
+        )
+        return {
+            "application": dict(
+                conn.execute(
+                    "SELECT * FROM applications WHERE id=?", (application_id,)
+                ).fetchone()
+            )
+        }
 
 
 @app.delete("/api/applications/{application_id}")
-def delete_application(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
+def delete_application(
+    application_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
     ensure_db_initialized()
 
     with db_conn() as conn:
@@ -3646,25 +1994,49 @@ def delete_application(application_id: int, session: SessionUser = Depends(get_s
         can_delete = False
         if session.role == ADMIN_ROLE:
             can_delete = True
-        elif session.role == STUDENT_ROLE and int(app_row["user_id"]) == int(session.userId):
+        elif session.role == STUDENT_ROLE and int(app_row["user_id"]) == int(
+            session.userId
+        ):
             can_delete = True
 
         if not can_delete:
-            raise HTTPException(status_code=403, detail="You are not allowed to delete this application.")
+            raise HTTPException(
+                status_code=403,
+                detail="You are not allowed to delete this application.",
+            )
 
-        task_rows = conn.execute("SELECT id FROM application_workflow_tasks WHERE application_id = ?", (application_id,)).fetchall()
+        task_rows = conn.execute(
+            "SELECT id FROM application_workflow_tasks WHERE application_id = ?",
+            (application_id,),
+        ).fetchall()
         task_ids = [int(row["id"]) for row in task_rows]
         if task_ids:
             placeholders = ", ".join("?" for _ in task_ids)
             params = tuple(task_ids)
-            conn.execute(f"DELETE FROM sla_reminders_sent WHERE task_id IN ({placeholders})", params)
-            conn.execute(f"DELETE FROM sla_breaches WHERE task_id IN ({placeholders})", params)
-            conn.execute("UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id = ?", (application_id,))
-            conn.execute(f"DELETE FROM application_workflow_tasks WHERE id IN ({placeholders})", params)
+            conn.execute(
+                f"DELETE FROM sla_reminders_sent WHERE task_id IN ({placeholders})",
+                params,
+            )
+            conn.execute(
+                f"DELETE FROM sla_breaches WHERE task_id IN ({placeholders})", params
+            )
+            conn.execute(
+                "UPDATE application_workflow_tasks SET return_to_task_id = NULL WHERE application_id = ?",
+                (application_id,),
+            )
+            conn.execute(
+                f"DELETE FROM application_workflow_tasks WHERE id IN ({placeholders})",
+                params,
+            )
 
-        conn.execute("DELETE FROM timeline_events WHERE application_id = ?", (application_id,))
-        conn.execute("DELETE FROM application_comments WHERE application_id = ?", (application_id,))
-        conn.execute("DELETE FROM application_reviews WHERE application_id = ?", (application_id,))
+        conn.execute(
+            "DELETE FROM timeline_events WHERE application_id = ?", (application_id,)
+        )
+        conn.execute(
+            "DELETE FROM application_comments WHERE application_id = ?",
+            (application_id,),
+        )
+
         conn.execute("DELETE FROM applications WHERE id = ?", (application_id,))
         conn.commit()
 
@@ -3673,148 +2045,24 @@ def delete_application(application_id: int, session: SessionUser = Depends(get_s
 
 @app.get("/api/applications")
 def list_applications(session: SessionUser = Depends(get_session)) -> dict[str, Any]:
-    ensure_db_initialized()
-    with db_conn() as conn:
-        if session.role == ADMIN_ROLE:
-            items = get_enriched_application_list(conn)
-        elif session.role == STUDENT_ROLE:
-            profile = conn.execute("SELECT id FROM student_profiles WHERE user_id = ?", (session.userId,)).fetchone()
-            if not profile:
-                raise HTTPException(status_code=404, detail="Student profile not found")
-            items = get_enriched_application_list(conn, "WHERE a.student_profile_id = ?", (profile["id"],))
-        elif session.role in REVIEWER_ROLES:
-            items = get_enriched_application_list(
-                conn,
-                """
-                WHERE a.final_status IS NULL
-                  AND EXISTS (
-                    SELECT 1 FROM opportunity_pipeline_steps s
-                    WHERE s.opportunity_id = a.opportunity_id
-                      AND s.step_order = a.current_step_order
-                      AND LOWER(s.reviewer_email) = LOWER(?)
-                  )
-                """,
-                (session.email,),
-            )
-        else:
-            raise HTTPException(status_code=403, detail="Forbidden")
-    return {"items": items}
+    if session.role == REVIEWER_ROLE:
+        return reviewer_inbox(session)
+    if session.role == STUDENT_ROLE:
+        return my_applications(session)
+    if session.role == ADMIN_ROLE:
+        return admin_applications(session)
+    raise HTTPException(403, "No application access")
 
 
 @app.get("/api/applications/{application_id}")
-def application_detail(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
-    ensure_db_initialized()
+def application_detail(
+    application_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
+    from fastapi_app.application_data import project
+
     with db_conn() as conn:
-        app_row = ensure_application_access_for_user(conn, application_id, session)
-        detail = get_application_detail(conn, application_id)
-        if not detail:
-            raise HTTPException(status_code=404, detail="Application not found")
-
-        detail["permissions"] = {
-            "can_view_comments": True,
-        }
-
-        if session.role in REVIEWER_ROLES and session.role != ADMIN_ROLE:
-            if app_row["graph_version_id"]:
-                # Graph-backed path: derive permissions/visibility from the active graph node.
-                task = get_active_graph_task(conn, application_id, session.email)
-                if not task:
-                    raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
-                node_row = conn.execute(
-                    "SELECT * FROM graph_nodes WHERE graph_version_id = ? AND node_key = ?",
-                    (app_row["graph_version_id"], task["node_key"]),
-                ).fetchone()
-                visible_sections: list[str] = []
-                allowed_actions: list[str] = []
-                required_inputs_raw: list[dict[str, Any]] = []
-                node_display_name = task["node_key"]
-                if node_row:
-                    node_display_name = node_row["display_name"] or task["node_key"]
-                    try:
-                        visible_sections = json.loads(node_row["visible_sections"] or "[]")
-                    except Exception:
-                        visible_sections = []
-                    try:
-                        allowed_actions = json.loads(node_row["allowed_actions"] or "[]")
-                    except Exception:
-                        allowed_actions = []
-                    try:
-                        meta = json.loads(node_row["metadata"] or "{}")
-                        required_inputs_raw = meta.get("required_inputs", [])
-                    except Exception:
-                        required_inputs_raw = []
-
-                can_view_comments = "comment" in allowed_actions or not allowed_actions
-                detail["permissions"] = {"can_view_comments": can_view_comments}
-
-                full_file = detail.get("application_file") or {}
-                if not visible_sections or "all" in visible_sections:
-                    visible_keys = set(full_file.keys())
-                else:
-                    visible_keys = set(visible_sections)
-                filtered_file = {key: value for key, value in full_file.items() if key in visible_keys}
-                detail["application_file"] = filtered_file
-                if isinstance(detail.get("field_labels"), dict):
-                    detail["field_labels"] = {
-                        key: value for key, value in detail["field_labels"].items() if key in visible_keys
-                    }
-                detail["application"]["submitted_data_json"] = json.dumps(filtered_file)
-
-                profile = detail.get("student_profile")
-                if isinstance(profile, dict):
-                    profile["student_id"] = filtered_file.get("student_id")
-                    profile["program"] = filtered_file.get("program")
-                    profile["official_cgpa"] = filtered_file.get("cgpa")
-
-                if not can_view_comments:
-                    detail["comments"] = []
-                    detail["reviews"] = []
-
-                detail["graph_node_info"] = {
-                    "node_key": task["node_key"],
-                    "display_name": node_display_name,
-                    "allowed_actions": allowed_actions,
-                    "visible_sections": visible_sections,
-                    "required_inputs": required_inputs_raw,
-                }
-            else:
-                # Legacy pipeline path.
-                current_step = next(
-                    (
-                        step
-                        for step in detail["pipeline_steps"]
-                        if int(step["step_order"]) == int(app_row["current_step_order"])
-                    ),
-                    None,
-                )
-                if not current_step:
-                    raise HTTPException(status_code=400, detail="No active workflow step for this application.")
-
-                can_view_comments = bool(current_step.get("can_view_comments"))
-                detail["permissions"] = {
-                    "can_view_comments": can_view_comments,
-                }
-
-                full_file = detail.get("application_file") or {}
-                visible_keys = set(current_step.get("visible_fields") or [])
-                filtered_file = {key: value for key, value in full_file.items() if key in visible_keys}
-                detail["application_file"] = filtered_file
-                if isinstance(detail.get("field_labels"), dict):
-                    detail["field_labels"] = {
-                        key: value for key, value in detail["field_labels"].items() if key in visible_keys
-                    }
-                detail["application"]["submitted_data_json"] = json.dumps(filtered_file)
-
-                profile = detail.get("student_profile")
-                if isinstance(profile, dict):
-                    profile["student_id"] = filtered_file.get("student_id")
-                    profile["program"] = filtered_file.get("program")
-                    profile["official_cgpa"] = filtered_file.get("cgpa")
-
-                if not can_view_comments:
-                    detail["comments"] = []
-                    detail["reviews"] = []
-    return detail
+        ensure_application_access_for_user(conn, application_id, session)
+        return project(conn, get_application_detail(conn, application_id), session)
 
 
 @app.post("/api/applications/{application_id}/approve")
@@ -3823,103 +2071,29 @@ def approve_application(
     body: DecisionBody,
     session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
     with db_conn() as conn:
-        app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-        if not app_row:
-            raise HTTPException(status_code=404, detail="Application not found")
-        if app_row["final_status"]:
-            raise HTTPException(status_code=400, detail="Application already closed")
-
-        # ── Graph-backed path ──
-        if app_row["graph_version_id"]:
-            task = get_active_graph_task(conn, application_id, session.email)
-            if not task:
-                raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
-            from_stage = task["node_key"]
-            try:
-                result = GraphExecutionService().transition(
-                    conn, int(task["id"]), "approve", session.email,
-                    comment=body.remarks,
-                    reviewer_data=body.requiredInputs,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-
-            updated_app = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-            write_review_and_timeline(
-                conn, application_id, 0, session, "APPROVE", body.remarks, body.requiredInputs,
-                {"decision": "APPROVE", "from_stage": from_stage, "to_stage": updated_app["current_stage_label"], "final_status": result.application_status},
+        ensure_application_access_for_user(conn, application_id, session)
+        task = get_active_graph_task(conn, application_id, session.email)
+        if not task:
+            raise HTTPException(403, "No active task assigned to you")
+        try:
+            GraphExecutionService().transition(
+                conn,
+                task["id"],
+                "approve",
+                session.email,
+                comment=body.reason or body.remarks,
+                reviewer_data=body.requiredInputs,
             )
-            conn.commit()
-            return {"application": dict(updated_app) if updated_app else None}
-
-        # ── Legacy pipeline path ──
-        current_step = ensure_reviewer_assigned(conn, app_row, session)
-        last_step = conn.execute(
-            """
-            SELECT MAX(step_order) AS max_step
-            FROM opportunity_pipeline_steps
-            WHERE opportunity_id = ?
-            """,
-            (app_row["opportunity_id"],),
-        ).fetchone()
-        max_step = int(last_step["max_step"]) if last_step and last_step["max_step"] else current_step["step_order"]
-
-        next_step_order = app_row["current_step_order"] + 1
-        ts = now_iso()
-
-        if next_step_order > max_step:
-            conn.execute(
-                "UPDATE applications SET final_status = 'APPROVED', current_stage_label = 'Closed', updated_at = ? WHERE id = ?",
-                (ts, application_id),
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return {
+            "application": dict(
+                conn.execute(
+                    "SELECT * FROM applications WHERE id=?", (application_id,)
+                ).fetchone()
             )
-            timeline_payload = {
-                "decision": "APPROVE",
-                "from_stage": current_step["step_name"],
-                "to_stage": "Closed",
-                "final_status": "APPROVED",
-            }
-        else:
-            next_step = conn.execute(
-                """
-                SELECT step_order, step_name FROM opportunity_pipeline_steps
-                WHERE opportunity_id = ? AND step_order = ?
-                """,
-                (app_row["opportunity_id"], next_step_order),
-            ).fetchone()
-            if not next_step:
-                raise HTTPException(status_code=500, detail="Next workflow step not found")
-            conn.execute(
-                """
-                UPDATE applications
-                SET current_step_order = ?, current_stage_label = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (next_step["step_order"], next_step["step_name"], ts, application_id),
-            )
-            timeline_payload = {
-                "decision": "APPROVE",
-                "from_stage": current_step["step_name"],
-                "to_stage": next_step["step_name"],
-                "final_status": None,
-            }
-
-        write_review_and_timeline(
-            conn,
-            application_id,
-            current_step["step_order"],
-            session,
-            "APPROVE",
-            body.remarks,
-            body.requiredInputs,
-            timeline_payload,
-        )
-        conn.commit()
-
-        updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-
-    return {"application": dict(updated) if updated else None}
+        }
 
 
 @app.post("/api/applications/{application_id}/request-changes")
@@ -3928,116 +2102,29 @@ def request_changes(
     body: DecisionBody,
     session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
     with db_conn() as conn:
-        app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-        if not app_row:
-            raise HTTPException(status_code=404, detail="Application not found")
-        if app_row["final_status"]:
-            raise HTTPException(status_code=400, detail="Application already closed")
-
-        # ── Graph-backed path ──
-        if app_row["graph_version_id"]:
-            task = get_active_graph_task(conn, application_id, session.email)
-            if not task:
-                raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
-            from_stage = task["node_key"]
-            try:
-                GraphExecutionService().transition(
-                    conn, int(task["id"]), "request_changes", session.email,
-                    comment=body.remarks,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-
-            write_review_and_timeline(
-                conn, application_id, 0, session, "REQUEST_CHANGES", body.remarks, body.requiredInputs,
-                {"decision": "REQUEST_CHANGES", "from_stage": from_stage, "to_stage": "Student Rework", "final_status": None},
+        ensure_application_access_for_user(conn, application_id, session)
+        task = get_active_graph_task(conn, application_id, session.email)
+        if not task:
+            raise HTTPException(403, "No active task assigned to you")
+        try:
+            GraphExecutionService().transition(
+                conn,
+                task["id"],
+                "request_changes",
+                session.email,
+                comment=body.reason or body.remarks,
+                reviewer_data=body.requiredInputs,
             )
-            conn.commit()
-            updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-            return {"application": dict(updated) if updated else None}
-
-        # ── Legacy pipeline path ──
-        current_step = ensure_reviewer_assigned(conn, app_row, session)
-        first_step = conn.execute(
-            "SELECT step_order, step_name FROM opportunity_pipeline_steps WHERE opportunity_id = ? ORDER BY step_order ASC LIMIT 1",
-            (app_row["opportunity_id"],),
-        ).fetchone()
-        if not first_step:
-            raise HTTPException(status_code=500, detail="Workflow template not found")
-
-        target_step_order = int(body.targetStepOrder) if body.targetStepOrder is not None else int(first_step["step_order"])
-        send_back_to_student = target_step_order == 0
-        if not send_back_to_student and target_step_order >= int(current_step["step_order"]):
-            raise HTTPException(status_code=400, detail="You can only send back to a prior step in the chain.")
-
-        target_step = None
-        if not send_back_to_student:
-            target_step = conn.execute(
-                """
-                SELECT step_order, step_name FROM opportunity_pipeline_steps
-                WHERE opportunity_id = ? AND step_order = ?
-                """,
-                (app_row["opportunity_id"], target_step_order),
-            ).fetchone()
-            if not target_step:
-                raise HTTPException(status_code=400, detail="Target send-back step does not exist.")
-
-        ts = now_iso()
-        if send_back_to_student:
-            conn.execute(
-                """
-                UPDATE applications
-                SET current_step_order = 0,
-                    current_stage_label = 'Student Rework',
-                    return_to_step_order = ?,
-                    return_to_stage_label = ?,
-                    final_status = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (current_step["step_order"], current_step["step_name"], ts, application_id),
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return {
+            "application": dict(
+                conn.execute(
+                    "SELECT * FROM applications WHERE id=?", (application_id,)
+                ).fetchone()
             )
-            to_stage = "Student Rework"
-        else:
-            conn.execute(
-                """
-                UPDATE applications
-                SET current_step_order = ?,
-                    current_stage_label = ?,
-                    return_to_step_order = NULL,
-                    return_to_stage_label = NULL,
-                    final_status = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (target_step["step_order"], target_step["step_name"], ts, application_id),
-            )
-            to_stage = target_step["step_name"]
-
-        write_review_and_timeline(
-            conn,
-            application_id,
-            current_step["step_order"],
-            session,
-            "REQUEST_CHANGES",
-            body.remarks,
-            body.requiredInputs,
-            {
-                "decision": "REQUEST_CHANGES",
-                "from_stage": current_step["step_name"],
-                "to_stage": to_stage,
-                "target_step_order": target_step_order,
-                "returns_to_step_order": current_step["step_order"] if send_back_to_student else target_step_order,
-                "final_status": None,
-            },
-        )
-        conn.commit()
-
-        updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-
-    return {"application": dict(updated) if updated else None}
+        }
 
 
 @app.post("/api/applications/{application_id}/student-response")
@@ -4046,106 +2133,35 @@ def submit_student_response(
     body: StudentResponseBody,
     session: SessionUser = Depends(require_roles(STUDENT_ROLE)),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
-    with db_conn() as conn:
-        app_row = conn.execute(
-            """
-            SELECT a.*, sp.user_id
-            FROM applications a
-            JOIN student_profiles sp ON sp.id = a.student_profile_id
-            WHERE a.id = ?
-            """,
-            (application_id,),
-        ).fetchone()
-        if not app_row:
-            raise HTTPException(status_code=404, detail="Application not found")
-        if int(app_row["user_id"]) != int(session.userId):
-            raise HTTPException(status_code=403, detail="Forbidden")
-        if app_row["final_status"]:
-            raise HTTPException(status_code=400, detail="Application already closed")
+    from fastapi_app.application_data import form_schema, validate_submission
+    from fastapi_app.graph_execution import transaction
 
-        # ── Graph-backed path ──
-        if app_row["graph_version_id"]:
-            returned_task = conn.execute(
-                "SELECT id FROM application_workflow_tasks WHERE application_id = ? AND status = 'returned' ORDER BY id DESC LIMIT 1",
-                (application_id,),
-            ).fetchone()
-            if not returned_task:
-                raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
-            ts = now_iso()
-            comment_text = body.text.strip()
-            conn.execute(
-                """
-                INSERT INTO application_comments (application_id, author_email, text, visibility, created_at)
-                VALUES (?, ?, ?, 'internal', ?)
-                """,
-                (application_id, session.email, comment_text, ts),
+    with db_conn() as conn, transaction(conn):
+        app = ensure_application_access_for_user(conn, application_id, session)
+        if app["current_step_order"] != 0 or app["final_status"]:
+            raise HTTPException(409, "Application is not waiting for student rework")
+        data = (
+            body.submittedData
+            if body.submittedData is not None
+            else json.loads(app["submitted_data_json"] or "{}")
+        )
+        validate_submission(form_schema(conn, app), data)
+        conn.execute(
+            "UPDATE applications SET submitted_data_json=? WHERE id=?",
+            (json.dumps(data), application_id),
+        )
+        conn.execute(
+            "INSERT INTO application_comments(application_id,author_email,text,visibility,created_at) VALUES (?,?,?,'student_visible',?)",
+            (application_id, session.email, body.text.strip(), now_iso()),
+        )
+        GraphExecutionService().resubmit_after_rework(conn, application_id)
+        return {
+            "application": dict(
+                conn.execute(
+                    "SELECT * FROM applications WHERE id=?", (application_id,)
+                ).fetchone()
             )
-            try:
-                GraphExecutionService().resubmit_after_rework(conn, application_id)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-
-            updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-            conn.execute(
-                """
-                INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
-                VALUES (?, 'STUDENT_RESPONSE_SUBMITTED', ?, ?, ?)
-                """,
-                (application_id, json.dumps({"decision": "STUDENT_RESPONSE_SUBMITTED", "to_stage": updated["current_stage_label"]}), session.email, ts),
-            )
-            conn.commit()
-            return {"application": dict(updated) if updated else None}
-
-        # ── Legacy pipeline path ──
-        if int(app_row["current_step_order"]) != 0:
-            raise HTTPException(status_code=400, detail="This application is not waiting on student rework.")
-        if app_row["return_to_step_order"] is None or not app_row["return_to_stage_label"]:
-            raise HTTPException(status_code=400, detail="Return step information is missing.")
-
-        ts = now_iso()
-        comment_text = body.text.strip()
-        conn.execute(
-            """
-            INSERT INTO application_comments (application_id, author_email, text, visibility, created_at)
-            VALUES (?, ?, ?, 'internal', ?)
-            """,
-            (application_id, session.email, comment_text, ts),
-        )
-        conn.execute(
-            """
-            UPDATE applications
-            SET current_step_order = ?,
-                current_stage_label = ?,
-                return_to_step_order = NULL,
-                return_to_stage_label = NULL,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (app_row["return_to_step_order"], app_row["return_to_stage_label"], ts, application_id),
-        )
-        conn.execute(
-            """
-            INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
-            VALUES (?, 'STUDENT_RESPONSE_SUBMITTED', ?, ?, ?)
-            """,
-            (
-                application_id,
-                json.dumps(
-                    {
-                        "decision": "STUDENT_RESPONSE_SUBMITTED",
-                        "to_stage": app_row["return_to_stage_label"],
-                        "target_step_order": app_row["return_to_step_order"],
-                    }
-                ),
-                session.email,
-                ts,
-            ),
-        )
-        conn.commit()
-        updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-
-    return {"application": dict(updated) if updated else None}
+        }
 
 
 @app.post("/api/applications/{application_id}/reject")
@@ -4154,85 +2170,36 @@ def reject_application(
     body: DecisionBody,
     session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
-
     with db_conn() as conn:
-        app_row = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-        if not app_row:
-            raise HTTPException(status_code=404, detail="Application not found")
-        if app_row["final_status"]:
-            raise HTTPException(status_code=400, detail="Application already closed")
-
-        # ── Graph-backed path ──
-        if app_row["graph_version_id"]:
-            task = get_active_graph_task(conn, application_id, session.email)
-            if not task:
-                raise HTTPException(status_code=403, detail="You are not assigned to this application at the current stage.")
-            from_stage = task["node_key"]
-            try:
-                GraphExecutionService().transition(
-                    conn, int(task["id"]), "reject", session.email,
-                    comment=body.reason or body.remarks,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-
-            write_review_and_timeline(
-                conn, application_id, 0, session, "REJECT", body.reason or body.remarks, body.requiredInputs,
-                {"decision": "REJECT", "from_stage": from_stage, "to_stage": "Closed", "final_status": "REJECTED"},
+        ensure_application_access_for_user(conn, application_id, session)
+        task = get_active_graph_task(conn, application_id, session.email)
+        if not task:
+            raise HTTPException(403, "No active task assigned to you")
+        try:
+            GraphExecutionService().transition(
+                conn,
+                task["id"],
+                "reject",
+                session.email,
+                comment=body.reason or body.remarks,
+                reviewer_data=body.requiredInputs,
             )
-            conn.commit()
-            updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-            return {"application": dict(updated) if updated else None}
-
-        # ── Legacy pipeline path ──
-        current_step = ensure_reviewer_assigned(conn, app_row, session)
-        allowed_actions = json.loads(current_step["allowed_actions_json"])
-        if "reject" not in allowed_actions:
-            raise HTTPException(status_code=403, detail="This review step is not allowed to reject applications.")
-
-        ts = now_iso()
-        conn.execute(
-            """
-            UPDATE applications
-            SET final_status = 'REJECTED', current_stage_label = 'Closed', updated_at = ?
-            WHERE id = ?
-            """,
-            (ts, application_id),
-        )
-
-        write_review_and_timeline(
-            conn,
-            application_id,
-            current_step["step_order"],
-            session,
-            "REJECT",
-            body.reason or body.remarks,
-            body.requiredInputs,
-            {
-                "decision": "REJECT",
-                "from_stage": current_step["step_name"],
-                "to_stage": "Closed",
-                "final_status": "REJECTED",
-            },
-        )
-        conn.commit()
-
-        updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-
-    return {"application": dict(updated) if updated else None}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return {
+            "application": dict(
+                conn.execute(
+                    "SELECT * FROM applications WHERE id=?", (application_id,)
+                ).fetchone()
+            )
+        }
 
 
 @app.get("/api/applications/{application_id}/comments")
-def get_comments(application_id: int, session: SessionUser = Depends(get_session)) -> dict[str, Any]:
-    ensure_db_initialized()
-    with db_conn() as conn:
-        ensure_application_access_for_user(conn, application_id, session)
-        rows = conn.execute(
-            "SELECT * FROM application_comments WHERE application_id = ? ORDER BY created_at ASC",
-            (application_id,),
-        ).fetchall()
-    return {"comments": [dict(row) for row in rows]}
+def get_comments(
+    application_id: int, session: SessionUser = Depends(get_session)
+) -> dict[str, Any]:
+    return {"comments": application_detail(application_id, session)["comments"]}
 
 
 @app.post("/api/applications/{application_id}/comments", status_code=201)
@@ -4241,130 +2208,85 @@ def post_comment(
     body: CommentCreateBody,
     session: SessionUser = Depends(get_session),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
-    author_email = (body.authorEmail or session.email).strip().lower()
-    ts = now_iso()
-
+    detail = application_detail(application_id, session)
+    if body.authorEmail and body.authorEmail.lower() != session.email.lower():
+        raise HTTPException(403, "Comment author is determined by the session")
+    if body.visibility not in {"internal", "student_visible"}:
+        raise HTTPException(400, "Choose internal or student-visible comments")
+    if (
+        session.role in REVIEWER_ROLES
+        and "comment" not in detail["graph_node_info"]["allowed_actions"]
+    ):
+        raise HTTPException(403, "Commenting is not allowed at this review node")
+    visibility = "student_visible" if session.role == STUDENT_ROLE else body.visibility
     with db_conn() as conn:
-        ensure_application_access_for_user(conn, application_id, session)
-
         cursor = conn.execute(
-            """
-            INSERT INTO application_comments (application_id, author_email, text, visibility, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (application_id, author_email, body.text.strip(), body.visibility, ts),
+            "INSERT INTO application_comments(application_id,author_email,text,visibility,created_at) VALUES (?,?,?,?,?)",
+            (application_id, session.email, body.text.strip(), visibility, now_iso()),
         )
-        comment_id = int(cursor.lastrowid)
         conn.commit()
-
-        row = conn.execute("SELECT * FROM application_comments WHERE id = ?", (comment_id,)).fetchone()
-    return {"comment": dict(row) if row else None}
+        return {
+            "comment": dict(
+                conn.execute(
+                    "SELECT * FROM application_comments WHERE id=?", (cursor.lastrowid,)
+                ).fetchone()
+            )
+        }
 
 
 @app.get("/api/my/applications")
-def my_applications(session: SessionUser = Depends(require_roles(STUDENT_ROLE))) -> dict[str, Any]:
+def my_applications(
+    session: SessionUser = Depends(require_roles(STUDENT_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        profile = conn.execute("SELECT id FROM student_profiles WHERE user_id = ?", (session.userId,)).fetchone()
+        profile = conn.execute(
+            "SELECT id FROM student_profiles WHERE user_id = ?", (session.userId,)
+        ).fetchone()
         if not profile:
             raise HTTPException(status_code=404, detail="Student profile not found")
-        items = get_enriched_application_list(conn, "WHERE a.student_profile_id = ?", (profile["id"],))
+        items = get_enriched_application_list(
+            conn, "WHERE a.student_profile_id = ?", (profile["id"],)
+        )
     return {"items": items}
 
 
 @app.get("/api/reviewer/inbox")
-def reviewer_inbox(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES))) -> dict[str, Any]:
-    ensure_db_initialized()
+def reviewer_inbox(
+    session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
+) -> dict[str, Any]:
     with db_conn() as conn:
-        # Graph-backed tasks (graph workflow opportunities).
-        graph_tasks = GraphExecutionService().get_inbox(conn, session.email)
-        graph_sla = {
+        tasks = GraphExecutionService().get_inbox(conn, session.email)
+        deadlines = {
             item["task_id"]: item
             for item in SLAManagementService().reviewer_tasks(conn, session.email)
         }
-
-        # Legacy pipeline tasks (ordered-step opportunities without a graph version).
-        legacy_rows = conn.execute(
-            """
-            SELECT a.*, o.title AS opportunity_title, sp.student_id, u.full_name AS student_name,
-                   s.reviewer_email, s.sla_hours
-            FROM applications a
-            JOIN opportunities o ON o.id = a.opportunity_id
-            JOIN student_profiles sp ON sp.id = a.student_profile_id
-            JOIN users u ON u.id = sp.user_id
-            JOIN opportunity_pipeline_steps s
-              ON s.opportunity_id = a.opportunity_id
-             AND s.step_order = a.current_step_order
-            WHERE a.final_status IS NULL
-              AND a.graph_version_id IS NULL
-              AND LOWER(s.reviewer_email) = LOWER(?)
-            ORDER BY a.updated_at DESC
-            """,
-            (session.email,),
-        ).fetchall()
-
         processed = conn.execute(
-            "SELECT COUNT(*) AS c FROM application_reviews WHERE reviewer_email = ?",
+            "SELECT COUNT(*) FROM application_workflow_tasks WHERE assigned_reviewer_email=? AND decision IS NOT NULL",
             (session.email,),
-        ).fetchone()["c"]
-
-    items: list[dict[str, Any]] = []
-    due_soon = 0
-
-    for task in graph_tasks:
-        sla = graph_sla.get(task.task_id, {})
-        if sla.get("status") == "approaching":
-            due_soon += 1
+        ).fetchone()[0]
+    items = []
+    for task in tasks:
+        sla = deadlines.get(task.task_id, {})
         items.append(
             {
+                **task.model_dump(),
                 "id": task.application_id,
-                "task_id": task.task_id,
-                "student_name": task.student_name,
-                "opportunity_title": task.opportunity_title,
                 "current_stage": task.display_name,
-                "node_key": task.node_key,
-                "allowed_actions": task.allowed_actions,
-                "visible_sections": task.visible_sections,
+                "source": "graph",
                 "updated_at": task.assigned_at,
                 "sla_deadline": sla.get("deadline_at"),
-                "sla_days": sla.get("sla_days"),
-                "days_remaining": sla.get("days_remaining"),
-                "hours_remaining": sla.get("hours_remaining"),
                 "sla_status": sla.get("status", "on_time"),
-                "source": "graph",
+                "days_remaining": sla.get("days_remaining"),
+                "sla_days": sla.get("sla_days"),
             }
         )
-
-    for row in legacy_rows:
-        updated_at = parse_iso(row["updated_at"])
-        sla_deadline = None
-        if updated_at:
-            sla_hours = int(row["sla_hours"] or 72)
-            deadline = updated_at + timedelta(hours=sla_hours)
-            sla_deadline = deadline.isoformat()
-            if datetime.now(timezone.utc) + timedelta(hours=24) >= deadline:
-                due_soon += 1
-
-        items.append(
-            {
-                "id": row["id"],
-                "student_name": row["student_name"],
-                "student_id": row["student_id"],
-                "opportunity_title": row["opportunity_title"],
-                "current_stage": row["current_stage_label"],
-                "updated_at": row["updated_at"],
-                "sla_deadline": sla_deadline,
-                "source": "legacy",
-            }
-        )
-
     return {
         "items": items,
         "stats": {
             "pending": len(items),
-            "dueSoon": due_soon,
             "processed": processed,
+            "dueSoon": sum(i["sla_status"] == "approaching" for i in items),
         },
     }
 
@@ -4390,7 +2312,9 @@ def admin_upsert_sla_policy(
 
 
 @app.get("/api/admin/sla-policies")
-def admin_list_sla_policies(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def admin_list_sla_policies(
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         policies = SLAManagementService().list_policies(conn)
@@ -4398,14 +2322,18 @@ def admin_list_sla_policies(session: SessionUser = Depends(require_roles(ADMIN_R
 
 
 @app.get("/api/admin/sla-dashboard")
-def admin_sla_dashboard(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def admin_sla_dashboard(
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         return SLAManagementService().dashboard(conn)
 
 
 @app.get("/api/reviewer/tasks")
-def reviewer_tasks_with_sla(session: SessionUser = Depends(require_roles(*REVIEWER_ROLES))) -> dict[str, Any]:
+def reviewer_tasks_with_sla(
+    session: SessionUser = Depends(require_roles(*REVIEWER_ROLES)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         tasks = SLAManagementService().reviewer_tasks(conn, session.email)
@@ -4435,7 +2363,9 @@ def reviewer_acknowledge_sla_breach(
     ensure_db_initialized()
     with db_conn() as conn:
         try:
-            return SLAManagementService().acknowledge_breach(conn, task_id, session.email, body.notes)
+            return SLAManagementService().acknowledge_breach(
+                conn, task_id, session.email, body.notes
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -4446,35 +2376,41 @@ def get_sla_notifications(
 ) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
-        dashboard = SLAManagementService().dashboard(conn)
+        service = SLAManagementService()
+        if session.role == ADMIN_ROLE:
+            dashboard = service.dashboard(conn)
+            items = dashboard["approaching_tasks"] + dashboard["breached_tasks"]
+        else:
+            items = [
+                item
+                for item in service.reviewer_tasks(conn, session.email)
+                if item["status"] in {"approaching", "breached"}
+            ]
     return {
-        "approaching": dashboard["approaching"],
-        "breached": dashboard["breached"],
-        "items": (dashboard["approaching_tasks"] + dashboard["breached_tasks"])[:10],
+        "approaching": sum(item["status"] == "approaching" for item in items),
+        "breached": sum(item["status"] == "breached" for item in items),
+        "items": items[:10],
     }
 
 
 @app.get("/api/admin/dashboard/summary")
-def admin_summary(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def admin_summary(
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         total = conn.execute("SELECT COUNT(*) AS c FROM applications").fetchone()["c"]
-        active = conn.execute("SELECT COUNT(*) AS c FROM applications WHERE final_status IS NULL").fetchone()["c"]
-        approved = conn.execute("SELECT COUNT(*) AS c FROM applications WHERE final_status = 'APPROVED'").fetchone()["c"]
-
-        awaiting_me = conn.execute(
-            """
-            SELECT COUNT(*) AS c
-            FROM applications a
-            JOIN opportunity_pipeline_steps s
-              ON s.opportunity_id = a.opportunity_id
-             AND s.step_order = a.current_step_order
-            WHERE a.final_status IS NULL
-              AND LOWER(s.reviewer_email) = LOWER(?)
-            """,
-            (session.email,),
+        active = conn.execute(
+            "SELECT COUNT(*) AS c FROM applications WHERE final_status IS NULL"
+        ).fetchone()["c"]
+        approved = conn.execute(
+            "SELECT COUNT(*) AS c FROM applications WHERE final_status = 'APPROVED'"
         ).fetchone()["c"]
 
+        awaiting_me = conn.execute(
+            "SELECT COUNT(*) FROM application_workflow_tasks WHERE status='active' AND assigned_reviewer_email=?",
+            (session.email,),
+        ).fetchone()[0]
         closed_rows = conn.execute(
             "SELECT created_at, updated_at FROM applications WHERE final_status IS NOT NULL"
         ).fetchall()
@@ -4492,14 +2428,16 @@ def admin_summary(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> 
         review_counts = conn.execute(
             """
             SELECT
-              SUM(CASE WHEN decision = 'REQUEST_CHANGES' THEN 1 ELSE 0 END) AS flagged,
+              SUM(CASE WHEN decision = 'request_changes' THEN 1 ELSE 0 END) AS flagged,
               COUNT(*) AS total_reviews
-            FROM application_reviews
+            FROM application_workflow_tasks WHERE decision IS NOT NULL
             """
         ).fetchone()
         flagged = review_counts["flagged"] or 0
         total_reviews = review_counts["total_reviews"] or 0
-        flagged_ratio = round((flagged / total_reviews) * 100, 2) if total_reviews else 0.0
+        flagged_ratio = (
+            round((flagged / total_reviews) * 100, 2) if total_reviews else 0.0
+        )
 
         active_opps = conn.execute(
             """
@@ -4525,7 +2463,9 @@ def admin_summary(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> 
 
 
 @app.get("/api/admin/applications")
-def admin_applications(session: SessionUser = Depends(require_roles(ADMIN_ROLE))) -> dict[str, Any]:
+def admin_applications(
+    session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
+) -> dict[str, Any]:
     ensure_db_initialized()
     with db_conn() as conn:
         items = get_enriched_application_list(conn)
@@ -4538,30 +2478,33 @@ def admin_patch_application(
     body: AdminApplicationPatchBody,
     session: SessionUser = Depends(require_roles(ADMIN_ROLE)),
 ) -> dict[str, Any]:
-    ensure_db_initialized()
-    with db_conn() as conn:
-        existing = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="Application not found")
+    from fastapi_app.application_data import form_schema, validate_submission
+    from fastapi_app.graph_execution import transaction
 
-        ts = now_iso()
+    with db_conn() as conn, transaction(conn):
+        app = ensure_application_access_for_user(conn, application_id, session)
+        if app["final_status"]:
+            raise HTTPException(409, "Closed applications cannot be edited")
+        validate_submission(form_schema(conn, app), body.submittedData)
         conn.execute(
-            "UPDATE applications SET submitted_data_json = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(body.submittedData), ts, application_id),
+            "UPDATE applications SET submitted_data_json=? WHERE id=?",
+            (json.dumps(body.submittedData), application_id),
         )
-        conn.execute(
-            """
-            INSERT INTO timeline_events (application_id, event_type, event_payload_json, actor_email, created_at)
-            VALUES (?, 'APPLICATION_FILE_EDITED', ?, ?, ?)
-            """,
-            (
-                application_id,
-                json.dumps({"edited_keys": sorted(body.submittedData.keys())}),
-                session.email,
-                ts,
-            ),
+        service = GraphExecutionService()
+        levels = service._definition(conn, app["graph_version_id"])
+        service._return(conn, app, levels, 0, "student", session.email)
+        service.resubmit_after_rework(conn, application_id)
+        service._event(
+            conn,
+            application_id,
+            "APPLICATION_CORRECTED",
+            session.email,
+            {"review_restarted": True},
         )
-        conn.commit()
-
-        updated = conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-    return {"application": dict(updated) if updated else None}
+        return {
+            "application": dict(
+                conn.execute(
+                    "SELECT * FROM applications WHERE id=?", (application_id,)
+                ).fetchone()
+            )
+        }

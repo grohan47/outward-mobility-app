@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class NodeRequiredInput(BaseModel):
@@ -14,7 +14,10 @@ class NodeRequiredInput(BaseModel):
 
 
 class NodeMetadata(BaseModel):
-    sla_hours: int = 72
+    sla_hours: int = Field(default=72, ge=1, le=720)
+    can_view_comments: bool = False
+    return_target: str = "student"
+    return_rule: dict[str, str] | None = None
     required_inputs: list[NodeRequiredInput] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
@@ -22,11 +25,15 @@ class NodeMetadata(BaseModel):
 
 class GraphNodeModel(BaseModel):
     node_key: str
-    node_type: Literal["start", "reviewer", "join_all", "join_any", "conditional", "end"]
+    node_type: Literal[
+        "start", "reviewer", "join_all", "join_any", "conditional", "end"
+    ]
     display_name: str | None = None
     reviewer_email: str | None = None
-    visible_sections: list[str] = Field(default_factory=lambda: ["all"])
-    allowed_actions: list[str] = Field(default_factory=lambda: ["approve", "reject", "request_changes", "comment"])
+    visible_sections: list[str] = Field(default_factory=list)
+    allowed_actions: list[str] = Field(
+        default_factory=lambda: ["approve", "reject", "request_changes", "comment"]
+    )
     metadata: NodeMetadata = Field(default_factory=NodeMetadata)
 
 
@@ -35,19 +42,41 @@ class GraphEdgeModel(BaseModel):
     to_node_key: str
     condition_json: dict[str, Any] | None = None
     label: str | None = None
-    action: Literal[
-        "always",
-        "approve",
-        "reject",
-        "request_changes",
-        "condition_true",
-        "condition_false",
-    ] | None = None
+    action: (
+        Literal[
+            "always",
+            "approve",
+            "reject",
+            "request_changes",
+            "condition_true",
+            "condition_false",
+        ]
+        | None
+    ) = None
+
+
+class ReviewLevelModel(BaseModel):
+    id: str
+    name: str
+    reviewers: list[GraphNodeModel] = Field(default_factory=list)
 
 
 class GraphModel(BaseModel):
-    nodes: list[GraphNodeModel]
-    edges: list[GraphEdgeModel]
+    levels: list[ReviewLevelModel] | None = None
+    nodes: list[GraphNodeModel] = Field(default_factory=list)
+    edges: list[GraphEdgeModel] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def derive_forward_graph(self):
+        from fastapi_app.levels import compile_levels, normalize_levels
+
+        raw = self.model_dump()
+        levels = normalize_levels(raw)
+        self.levels = [ReviewLevelModel.model_validate(level) for level in levels]
+        nodes, edges = compile_levels(levels)
+        self.nodes = [GraphNodeModel.model_validate(node) for node in nodes]
+        self.edges = [GraphEdgeModel.model_validate(edge) for edge in edges]
+        return self
 
 
 class OpportunityDraftModel(BaseModel):
@@ -72,9 +101,16 @@ class AIWorkflowDraftOutput(BaseModel):
     opportunity: OpportunityDraftModel
     graph: GraphModel
     applicant_form_fields: list[str] = Field(
-        default_factory=lambda: ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"]
+        default_factory=lambda: [
+            "full_name",
+            "student_id",
+            "email",
+            "cgpa",
+            "statement_of_purpose",
+        ]
     )
-    generator_visibility_rules: list[str] = Field(default_factory=lambda: ["ug.2024@plaksha.edu.in"])
+    student_visibility_rules: list[str] = Field(default_factory=list)
+    custom_fields: list[dict[str, Any]] = Field(default_factory=list)
     clarifying_questions: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     warnings: list[str] = Field(default_factory=list)

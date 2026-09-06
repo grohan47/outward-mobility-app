@@ -28,7 +28,7 @@ export interface UserRoleContext {
   user_id: number;
   source_role_code: string;
   source_role_display_name: string;
-  workspace_role_code: "GENERATOR" | "REVIEWER" | "ADMIN" | string;
+  workspace_role_code: "STUDENT" | "REVIEWER" | "ADMIN" | string;
   workspace_role_display_name: string;
   scope_type: "SYSTEM" | "OPPORTUNITY";
   scope_id: number | null;
@@ -101,10 +101,15 @@ export interface Application {
   id: number;
   student_profile_id: number;
   opportunity_id: number;
+  current_level?: number;
+  attempt?: number;
   current_stage: string;
-  current_step_id: number | null;
+  current_stage_label?: string;
+  current_step_order?: number;
+  current_step_id?: number | null;
   final_status: string | null;
-  submitted_data: string | null; // JSON
+  submitted_data?: string | null; // JSON
+  submitted_data_json?: string | null; // JSON
   submitted_at: string | null;
   metadata: string | null; // JSON
   created_at: string;
@@ -212,6 +217,105 @@ export interface ApplicationDetail {
   deficiencies?: DeficiencyItem[];
 }
 
+export type FieldValue = string | number | boolean | string[] | null;
+
+export type FormField = {
+  field_key: string;
+  label: string;
+  description?: string | null;
+  field_hint?: string | null;
+  input_type: "text" | "textarea" | "number" | "file" | "single_select" | "select" | "dropdown" | "multiselect";
+  options?: string[];
+  required?: boolean;
+  is_required?: number;
+};
+
+export type ReviewerRequiredInput = {
+  input_key: string;
+  input_label?: string;
+  label?: string;
+  input_type: "text" | "number" | "dropdown" | "select" | "single_select" | "multiselect" | "checkbox";
+  options?: string[];
+  required?: boolean;
+  is_required?: number;
+};
+
+export type PipelineStepSummary = {
+  id?: number;
+  step_order: number;
+  step_name: string;
+  reviewer_email?: string;
+  reviewer_display_name?: string;
+  visible_fields?: string[];
+  can_view_comments?: number | boolean;
+  required_inputs?: ReviewerRequiredInput[];
+};
+
+export type ApplicationListItem = {
+  id: number;
+  student_profile_id: number;
+  opportunity_id: number;
+  current_level?: number;
+  attempt?: number;
+  current_step_order: number;
+  current_stage: string;
+  current_stage_label: string;
+  final_status: string | null;
+  submitted_data: string | null;
+  submitted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  opportunity?: Pick<Opportunity, "id" | "title" | "term" | "destination"> & {
+    cover_image_url?: string | null;
+  };
+  student_profile?: Pick<StudentProfile, "id" | "student_id" | "program" | "official_cgpa">;
+  student_user?: Pick<User, "full_name" | "email">;
+  pipeline_steps?: PipelineStepSummary[];
+  workflow: WorkflowMeta;
+};
+
+export type ReviewerGraphNodeInfo = {
+  node_key: string;
+  task_id: number;
+  display_name: string;
+  allowed_actions: Array<"approve" | "reject" | "request_changes" | "comment">;
+  visible_sections: string[];
+  required_inputs: ReviewerRequiredInput[];
+  return_target: string;
+};
+
+export type ApplicationDetailPayload = {
+  application: Application & {
+    current_step_order: number;
+    current_stage_label: string;
+    submitted_data_json: string | null;
+  };
+  opportunity?: Opportunity | null;
+  student_profile?: Partial<StudentProfile> | null;
+  student_user?: Partial<User> | null;
+  reviews: Array<{
+    id: number;
+    reviewer_email?: string;
+    reviewer_name?: string;
+    reviewer_role: string;
+    decision: string;
+    remarks: string | null;
+    required_inputs?: Record<string, FieldValue>;
+    created_at: string;
+    status?: string;
+    attempt?: number;
+  }>;
+  comments: Comment[];
+  timeline: TimelineEvent[];
+  pipeline_steps: PipelineStepSummary[];
+  workflow: WorkflowMeta;
+  application_file?: Record<string, FieldValue>;
+  field_labels?: Record<string, string>;
+  form_schema?: FormField[];
+  graph_node_info?: ReviewerGraphNodeInfo;
+  permissions?: { can_view_comments?: boolean };
+};
+
 // ── Session / Auth types ──
 
 export interface SessionUser {
@@ -233,6 +337,6 @@ export interface SessionUser {
 }
 
 export type RoleCode =
-  | "GENERATOR"
+  | "STUDENT"
   | "REVIEWER"
   | "ADMIN";

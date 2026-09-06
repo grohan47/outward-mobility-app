@@ -7,11 +7,6 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 
-type SessionUser = {
-  email: string;
-  role: string;
-};
-
 type StepRequiredInput = {
   input_key: string;
   input_label: string;
@@ -60,12 +55,6 @@ type DetailPayload = {
   field_labels?: Record<string, string>;
 };
 
-function formatValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map((entry) => String(entry)).join(", ");
-  if (value === null || value === undefined || value === "") return "-";
-  return String(value);
-}
-
 function labelFromKey(key: string): string {
   return key
     .replace(/_/g, " ")
@@ -91,7 +80,6 @@ export default function AdminApplicationReviewPage() {
   const params = useParams();
   const router = useRouter();
 
-  const [user, setUser] = useState<SessionUser | null>(null);
   const [data, setData] = useState<DetailPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingFile, setSavingFile] = useState(false);
@@ -109,21 +97,10 @@ export default function AdminApplicationReviewPage() {
   const [aiAssistLoading, setAiAssistLoading] = useState(false);
   const [remarks, setRemarks] = useState("");
   const [dynamicInputs, setDynamicInputs] = useState<Record<string, unknown>>({});
-  const [targetStepOrder, setTargetStepOrder] = useState<number | null>(null);
   const [fileDraft, setFileDraft] = useState<Record<string, string>>({});
 
   function hydrate(detail: DetailPayload) {
     setData(detail);
-    const currentStepOrder = Number(detail.application.current_step_order || 0);
-    const priorSteps = detail.pipeline_steps.filter((step) => step.step_order < currentStepOrder);
-    if (priorSteps.length > 0) {
-      setTargetStepOrder(priorSteps[priorSteps.length - 1].step_order);
-    } else if (currentStepOrder > 0) {
-      setTargetStepOrder(0);
-    } else {
-      setTargetStepOrder(null);
-    }
-
     const sourceFile =
       detail.application_file && typeof detail.application_file === "object"
         ? (detail.application_file as Record<string, unknown>)
@@ -145,14 +122,9 @@ export default function AdminApplicationReviewPage() {
   }
 
   useEffect(() => {
-    Promise.all([
-      // Frontend -> API: GET /api/auth/me
-      fetch("/api/auth/me").then((r) => r.json()),
-      // Frontend -> API: GET /api/applications/:id
-      fetch(`/api/applications/${params.id}`).then((r) => r.json()),
-    ])
-      .then(([userData, detail]) => {
-        setUser(userData.user || null);
+    fetch(`/api/applications/${params.id}`)
+      .then((response) => response.json())
+      .then((detail) => {
         hydrate(detail);
         setLoading(false);
       })
@@ -166,19 +138,6 @@ export default function AdminApplicationReviewPage() {
 
   const requiredInputs = currentStep?.required_inputs || [];
   const fieldLabels = data?.field_labels || {};
-
-  const priorSteps = useMemo(() => {
-    if (!data) return [];
-    return data.pipeline_steps.filter((step) => step.step_order < data.application.current_step_order);
-  }, [data]);
-
-  const sendBackTargets = useMemo(() => {
-    if (!data || data.application.current_step_order <= 0) return [];
-    return [
-      { stepOrder: 0, label: "Student (Generator)" },
-      ...priorSteps.map((step) => ({ stepOrder: step.step_order, label: step.step_name })),
-    ];
-  }, [data, priorSteps]);
 
   async function saveApplicationFile() {
     if (!data) return;
@@ -238,18 +197,14 @@ export default function AdminApplicationReviewPage() {
   }
 
   async function handleAction(endpoint: "approve" | "request-changes" | "reject") {
-    if (!data || !user) return;
+    if (!data) return;
     setActionLoading(true);
     try {
       const payload: Record<string, unknown> = {
         remarks,
         reason: remarks,
-        reviewerEmail: user.email,
         requiredInputs: dynamicInputs,
       };
-      if (endpoint === "request-changes" && targetStepOrder !== null) {
-        payload.targetStepOrder = targetStepOrder;
-      }
 
       // Frontend -> API: POST /api/applications/:id/{approve|request-changes|reject}
       const res = await fetch(`/api/applications/${data.application.id}/${endpoint}`, {
@@ -293,7 +248,7 @@ export default function AdminApplicationReviewPage() {
             Back to Ledger
           </button>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">
-            OGE Review Desk: #{data.application.id}
+            Administrator Review Desk: #{data.application.id}
           </h1>
           <p className="text-slate-500 mt-1">
             {data.student_user?.full_name} • {data.opportunity?.title}
@@ -428,7 +383,7 @@ export default function AdminApplicationReviewPage() {
       </Card>
 
       <Card>
-        <CardHeader title="Application File (Editable)" subtitle="OGE can edit submitted values directly from the ledger desk." />
+        <CardHeader title="Application File (Editable)" subtitle="Saving corrections restarts review at the first level so every approval is based on the updated application." />
         <div className="p-4 border-t border-slate-100 space-y-4">
           {Object.keys(fileDraft).length === 0 ? (
             <p className="text-sm text-slate-500">No submitted values found.</p>
@@ -533,24 +488,11 @@ export default function AdminApplicationReviewPage() {
             />
           </div>
 
-          <div className="flex flex-wrap items-end gap-4">
-            {sendBackTargets.length > 0 && (
-              <div className="w-72">
-                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">Send Back To</label>
-                <select
-                  className="w-full h-11 border border-slate-200 rounded-xl px-3 text-sm bg-white"
-                  value={targetStepOrder ?? ""}
-                  onChange={(e) => setTargetStepOrder(Number(e.target.value))}
-                >
-                  {sendBackTargets.map((target) => (
-                    <option key={target.stepOrder} value={target.stepOrder}>
-                      {target.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+          <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Requesting changes uses the workflow&apos;s configured return destination. After resubmission, every review level from that point onward runs again.
+          </p>
 
+          <div className="flex flex-wrap items-end gap-4">
             <Button variant="danger" size="md" loading={actionLoading} disabled={closed || !remarks} onClick={() => handleAction("reject")}>
               Reject
             </Button>
@@ -559,7 +501,7 @@ export default function AdminApplicationReviewPage() {
               size="md"
               icon="flag"
               loading={actionLoading}
-              disabled={closed || !remarks || targetStepOrder === null}
+              disabled={closed || !remarks}
               onClick={() => handleAction("request-changes")}
             >
               Request Changes
@@ -613,8 +555,6 @@ export default function AdminApplicationReviewPage() {
       <ApplicationChatWidget
         applicationId={data.application.id}
         contextLabel={`#${data.application.id} · ${data.opportunity?.title || "Application thread"}`}
-        studentName={data.student_user?.full_name || "Student"}
-        pipelineSteps={data.pipeline_steps}
       />
     </div>
   );

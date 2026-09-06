@@ -4,28 +4,32 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "api:dev": "uvicorn fastapi_app.main:app --reload --host 127.0.0.1 --port 8000 --env-file .env",
+    "api:dev": "uv run uvicorn fastapi_app.main:app --env-file .env --reload --host 127.0.0.1 --port 8000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "db:init": "node server/scripts/initDb.js"
+    "lint": "eslint .",
+    "db:init": "uv run python -m fastapi_app.manage init",
+    "typecheck": "tsc --noEmit",
+    "db:reset": "uv run python -m fastapi_app.manage reset --demo",
+    "test:api": "uv run pytest"
   },
   "dependencies": {
-    "better-sqlite3": "^11.9.1",
-    "next": "^16.2.5",
+    "next": "16.3.4",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "reactflow": "^11.11.4"
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^20",
+    "@types/node": "^24",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.5",
+    "eslint-config-next": "16.3.4",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
-  }
+  },
+  "engines": {
+    "node": ">=24.15 <25"
+  },
+  "packageManager": "npm@11.11.1"
 }

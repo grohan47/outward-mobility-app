@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 function roleRoute(role: string): string {
-  if (role === "GENERATOR") return "/generator";
+  if (role === "STUDENT") return "/student";
   if (role === "ADMIN") return "/admin";
   return "/reviewer";
 }

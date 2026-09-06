@@ -227,7 +227,7 @@ def ensure_form_fields_exist(conn: sqlite3.Connection, form_fields: list[str]) -
     known = {row["field_key"] for row in rows}
     invalid = [key for key in normalized if key not in known]
     if invalid:
-        _log.warning("Skipping unknown form field keys (not in catalog): %s", ", ".join(invalid))
+        raise ValueError("Unknown student fields: " + ", ".join(invalid))
     return [key for key in normalized if key in known]
 
 

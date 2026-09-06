@@ -24,11 +24,16 @@ _log = logging.getLogger(__name__)
 # Pydantic response models (used for Claude structured output)
 # ────────────────────────────────────────────────────────────
 
+
 class ThreadSummaryResponse(BaseModel):
     headline: str = Field(description="One-line summary of the review thread")
     status: str = Field(description="Current stage and progress summary")
-    key_points: list[str] = Field(description="3-6 bullet points highlighting blockers, decisions, and unresolved asks")
-    recommended_action: str = Field(description="Concise next-step recommendation for the reviewer")
+    key_points: list[str] = Field(
+        description="3-6 bullet points highlighting blockers, decisions, and unresolved asks"
+    )
+    recommended_action: str = Field(
+        description="Concise next-step recommendation for the reviewer"
+    )
 
 
 class FieldAssessment(BaseModel):
@@ -39,28 +44,42 @@ class FieldAssessment(BaseModel):
 
 
 class ApprovalAssistResponse(BaseModel):
-    recommendation: str = Field(description="One of: APPROVE_OR_ADVANCE, REQUEST_CHANGES, NEEDS_REVIEW")
+    recommendation: str = Field(
+        description="One of: APPROVE_OR_ADVANCE, REQUEST_CHANGES, NEEDS_REVIEW"
+    )
     rationale: str = Field(description="2-3 sentence explanation of the recommendation")
-    field_assessments: list[FieldAssessment] = Field(description="Per-field quality assessment")
-    draft_remarks: str = Field(description="Suggested approval/review remarks the reviewer can use or edit")
+    field_assessments: list[FieldAssessment] = Field(
+        description="Per-field quality assessment"
+    )
+    draft_remarks: str = Field(
+        description="Suggested approval/review remarks the reviewer can use or edit"
+    )
     variables_extracted: dict[str, str] = Field(
         default_factory=dict,
-        description="Key variables extracted from the application context as flat JSON key-value pairs (e.g. cgpa, destination, batch, sop_quality)"
+        description="Key variables extracted from the application context as flat JSON key-value pairs (e.g. cgpa, destination, batch, sop_quality)",
     )
 
 
 class NominationInsightsResponse(BaseModel):
-    fit_signals: list[str] = Field(description="3-5 key signals to look for in strong candidates")
-    screening_questions: list[str] = Field(description="3-4 targeted screening questions for this opportunity")
-    focus_areas: list[str] = Field(description="2-3 focus areas derived from the opportunity description")
-    selection_criteria_summary: str = Field(description="One-paragraph summary of what makes an ideal candidate")
+    fit_signals: list[str] = Field(
+        description="3-5 key signals to look for in strong candidates"
+    )
+    screening_questions: list[str] = Field(
+        description="3-4 targeted screening questions for this opportunity"
+    )
+    focus_areas: list[str] = Field(
+        description="2-3 focus areas derived from the opportunity description"
+    )
+    selection_criteria_summary: str = Field(
+        description="One-paragraph summary of what makes an ideal candidate"
+    )
 
 
 # ────────────────────────────────────────────────────────────
 # Claude client helper
 # ────────────────────────────────────────────────────────────
 
-CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
 CLAUDE_TEMPERATURE = 0.2
 CLAUDE_TOP_P = 0.95
@@ -74,6 +93,7 @@ def _get_client():
         return None
     try:
         import anthropic
+
         return anthropic.Anthropic(api_key=api_key)
     except Exception as exc:
         _log.warning("anthropic_client_init_failed: %s", exc)
@@ -120,6 +140,7 @@ def _claude_structured(system: str, user_prompt: str, response_model: type[BaseM
 # ────────────────────────────────────────────────────────────
 # Public AI functions (called by endpoints in main.py)
 # ────────────────────────────────────────────────────────────
+
 
 def ai_thread_summary(detail: dict[str, Any]) -> dict[str, Any]:
     """Summarise the review thread for an application."""
@@ -190,7 +211,9 @@ def ai_thread_summary(detail: dict[str, Any]) -> dict[str, Any]:
         f"Stage: {application.get('current_stage_label') or 'Unknown'}; "
         f"Final status: {application.get('final_status') or 'IN_PROGRESS'}."
     )
-    evidence = dedupe_preserve_order(flatten_review_points(reviews, 4) + flatten_comment_points(comments, 4))
+    evidence = dedupe_preserve_order(
+        flatten_review_points(reviews, 4) + flatten_comment_points(comments, 4)
+    )
     if not evidence:
         evidence = ["No review notes or comments yet."]
 
@@ -213,7 +236,11 @@ def ai_thread_summary(detail: dict[str, Any]) -> dict[str, Any]:
 def ai_approval_assist(detail: dict[str, Any]) -> dict[str, Any]:
     """Provide AI-powered approval recommendation for a reviewer."""
     application_file = detail.get("application_file") or {}
-    labels = detail.get("field_labels") if isinstance(detail.get("field_labels"), dict) else {}
+    labels = (
+        detail.get("field_labels")
+        if isinstance(detail.get("field_labels"), dict)
+        else {}
+    )
     application = detail.get("application") or {}
     opportunity = detail.get("opportunity") or {}
     reviews = detail.get("reviews") or []
@@ -271,9 +298,23 @@ def ai_approval_assist(detail: dict[str, Any]) -> dict[str, Any]:
     for key, value in list(application_file.items())[:8]:
         label = str(labels.get(key, key))
         if value is None or (isinstance(value, str) and not value.strip()):
-            checks.append({"field": key, "label": label, "status": "missing", "note": "Value is empty."})
+            checks.append(
+                {
+                    "field": key,
+                    "label": label,
+                    "status": "missing",
+                    "note": "Value is empty.",
+                }
+            )
         else:
-            checks.append({"field": key, "label": label, "status": "present", "note": f"Captured value preview: {str(value)[:80]}"})
+            checks.append(
+                {
+                    "field": key,
+                    "label": label,
+                    "status": "present",
+                    "note": f"Captured value preview: {str(value)[:80]}",
+                }
+            )
 
     missing_count = sum(1 for item in checks if item["status"] == "missing")
     recommendation = "APPROVE_OR_ADVANCE" if missing_count == 0 else "REQUEST_CHANGES"
@@ -345,7 +386,8 @@ def ai_nomination_insights(
 
     return {
         "nominations_assist": {
-            "fit_signals_to_look_for": field_labels[:6] or ["Academic fit", "Statement quality", "Readiness"],
+            "fit_signals_to_look_for": field_labels[:6]
+            or ["Academic fit", "Statement quality", "Readiness"],
             "screening_questions": [
                 f"Why is the candidate a fit for {opportunity_title}?",
                 "What evidence supports readiness for this opportunity?",

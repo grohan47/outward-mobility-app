@@ -6,9 +6,6 @@ const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || "http://127.0.0.1:8000"
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig = {
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   turbopack: {
     root: __dirname,
   },

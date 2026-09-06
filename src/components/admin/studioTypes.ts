@@ -29,31 +29,10 @@ export type OpportunityDetailField = {
   is_student_visible: boolean;
 };
 
-export type RequiredInputType = "text" | "number" | "dropdown" | "multiselect";
+export type StudentVisibilityRuleType = "EMAIL" | "GROUP_EMAIL";
 
-export type RequiredInput = {
-  id: string;
-  label: string;
-  inputType: RequiredInputType;
-  required: boolean;
-  options: string[];
-  optionsText: string;
-};
-
-export type WorkflowStep = {
-  name: string;
-  reviewerEmail: string;
-  reviewerName: string;
-  visibleFields: string[];
-  requiredInputs: RequiredInput[];
-  slaHours: number;
-  canViewComments: boolean;
-};
-
-export type GeneratorVisibilityRuleType = "EMAIL" | "GROUP_EMAIL";
-
-export type GeneratorVisibilityRule = {
-  ruleType?: GeneratorVisibilityRuleType;
+export type StudentVisibilityRule = {
+  ruleType?: StudentVisibilityRuleType;
   ruleValue: string;
 };
 
@@ -89,6 +68,12 @@ export type StudioRequiredInput = {
   required: boolean;
 };
 
+export type StudioReturnRule = {
+  field: string;
+  value: string;
+  target: string;
+};
+
 export type StudioGraphNode = {
   node_key: string;
   node_type: StudioNodeType;
@@ -100,6 +85,11 @@ export type StudioGraphNode = {
     required_inputs: StudioRequiredInput[];
     sla_hours?: number;
     can_view_comments?: boolean;
+    return_target?: string;
+    return_rule?: StudioReturnRule | null;
+    student_visible_fields?: string[];
+    level_id?: string;
+    level_name?: string;
     [key: string]: unknown;
   };
 };
@@ -131,11 +121,13 @@ export type DraftOutput = {
     visibility?: string;
   };
   graph: {
-    nodes: StudioGraphNode[];
-    edges: StudioGraphEdge[];
+    levels?: import("./levels").ReviewLevel[];
+    nodes?: StudioGraphNode[];
+    edges?: StudioGraphEdge[];
   };
   applicant_form_fields?: string[];
-  generator_visibility_rules?: string[];
+  custom_fields?: Array<Record<string, unknown>>;
+  student_visibility_rules?: string[];
   clarifying_questions: string[];
   confidence: number;
   warnings: string[];
@@ -155,16 +147,4 @@ export type WorkflowDraftRow = {
   created_by_email?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
-};
-
-export type ImpactApplication = {
-  id: number;
-  current_stage?: string | null;
-  current_stage_label?: string | null;
-  final_status?: string | null;
-  opportunity_id: number;
-  student_user?: {
-    full_name?: string | null;
-    email?: string | null;
-  };
 };

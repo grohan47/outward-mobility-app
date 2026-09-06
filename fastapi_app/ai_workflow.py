@@ -6,7 +6,6 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi_app.graph_models import (
@@ -19,12 +18,6 @@ from fastapi_app.graph_models import (
 from fastapi_app.graph_validation import GraphPolicyValidator
 
 _log = logging.getLogger(__name__)
-
-_STANDARD_PATHWAY_PATH = Path(__file__).parent / "standard_pathway.json"
-try:
-    _STANDARD_PATHWAY: dict = json.loads(_STANDARD_PATHWAY_PATH.read_text())
-except (FileNotFoundError, json.JSONDecodeError):
-    _STANDARD_PATHWAY = {}
 
 SYSTEM_PROMPT = """\
 You are PRISM, an AI workflow generator for Plaksha University's global affairs office (OGE).
@@ -82,7 +75,7 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
     ]
   },
   "applicant_form_fields": ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
-  "generator_visibility_rules": ["ug.2024@plaksha.edu.in"],
+  "student_visibility_rules": ["ug.2024@plaksha.edu.in"],
   "clarifying_questions": [],
   "confidence": 0.85,
   "warnings": [],
@@ -105,14 +98,6 @@ OPPORTUNITY RULES:
 - Set funding_available: true if the email mentions any scholarship, stipend, or covered costs.
 - Set eligibility_criteria to a concise string summarising who can apply.
 
-BATCH / ELIGIBILITY INFERENCE:
-- Current year is 2026. Plaksha undergraduate batches: UG 2022 (4th year), UG 2023 (3rd year), UG 2024 (2nd year), UG 2025 (1st year).
-- If the opportunity is master's, PhD, postgraduate, or graduate level: eligible batch is UG 2022 only (oldest batch). Add detail_field eligible_batch = "UG 2022".
-- If the email says "final year" or "graduating students": eligible batch is UG 2022.
-- If the email says undergraduate students but excludes final-year students, eligible batches are UG 2023, UG 2024, and UG 2025.
-- If the email says undergraduate students and does not exclude any year, include every applicable current UG cohort.
-- If the email says a specific batch or year, use that.
-
 APPLICANT FORM FIELDS RULES:
 - Always include: full_name, student_id, email, cgpa, statement_of_purpose.
 - Add resume_upload if the email mentions CV, resume, or portfolio.
@@ -121,37 +106,15 @@ APPLICANT FORM FIELDS RULES:
 - Add language_score if language proficiency or IELTS/TOEFL is required.
 
 VISIBILITY RULES:
-- generator_visibility_rules is a simple array of email addresses. Do not output rule type objects.
-- Cohort emails follow the exact format ug.202x@plaksha.edu.in, for example ug.2023@plaksha.edu.in.
-- Automatically include the correct cohort email(s) from the eligibility text: UG 2022 -> ug.2022@plaksha.edu.in, UG 2023 -> ug.2023@plaksha.edu.in, UG 2024 -> ug.2024@plaksha.edu.in, UG 2025 -> ug.2025@plaksha.edu.in.
-- Default to ["ug.2024@plaksha.edu.in"] only if no eligibility clue is present.
-- Available group emails currently include ug.2022@plaksha.edu.in, ug.2023@plaksha.edu.in, ug.2024@plaksha.edu.in, ug.2025@plaksha.edu.in, and professors@plaksha.edu.in.
-- Use professors@plaksha.edu.in only when the opportunity is meant for professors/faculty.
+- student_visibility_rules is a simple array of email addresses. Do not output rule type objects.
+- Include only addresses explicitly supplied in the source material or in an administrator clarification.
+- Do not infer cohort, faculty, or group email addresses from the opportunity text. If eligibility is described but its recipient address is absent, leave the array empty and ask a clarifying question.
 - Use lowercase email addresses only. Do not include non-Plaksha addresses.
 
-STANDARD PLAKSHA APPROVAL PATHWAY:
-If the email does not specify an explicit reviewer/approval chain, use this graph.
-Do NOT ask a clarifying question — just apply it and add the warning below.
-Warning to add: "No explicit approval chain found — applied Plaksha standard pathway. Review reviewer assignments before publishing."
-
-  Nodes (in order):
-    start                  — node_type: start
-    oaa_review             — reviewer, oaa@plaksha.edu.in, sla_hours:72
-                             required_input: backlog_status (select: Clear/Active backlog/Misconduct)
-    ug_academics_review    — reviewer, ug-academics@plaksha.edu.in, sla_hours:72
-                             required_input: cgpa_verified (select: Meets requirement/Below minimum/Cannot verify)
-    parallel_join          — node_type: join_all
-    program_chair_review   — reviewer, shashikant.pawar@plaksha.edu.in, sla_hours:72
-                             required_input: coursework_alignment (select: Strong/Adequate/Weak/No alignment)
-    dean_approval          — reviewer, dean@plaksha.edu.in, sla_hours:72
-                             allowed_actions: ["approve","reject","comment"]
-                             required_input: dean_decision (select: Approved for nomination/Rejected)
-    end                    — node_type: end
-
-  Edges:
-    start → oaa_review, start → ug_academics_review (two edges, creating parallel branches)
-    oaa_review → parallel_join, ug_academics_review → parallel_join
-    parallel_join → program_chair_review → dean_approval → end
+REVIEW WORKFLOW RULES:
+- Include reviewers and approval order only when they are explicitly supplied in the source material or an administrator clarification.
+- Do not invent reviewer addresses, review policies, required inputs, or a default approval pathway.
+- When no complete review chain is supplied, leave the graph empty and ask a clarifying question.
 
 OTHER RULES:
 - If policy is still unclear after applying all rules above, add a clarifying question and lower confidence.
@@ -175,17 +138,16 @@ def _strip_markdown_json(raw: str) -> str:
 
 def _normalize_ai_output(parsed: AIWorkflowDraftOutput) -> AIWorkflowDraftOutput:
     """Normalize model variance into the app's canonical draft keys."""
-    parsed.opportunity.code = None
     _ensure_application_deadline(parsed)
-    _ensure_resume_field_aliases(parsed)
-    _normalize_generator_visibility_emails(parsed)
+    _normalize_resume_upload_field(parsed)
+    _normalize_student_visibility_emails(parsed)
     return parsed
 
 
-def _normalize_generator_visibility_emails(parsed: AIWorkflowDraftOutput) -> None:
+def _normalize_student_visibility_emails(parsed: AIWorkflowDraftOutput) -> None:
     normalized: list[str] = []
     seen: set[str] = set()
-    for raw_rule in parsed.generator_visibility_rules or []:
+    for raw_rule in parsed.student_visibility_rules or []:
         email = str(raw_rule).strip().lower()
         email = re.sub(r"^ug(20\d{2})@", r"ug.\1@", email)
         if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
@@ -194,7 +156,7 @@ def _normalize_generator_visibility_emails(parsed: AIWorkflowDraftOutput) -> Non
             continue
         seen.add(email)
         normalized.append(email)
-    parsed.generator_visibility_rules = normalized or ["ug.2024@plaksha.edu.in"]
+    parsed.student_visibility_rules = normalized
 
 
 def _ensure_application_deadline(parsed: AIWorkflowDraftOutput) -> None:
@@ -228,7 +190,8 @@ def _ensure_application_deadline(parsed: AIWorkflowDraftOutput) -> None:
 
 def _best_deadline_field(detail_fields: list[dict[str, Any]]) -> dict[str, Any] | None:
     deadline_fields = [
-        field for field in detail_fields
+        field
+        for field in detail_fields
         if "deadline" in str(field.get("field_key", "")).lower() and field.get("value")
     ]
     if not deadline_fields:
@@ -252,19 +215,14 @@ def _best_deadline_field(detail_fields: list[dict[str, Any]]) -> dict[str, Any] 
     return min(deadline_fields, key=score)
 
 
-def _ensure_resume_field_aliases(parsed: AIWorkflowDraftOutput) -> None:
-    fields = parsed.applicant_form_fields
-    field_set = set(fields)
-    has_resume_field = bool({"resume_upload", "resume_url"} & field_set)
-    if not has_resume_field:
-        return
-    if "resume_upload" not in field_set:
-        fields.append("resume_upload")
-    if "resume_url" not in field_set:
-        # Older evals and fallback generation used resume_url; the live catalog
-        # uses resume_upload. Keep both so publishing can use the catalog key
-        # while compatibility checks still see the legacy alias.
-        fields.append("resume_url")
+def _normalize_resume_upload_field(parsed: AIWorkflowDraftOutput) -> None:
+    """Map the legacy resume_url key to the catalog's sole resume_upload key."""
+    normalized: list[str] = []
+    for field in parsed.applicant_form_fields:
+        canonical = "resume_upload" if field == "resume_url" else field
+        if canonical not in normalized:
+            normalized.append(canonical)
+    parsed.applicant_form_fields = normalized
 
 
 def _now_iso() -> str:
@@ -287,7 +245,9 @@ class ClaudeProvider:
         from fastapi_app.ai_service import CLAUDE_MODEL, CLAUDE_TEMPERATURE
 
         if not CLAUDE_MODEL:
-            raise RuntimeError("CLAUDE_MODEL is not set — fill it in fastapi_app/ai_service.py")
+            raise RuntimeError(
+                "CLAUDE_MODEL is not set — fill it in fastapi_app/ai_service.py"
+            )
 
         client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
         tool_def = {
@@ -312,32 +272,8 @@ class ClaudeProvider:
         raise RuntimeError("Claude did not return the workflow draft tool output")
 
 
-class GeminiProvider:
-    """Google GenAI SDK provider. Requires: pip install google-genai"""
-
-    MODEL = "gemini-2.0-flash"
-
-    def complete(self, system: str, user: str, timeout: int) -> str:
-        import os
-
-        from google import genai
-
-        client = genai.Client(api_key=os.environ["AI_API_KEY"])
-        resp = client.models.generate_content(
-            model=self.MODEL,
-            contents=f"{system}\n\n{user}",
-            config={"response_mime_type": "application/json"},
-        )
-        return resp.text
-
-
 def get_provider() -> LLMProvider:
-    """Resolve provider from AI_PROVIDER env var. Defaults to claude."""
-    import os
-
-    p = os.environ.get("AI_PROVIDER", "claude").lower()
-    if p == "gemini":
-        return GeminiProvider()
+    """Return the configured Claude provider."""
     return ClaudeProvider()
 
 
@@ -362,7 +298,9 @@ class AIWorkflowDraftService:
     def __init__(self, provider: LLMProvider | None = None) -> None:
         self._provider = provider
 
-    def generate_draft(self, db: sqlite3.Connection, admin_email: str, prompt: str) -> dict[str, Any]:
+    def generate_draft(
+        self, db: sqlite3.Connection, admin_email: str, prompt: str
+    ) -> dict[str, Any]:
         """Call model, validate output, persist to workflow_drafts. Returns row dict."""
         parsed = self._generate_parsed(prompt)
         return self._persist_draft(db, admin_email, parsed, original_prompt=prompt)
@@ -371,7 +309,9 @@ class AIWorkflowDraftService:
         self, db: sqlite3.Connection, draft_id: int, answers: dict[str, Any]
     ) -> dict[str, Any]:
         """Regenerate an existing draft using its original prompt plus admin clarification answers."""
-        row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
         if not row:
             raise ValueError(f"Draft {draft_id} not found")
 
@@ -394,7 +334,9 @@ class AIWorkflowDraftService:
             return self.answer_clarification(db, draft_id, answers)
         return self._update_draft(db, draft_id, parsed, merged)
 
-    def _generate_parsed(self, prompt: str, fallback_on_failure: bool = True) -> AIWorkflowDraftOutput:
+    def _generate_parsed(
+        self, prompt: str, fallback_on_failure: bool = True
+    ) -> AIWorkflowDraftOutput:
         """Call model and return parsed output, falling back deterministically on failure."""
         provider = self._provider or get_provider()
         t0 = time.monotonic()
@@ -421,7 +363,9 @@ class AIWorkflowDraftService:
                 break
             except Exception as exc:
                 if attempt < self.MAX_RETRIES:
-                    _log.warning("ai_draft_retry", extra={"attempt": attempt, "error": str(exc)})
+                    _log.warning(
+                        "ai_draft_retry", extra={"attempt": attempt, "error": str(exc)}
+                    )
                     continue
                 _log.error(
                     "ai_draft_failed",
@@ -444,7 +388,9 @@ class AIWorkflowDraftService:
         self, db: sqlite3.Connection, draft_id: int, answers: dict[str, Any]
     ) -> dict[str, Any]:
         """Merge admin answers into draft row, re-evaluate publish_ready."""
-        row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
         if not row:
             raise ValueError(f"Draft {draft_id} not found")
 
@@ -474,7 +420,9 @@ class AIWorkflowDraftService:
                 pass
 
         all_answered = all(q in merged for q in questions)
-        publish_ready = 1 if (not validation_errors and all_answered and not is_fallback) else 0
+        publish_ready = (
+            1 if (not validation_errors and all_answered and not is_fallback) else 0
+        )
         status = "ready" if publish_ready else "pending"
         ts = _now_iso()
 
@@ -488,7 +436,9 @@ class AIWorkflowDraftService:
                 (json.dumps(merged), publish_ready, status, ts, draft_id),
             )
 
-        updated = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        updated = db.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
         return dict(updated)
 
     def _fallback_draft(self) -> AIWorkflowDraftOutput:
@@ -504,12 +454,14 @@ class AIWorkflowDraftService:
             ),
             graph=GraphModel(
                 nodes=[
-                    GraphNodeModel(node_key="start", node_type="start", display_name="Start"),
+                    GraphNodeModel(
+                        node_key="start", node_type="start", display_name="Start"
+                    ),
                     GraphNodeModel(
                         node_key="oge_review",
                         node_type="reviewer",
-                        display_name="OGE Review",
-                        reviewer_email="oge@plaksha.edu.in",
+                        display_name="Assign reviewer",
+                        reviewer_email=None,
                     ),
                     GraphNodeModel(node_key="end", node_type="end", display_name="End"),
                 ],
@@ -518,10 +470,15 @@ class AIWorkflowDraftService:
                     GraphEdgeModel(from_node_key="oge_review", to_node_key="end"),
                 ],
             ),
-            generator_visibility_rules=["ug.2024@plaksha.edu.in"],
-            clarifying_questions=[],
+            student_visibility_rules=[],
+            clarifying_questions=[
+                "Which student email address or group should be allowed to view this opportunity?",
+                "Who should review this opportunity, and in what approval order?",
+            ],
             confidence=0.0,
-            warnings=["AI generation unavailable — fallback draft used. Review and edit before publishing."],
+            warnings=[
+                "AI generation unavailable — fallback draft used. Review and edit before publishing."
+            ],
             is_fallback=True,
         )
 
@@ -541,7 +498,11 @@ class AIWorkflowDraftService:
             decision = r.get("decision") or "REVIEW"
             reviewer = r.get("reviewer_name") or r.get("reviewer_email") or "reviewer"
             remarks = (r.get("remarks") or "").strip()[:200]
-            review_lines.append(f"- {decision} by {reviewer}: {remarks}" if remarks else f"- {decision} by {reviewer}")
+            review_lines.append(
+                f"- {decision} by {reviewer}: {remarks}"
+                if remarks
+                else f"- {decision} by {reviewer}"
+            )
 
         comment_lines = []
         for c in comments[:5]:
@@ -550,7 +511,11 @@ class AIWorkflowDraftService:
             if text:
                 comment_lines.append(f"- {author}: {text}")
 
-        app_data_lines = [f"- {k}: {str(v)[:120]}" for k, v in list(app_file.items())[:10] if v not in (None, "")]
+        app_data_lines = [
+            f"- {k}: {str(v)[:120]}"
+            for k, v in list(app_file.items())[:10]
+            if v not in (None, "")
+        ]
 
         system = (
             "You are PRISM, a university global affairs assistant. "
@@ -559,23 +524,25 @@ class AIWorkflowDraftService:
             "pending actions, and a recommended next step for the OGE team. "
             "Be direct. No bullet points in the output — write flowing prose."
         )
-        user = "\n".join([
-            f"Opportunity: {opportunity.get('title', 'Unknown')}",
-            f"Student: {student.get('full_name', 'Unknown')}",
-            f"Current stage: {app.get('current_stage_label') or 'Unknown'}",
-            f"Final status: {app.get('final_status') or 'In progress'}",
-            "",
-            "Application data:",
-            *app_data_lines,
-            "",
-            "Review decisions:",
-            *(review_lines or ["None yet."]),
-            "",
-            "Comments:",
-            *(comment_lines or ["None yet."]),
-            "",
-            f"Timeline events: {len(timeline)}",
-        ])
+        user = "\n".join(
+            [
+                f"Opportunity: {opportunity.get('title', 'Unknown')}",
+                f"Student: {student.get('full_name', 'Unknown')}",
+                f"Current stage: {app.get('current_stage_label') or 'Unknown'}",
+                f"Final status: {app.get('final_status') or 'In progress'}",
+                "",
+                "Application data:",
+                *app_data_lines,
+                "",
+                "Review decisions:",
+                *(review_lines or ["None yet."]),
+                "",
+                "Comments:",
+                *(comment_lines or ["None yet."]),
+                "",
+                f"Timeline events: {len(timeline)}",
+            ]
+        )
 
         try:
             return provider.complete(system, user, timeout=20)
@@ -600,7 +567,11 @@ class AIWorkflowDraftService:
         """Write to workflow_drafts. Returns the new row as a dict."""
         validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
         has_questions = bool(parsed.clarifying_questions)
-        publish_ready = 1 if (not validation_errors and not has_questions and not parsed.is_fallback) else 0
+        publish_ready = (
+            1
+            if (not validation_errors and not has_questions and not parsed.is_fallback)
+            else 0
+        )
         status = "ready" if publish_ready else "pending"
         ts = _now_iso()
 
@@ -628,7 +599,9 @@ class AIWorkflowDraftService:
             )
             draft_id = cursor.lastrowid
 
-        row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
         return dict(row)
 
     def _update_draft(
@@ -641,7 +614,11 @@ class AIWorkflowDraftService:
         """Replace AI-generated content for an existing workflow_draft row."""
         validation_errors = GraphPolicyValidator().validate_graph(parsed.graph)
         has_questions = bool(parsed.clarifying_questions)
-        publish_ready = 1 if (not validation_errors and not has_questions and not parsed.is_fallback) else 0
+        publish_ready = (
+            1
+            if (not validation_errors and not has_questions and not parsed.is_fallback)
+            else 0
+        )
         status = "ready" if publish_ready else "pending"
         ts = _now_iso()
 
@@ -667,10 +644,14 @@ class AIWorkflowDraftService:
                 ),
             )
 
-        row = db.execute("SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM workflow_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
         return dict(row)
 
-    def _prompt_with_answers(self, original_prompt: str, answers: dict[str, Any]) -> str:
+    def _prompt_with_answers(
+        self, original_prompt: str, answers: dict[str, Any]
+    ) -> str:
         answers_json = json.dumps(answers, indent=2, sort_keys=True, default=str)
         return (
             f"{original_prompt}\n\n"

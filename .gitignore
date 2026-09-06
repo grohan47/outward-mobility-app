@@ -36,3 +36,12 @@ tsconfig.tsbuildinfo
 
 # Nested app copy (accidentally created — work overlaid to root)
 outward-mobility-app-next/
+
+.venv/
+.pytest_cache/
+.ruff_cache/
+data/
+playwright-report/
+test-results/
+*.tsbuildinfo
+!.env.example

@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { buildStakeholderOptions, labelForVisibility, type StakeholderOption } from "@/components/application/chatStakeholders";
+import {
+  labelForVisibility,
+  STAFF_AUDIENCES,
+  STUDENT_AUDIENCES,
+  type CommentVisibility,
+} from "@/components/application/chatStakeholders";
 
 type CommentRecord = {
   id: number;
@@ -21,13 +26,7 @@ interface ApplicationChatWidgetProps {
   applicationId: number;
   contextLabel: string;
   visible?: boolean;
-  studentName?: string | null;
-  pipelineSteps?: Array<{
-    step_name?: string;
-    reviewer_email?: string;
-    reviewer_display_name?: string;
-    reviewerName?: string;
-  }>;
+  audience?: "staff" | "student";
 }
 
 function formatAuthorLabel(authorEmail: string, currentUserEmail: string | null): string {
@@ -47,8 +46,7 @@ export function ApplicationChatWidget({
   applicationId,
   contextLabel,
   visible = true,
-  studentName,
-  pipelineSteps = [],
+  audience = "staff",
 }: ApplicationChatWidgetProps) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -57,16 +55,11 @@ export function ApplicationChatWidget({
   const [comments, setComments] = useState<CommentRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-  const [threadKey, setThreadKey] = useState("all");
-  const [recipientKey, setRecipientKey] = useState("internal");
+  const [visibility, setVisibility] = useState<CommentVisibility>(
+    audience === "student" ? "student_visible" : "internal",
+  );
   const listRef = useRef<HTMLDivElement | null>(null);
-  const stakeholderOptions = buildStakeholderOptions({ studentName, pipelineSteps });
-
-  useEffect(() => {
-    if (threadKey !== "all") {
-      setRecipientKey(threadKey);
-    }
-  }, [threadKey]);
+  const audienceOptions = audience === "student" ? STUDENT_AUDIENCES : STAFF_AUDIENCES;
 
   useEffect(() => {
     // Frontend -> API: GET /api/auth/me
@@ -80,38 +73,27 @@ export function ApplicationChatWidget({
       });
   }, []);
 
-  useEffect(() => {
-    if (!open || !visible) return;
-
+  async function openChat() {
+    setOpen(true);
     setLoading(true);
     setError(null);
-
-    // Frontend -> API: GET /api/applications/:id/comments
-    fetch(`/api/applications/${applicationId}/comments`)
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload?.detail || "Unable to load chat.");
-        }
-        setComments(Array.isArray(payload?.comments) ? payload.comments : []);
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Unable to load chat.");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [applicationId, open, visible]);
+    try {
+      // Frontend -> API: GET /api/applications/:id/comments
+      const response = await fetch(`/api/applications/${applicationId}/comments`);
+      const payload: { comments?: CommentRecord[]; detail?: string } = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "Unable to load chat.");
+      setComments(Array.isArray(payload.comments) ? payload.comments : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load chat.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (!open || !listRef.current) return;
     listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [comments, open, threadKey]);
-
-  const visibleComments =
-    threadKey === "all"
-      ? comments
-      : comments.filter((comment) => (comment.visibility || "internal").toLowerCase() === threadKey);
+  }, [comments, open]);
 
   async function handleSubmit() {
     const trimmed = message.trim();
@@ -129,7 +111,7 @@ export function ApplicationChatWidget({
         },
         body: JSON.stringify({
           text: trimmed,
-          visibility: recipientKey,
+          visibility,
         }),
       });
 
@@ -170,24 +152,6 @@ export function ApplicationChatWidget({
             </button>
           </div>
 
-          <div className="border-b border-slate-200 bg-white px-4 py-3">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="w-10 text-slate-400">View</span>
-              <select
-                value={threadKey}
-                onChange={(event) => setThreadKey(event.target.value)}
-                className="h-9 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 outline-none"
-              >
-                <option value="all">All messages</option>
-                {stakeholderOptions.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
           <div
             ref={listRef}
             className="flex max-h-[24rem] min-h-[18rem] flex-col gap-3 overflow-y-auto bg-slate-50/80 px-4 py-4"
@@ -198,18 +162,18 @@ export function ApplicationChatWidget({
               </div>
             ) : error ? (
               <div className="rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
-            ) : visibleComments.length === 0 ? (
+            ) : comments.length === 0 ? (
               <div className="m-auto max-w-xs text-center">
                 <p className="text-sm font-medium text-slate-700">No messages yet.</p>
                 <p className="mt-1 text-xs text-slate-500">
-                  {threadKey === "all" ? "Use this space for application-specific communication." : "No messages for this stakeholder thread yet."}
+                  Use this space for application-specific communication.
                 </p>
               </div>
             ) : (
-              visibleComments.map((comment) => {
+              comments.map((comment) => {
                 const isMine =
                   currentUserEmail && comment.author_email.toLowerCase() === currentUserEmail.toLowerCase();
-                const threadLabel = labelForVisibility(comment.visibility, stakeholderOptions);
+                const audienceLabel = labelForVisibility(comment.visibility);
 
                 return (
                   <div
@@ -226,11 +190,9 @@ export function ApplicationChatWidget({
                       {comment.text}
                     </div>
                     <p className="mt-1 flex items-center gap-2 px-1 text-[11px] text-slate-400">
-                      {threadKey === "all" && threadLabel && (
-                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
-                          {threadLabel}
-                        </span>
-                      )}
+                      <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                        {audienceLabel}
+                      </span>
                       <span>
                       {formatAuthorLabel(comment.author_email, currentUserEmail)} ·{" "}
                       {new Date(comment.created_at).toLocaleString()}
@@ -247,18 +209,13 @@ export function ApplicationChatWidget({
               <div className="flex items-center gap-2 border-b border-slate-200 px-2 pb-2">
                 <span className="w-10 text-xs text-slate-400">To</span>
                 <select
-                  value={recipientKey}
-                  onChange={(event) => {
-                    const nextKey = event.target.value;
-                    setRecipientKey(nextKey);
-                    if (threadKey !== "all") {
-                      setThreadKey(nextKey);
-                    }
-                  }}
+                  value={visibility}
+                  onChange={(event) => setVisibility(event.target.value as CommentVisibility)}
+                  disabled={audienceOptions.length === 1}
                   className="h-9 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none"
                 >
-                  {stakeholderOptions.map((option: StakeholderOption) => (
-                    <option key={option.key} value={option.key}>
+                  {audienceOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}
@@ -301,7 +258,7 @@ export function ApplicationChatWidget({
       {!open && (
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => void openChat()}
           className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 shadow-xl shadow-slate-900/10 transition-all hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-2xl md:bottom-6 md:right-6"
         >
           <span className="material-symbols-outlined text-[18px] text-slate-600">chat</span>

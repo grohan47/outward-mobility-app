@@ -1,0 +1,12 @@
+[project]
+name = "outward-mobility"
+version = "0.3.0"
+requires-python = ">=3.13,<3.15"
+dependencies = ["fastapi>=0.141.1,<0.142", "pydantic>=2.13,<3", "uvicorn>=0.41,<1", "anthropic>=0.84,<1", "apscheduler>=3.11,<4", "python-dotenv>=1.2,<2"]
+
+[dependency-groups]
+dev = ["pytest>=9,<10", "httpx>=0.28,<1", "ruff>=0.15,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["fastapi_app/tests"]
+pythonpath = ["."]

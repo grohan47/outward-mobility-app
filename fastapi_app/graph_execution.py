@@ -1,89 +1,188 @@
-from __future__ import annotations
+"""Transactional execution of sequential levels with unanimous parallel reviews."""
 
+from __future__ import annotations
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
-
 from fastapi_app.graph_models import TaskRow, TransitionResult
+from fastapi_app.levels import normalize_levels
 
 
-APPROVE = "approve"
-REJECT = "reject"
-REQUEST_CHANGES = "request_changes"
-COMMENT = "comment"
-FLAG = "flag"
-
-
-def _now_iso() -> str:
+def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _json_list(raw: str | None, fallback: list[str]) -> list[str]:
-    if not raw:
-        return fallback
+@contextmanager
+def transaction(db):
+    # Acquire the write lock before reading task state. Nested callers already own it.
+    owned = not db.in_transaction
+    if owned:
+        db.execute("BEGIN IMMEDIATE")
     try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return fallback
-    if not isinstance(parsed, list):
-        return fallback
-    return [str(item) for item in parsed]
-
-
-def _submitted_data(application_row: sqlite3.Row) -> dict[str, Any]:
-    raw = application_row["submitted_data_json"]
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+        yield
+        if owned:
+            db.commit()
+    except Exception:
+        if owned:
+            db.rollback()
+        raise
 
 
 class GraphExecutionService:
-    """
-    Executes published graph versions through reviewer tasks.
+    def _definition(self, db, version):
+        row = db.execute(
+            "SELECT definition_json FROM graph_versions WHERE id=?", (version,)
+        ).fetchone()
+        if not row:
+            raise ValueError("Published workflow not found")
+        if row["definition_json"]:
+            return json.loads(row["definition_json"])["graph"]["levels"]
+        nodes = []
+        for row in db.execute(
+            "SELECT * FROM graph_nodes WHERE graph_version_id=? ORDER BY id", (version,)
+        ):
+            node = dict(row)
+            for key, default in [
+                ("metadata", {}),
+                ("visible_sections", []),
+                ("allowed_actions", []),
+            ]:
+                node[key] = json.loads(node[key] or json.dumps(default))
+            nodes.append(node)
+        edges = [
+            dict(r)
+            for r in db.execute(
+                "SELECT * FROM graph_edges WHERE graph_version_id=? ORDER BY id",
+                (version,),
+            )
+        ]
+        return normalize_levels({"nodes": nodes, "edges": edges})
 
-    State machine:
-      instantiate()
-        start node -> outgoing edges -> reviewer tasks
+    def _application(self, db, application_id):
+        row = db.execute(
+            "SELECT * FROM applications WHERE id=?", (application_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError("Application not found")
+        return row
 
-      transition(task, approve)
-        active reviewer task -> completed -> downstream node(s)
-        reviewer -> reviewer: create next active task
-        reviewer -> join_all: wait until all incoming reviewer tasks completed
-        reviewer -> join_any: skip sibling active tasks, advance once
-        reviewer -> conditional: evaluate whitelisted edge predicates
-        reviewer -> end: mark application approved
+    def _event(self, db, app_id, kind, actor, payload):
+        db.execute(
+            "INSERT INTO timeline_events (application_id,event_type,event_payload_json,actor_email,created_at) VALUES (?,?,?,?,?)",
+            (app_id, kind, json.dumps(payload), actor, _now_iso()),
+        )
 
-      transition(task, reject)
-        active reviewer task -> rejected -> configured reject route or closed/rejected
+    def _open(self, db, app, levels, index):
+        ts = _now_iso()
+        if index >= len(levels):
+            db.execute(
+                "UPDATE applications SET final_status='APPROVED',current_stage_label='Closed',updated_at=? WHERE id=?",
+                (ts, app["id"]),
+            )
+            return []
+        level = levels[index]
+        ids = []
+        for node in level["reviewers"]:
+            cursor = db.execute(
+                """INSERT INTO application_workflow_tasks
+                (application_id,graph_version_id,node_key,assigned_reviewer_email,assigned_at,status,attempt)
+                VALUES (?,?,?,?,?,'active',?)""",
+                (
+                    app["id"],
+                    app["graph_version_id"],
+                    node["node_key"],
+                    node["reviewer_email"].strip().lower(),
+                    ts,
+                    app["attempt"],
+                ),
+            )
+            ids.append(cursor.lastrowid)
+        db.execute(
+            "UPDATE applications SET current_level=?,current_step_order=?,current_stage_label=?,updated_at=? WHERE id=?",
+            (index, index + 1, level["name"], ts, app["id"]),
+        )
+        return ids
 
-      transition(task, request_changes)
-        active reviewer task -> returned -> application waits in Student Rework
-        unless a request_changes edge explicitly routes to another reviewer/task
-    """
+    def instantiate(self, db, application_id, graph_version_id):
+        with transaction(db):
+            app = self._application(db, application_id)
+            if db.execute(
+                "SELECT 1 FROM application_workflow_tasks WHERE application_id=?",
+                (application_id,),
+            ).fetchone():
+                raise ValueError("Application workflow is already instantiated")
+            levels = self._definition(db, graph_version_id)
+            if not levels:
+                raise ValueError("Workflow needs at least one review level")
+            return self._open(db, app, levels, 0)
 
-    VALID_DECISIONS = {APPROVE, REJECT, REQUEST_CHANGES, COMMENT, FLAG}
+    def _validate_inputs(self, node, data, required):
+        fields = node.get("metadata", {}).get("required_inputs", [])
+        if set(data) - {f["input_key"] for f in fields}:
+            raise ValueError("Unknown reviewer input")
+        for f in fields:
+            value = data.get(f["input_key"])
+            missing = value is None or value == "" or value == []
+            if missing:
+                if required and f.get("required", True):
+                    raise ValueError(f"Missing required reviewer input: {f['label']}")
+                continue
+            kind = f.get("input_type", "text")
+            if kind == "number":
+                if isinstance(value, bool):
+                    raise ValueError(f"{f['label']} must be a number")
+                try:
+                    import math
 
-    def instantiate(self, db: sqlite3.Connection, application_id: int, graph_version_id: int) -> list[int]:
-        with db:
-            application = self._get_application(db, application_id)
-            start_node = db.execute(
-                """
-                SELECT *
-                FROM graph_nodes
-                WHERE graph_version_id = ? AND node_type = 'start'
-                LIMIT 1
-                """,
-                (graph_version_id,),
-            ).fetchone()
-            if not start_node:
-                raise ValueError("Graph version has no start node")
+                    number = float(value)
+                    if not math.isfinite(number):
+                        raise ValueError()
+                    data[f["input_key"]] = number
+                except (ValueError, TypeError):
+                    raise ValueError(f"{f['label']} must be a finite number") from None
+            elif kind == "select" and value not in f.get("options", []):
+                raise ValueError(f"Invalid option for {f['label']}")
+            elif kind == "checkbox" and not isinstance(value, bool):
+                raise ValueError(f"{f['label']} must be true or false")
+            elif kind == "text" and not isinstance(value, str):
+                raise ValueError(f"{f['label']} must be text")
 
-            return self._advance_from_node(db, application, graph_version_id, start_node["node_key"])
+    def _return(self, db, app, levels, source_index, target, actor):
+        index = (
+            source_index
+            if target == "student"
+            else next((i for i, l in enumerate(levels) if l["id"] == target), -1)
+        )
+        if index < 0 or (target != "student" and index >= source_index):
+            raise ValueError("Return target must be the student or an earlier level")
+        affected = [n["node_key"] for l in levels[index:] for n in l["reviewers"]]
+        marks = ",".join("?" for _ in affected)
+        db.execute(
+            f"UPDATE application_workflow_tasks SET status='invalidated' WHERE application_id=? AND node_key IN ({marks}) AND status IN ('active','completed','returned')",
+            (app["id"], *affected),
+        )
+        db.execute(
+            "UPDATE applications SET attempt=attempt+1,return_level=?,current_level=?,current_step_order=?,current_stage_label=?,updated_at=? WHERE id=?",
+            (
+                index,
+                index,
+                0 if target == "student" else index + 1,
+                "Student Rework" if target == "student" else levels[index]["name"],
+                _now_iso(),
+                app["id"],
+            ),
+        )
+        self._event(
+            db,
+            app["id"],
+            "WORKFLOW_RETURNED",
+            actor,
+            {"target": target, "return_level": index, "attempt": app["attempt"] + 1},
+        )
+        if target == "student":
+            return []
+        return self._open(db, self._application(db, app["id"]), levels, index)
 
     def transition(
         self,
@@ -92,738 +191,214 @@ class GraphExecutionService:
         decision: str,
         actor_email: str,
         comment: str | None = None,
-        reviewer_data: dict[str, Any] | None = None,
+        reviewer_data: dict | None = None,
     ) -> TransitionResult:
-        normalized_decision = decision.strip().lower()
-        if normalized_decision not in self.VALID_DECISIONS:
-            raise ValueError(f"Unsupported graph task decision: {decision}")
-
-        with db:
-            task = self._get_task(db, task_id)
-            if task["status"] != "active":
-                raise ValueError("Task is no longer active")
-            if task["assigned_reviewer_email"].lower() != actor_email.strip().lower():
+        decision = decision.strip().lower()
+        with transaction(db):
+            task = db.execute(
+                "SELECT * FROM application_workflow_tasks WHERE id=?", (task_id,)
+            ).fetchone()
+            if (
+                not task
+                or task["assigned_reviewer_email"].lower()
+                != actor_email.strip().lower()
+            ):
                 raise ValueError("Actor is not assigned to this task")
-
-            application = self._get_application(db, int(task["application_id"]))
-            node = self._get_node(db, int(task["graph_version_id"]), str(task["node_key"]))
-            ts = _now_iso()
-            allowed_actions = set(_json_list(node["allowed_actions"], ["approve", "reject", "request_changes", "comment"]))
-            if normalized_decision not in allowed_actions:
-                raise ValueError(f"Decision '{normalized_decision}' is not allowed for this reviewer task")
-
-            if normalized_decision == COMMENT:
-                entry = f"[{ts}] {comment or ''}"
-                existing_comment = task["comment_summary"] or ""
-                comment_summary = f"{existing_comment}\n{entry}" if existing_comment else entry
+            if task["status"] != "active":
+                raise ValueError("Task is no longer active; refresh the application")
+            app = self._application(db, task["application_id"])
+            if app["final_status"] or app["current_step_order"] == 0:
+                raise ValueError("Application is closed or waiting for student rework")
+            levels = self._definition(db, app["graph_version_id"])
+            index = next(
+                i
+                for i, l in enumerate(levels)
+                if any(n["node_key"] == task["node_key"] for n in l["reviewers"])
+            )
+            node = next(
+                n
+                for n in levels[index]["reviewers"]
+                if n["node_key"] == task["node_key"]
+            )
+            if decision not in node.get("allowed_actions", []) or decision not in {
+                "approve",
+                "reject",
+                "request_changes",
+                "comment",
+            }:
+                raise ValueError("Action is not allowed for this reviewer")
+            if decision == "comment":
+                if not comment or not comment.strip():
+                    raise ValueError("A comment is required")
                 db.execute(
-                    """
-                    UPDATE application_workflow_tasks
-                    SET comment_summary = ?
-                    WHERE id = ?
-                    """,
-                    (comment_summary, task_id),
+                    "INSERT INTO application_comments (application_id,author_email,text,visibility,created_at) VALUES (?,?,?,'internal',?)",
+                    (app["id"], actor_email, comment.strip(), _now_iso()),
                 )
-                return TransitionResult(success=True, next_task_ids=[], application_status=None)
-
-            if normalized_decision == FLAG:
+                return TransitionResult(success=True)
+            data = dict(reviewer_data or {})
+            self._validate_inputs(node, data, decision == "approve")
+            if (
+                decision in {"reject", "request_changes"}
+                and not (comment or "").strip()
+            ):
+                raise ValueError("Explain the rejection or requested changes")
+            db.execute(
+                "UPDATE application_workflow_tasks SET status=?,decision=?,acted_at=?,comment_summary=?,reviewer_data_json=? WHERE id=? AND status='active'",
+                (
+                    "completed"
+                    if decision == "approve"
+                    else "returned"
+                    if decision == "request_changes"
+                    else "rejected",
+                    decision,
+                    _now_iso(),
+                    comment,
+                    json.dumps(data),
+                    task_id,
+                ),
+            )
+            self._event(
+                db,
+                app["id"],
+                "REVIEW_DECISION",
+                actor_email,
+                {
+                    "task_id": task_id,
+                    "node_key": node["node_key"],
+                    "decision": decision,
+                    "attempt": app["attempt"],
+                },
+            )
+            if decision == "reject":
                 db.execute(
-                    """
-                    UPDATE application_workflow_tasks
-                    SET status = 'flagged',
-                        acted_at = ?,
-                        decision = ?,
-                        comment_summary = ?,
-                        reviewer_data_json = ?
-                    WHERE id = ?
-                    """,
-                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
+                    "UPDATE application_workflow_tasks SET status='cancelled' WHERE application_id=? AND status='active'",
+                    (app["id"],),
                 )
                 db.execute(
-                    """
-                    UPDATE applications
-                    SET current_stage_label = 'Flagged — Needs Attention',
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (ts, int(task["application_id"])),
+                    "UPDATE applications SET final_status='REJECTED',current_stage_label='Closed',updated_at=? WHERE id=?",
+                    (_now_iso(), app["id"]),
                 )
-                return TransitionResult(success=True, next_task_ids=[], application_status="FLAGGED")
-
-            if normalized_decision == APPROVE:
-                missing = self._missing_required_inputs(node, reviewer_data)
-                if missing:
-                    raise ValueError(f"Missing required reviewer inputs: {', '.join(missing)}")
-
-            if normalized_decision == REJECT:
-                db.execute(
-                    """
-                    UPDATE application_workflow_tasks
-                    SET status = 'completed',
-                        acted_at = ?,
-                        decision = ?,
-                        comment_summary = ?,
-                        reviewer_data_json = ?
-                    WHERE id = ?
-                    """,
-                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
-                )
-                # Cancel all other active tasks for this application.
-                db.execute(
-                    """
-                    UPDATE application_workflow_tasks
-                    SET status = 'cancelled', acted_at = ?
-                    WHERE application_id = ? AND status = 'active' AND id != ?
-                    """,
-                    (ts, int(task["application_id"]), task_id),
-                )
-                next_task_ids = self._advance_from_node(
-                    db,
-                    application,
-                    int(task["graph_version_id"]),
-                    str(task["node_key"]),
-                    completed_task_id=task_id,
-                    decision=REJECT,
-                )
-                if not next_task_ids:
-                    self._mark_application_rejected(db, int(task["application_id"]))
-
-                updated = self._get_application(db, int(task["application_id"]))
+                return TransitionResult(success=True, application_status="REJECTED")
+            if decision == "request_changes":
+                target = node.get("metadata", {}).get("return_target", "student")
+                if target == "student":
+                    # The task's decision record is reviewer-only. Copy only the
+                    # required reason into the student-visible conversation.
+                    db.execute(
+                        "INSERT INTO application_comments (application_id,author_email,text,visibility,created_at) VALUES (?,?,?,'student_visible',?)",
+                        (app["id"], actor_email, comment.strip(), _now_iso()),
+                    )
+                ids = self._return(db, app, levels, index, target, actor_email)
                 return TransitionResult(
                     success=True,
-                    next_task_ids=next_task_ids,
-                    application_status=updated["final_status"],
+                    next_task_ids=ids,
+                    application_status="STUDENT_REWORK"
+                    if target == "student"
+                    else "IN_PROGRESS",
                 )
-
-            if normalized_decision == REQUEST_CHANGES:
-                db.execute(
-                    """
-                    UPDATE application_workflow_tasks
-                    SET status = 'returned',
-                        acted_at = ?,
-                        decision = ?,
-                        comment_summary = ?,
-                        reviewer_data_json = ?,
-                        return_to_task_id = NULL
-                    WHERE id = ?
-                    """,
-                    (ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
-                )
-                next_task_ids = self._advance_from_node(
-                    db,
-                    application,
-                    int(task["graph_version_id"]),
-                    str(task["node_key"]),
-                    completed_task_id=task_id,
-                    decision=REQUEST_CHANGES,
-                )
-                if next_task_ids:
-                    updated = self._get_application(db, int(task["application_id"]))
+            keys = [n["node_key"] for n in levels[index]["reviewers"]]
+            rows = db.execute(
+                f"SELECT * FROM application_workflow_tasks WHERE application_id=? AND attempt=? AND node_key IN ({','.join('?' for _ in keys)})",
+                (app["id"], app["attempt"], *keys),
+            ).fetchall()
+            if len(rows) != len(keys) or any(
+                r["status"] != "completed" or r["decision"] != "approve" for r in rows
+            ):
+                return TransitionResult(success=True, application_status="IN_PROGRESS")
+            values = json.loads(app["submitted_data_json"] or "{}")
+            for r in db.execute(
+                "SELECT reviewer_data_json FROM application_workflow_tasks WHERE application_id=? AND status='completed' ORDER BY id",
+                (app["id"],),
+            ):
+                values.update(json.loads(r["reviewer_data_json"] or "{}"))
+            for n in levels[index]["reviewers"]:
+                rule = n.get("metadata", {}).get("return_rule")
+                if (
+                    rule
+                    and rule["field"] in values
+                    and str(values[rule["field"]]).lower() == str(rule["value"]).lower()
+                ):
+                    if app["attempt"] >= 10:
+                        db.execute(
+                            "UPDATE applications SET current_stage_label='Return limit reached — OGE action required' WHERE id=?",
+                            (app["id"],),
+                        )
+                        self._event(
+                            db,
+                            app["id"],
+                            "AUTOMATIC_RETURN_PAUSED",
+                            actor_email,
+                            {"level": index},
+                        )
+                        return TransitionResult(
+                            success=True, application_status="PAUSED"
+                        )
+                    ids = self._return(
+                        db, app, levels, index, rule["target"], actor_email
+                    )
                     return TransitionResult(
                         success=True,
-                        next_task_ids=next_task_ids,
-                        application_status=updated["final_status"],
+                        next_task_ids=ids,
+                        application_status="STUDENT_REWORK"
+                        if rule["target"] == "student"
+                        else "IN_PROGRESS",
                     )
-                db.execute(
-                    """
-                    UPDATE applications
-                    SET current_stage_label = 'Student Rework',
-                        current_step_order = 0,
-                        return_to_step_order = 1,
-                        return_to_stage_label = ?,
-                        final_status = NULL,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (node["display_name"] or task["node_key"], ts, int(task["application_id"])),
-                )
-                return TransitionResult(success=True, application_status="STUDENT_REWORK")
-
-            completion_status = "rejected" if normalized_decision == REJECT else "completed"
-            db.execute(
-                """
-                UPDATE application_workflow_tasks
-                SET status = ?,
-                    acted_at = ?,
-                    decision = ?,
-                    comment_summary = ?,
-                    reviewer_data_json = ?
-                WHERE id = ?
-                """,
-                (completion_status, ts, normalized_decision, comment, json.dumps(reviewer_data or {}), task_id),
-            )
-            next_task_ids = self._advance_from_node(
+            ids = self._open(db, app, levels, index + 1)
+            self._event(
                 db,
-                application,
-                int(task["graph_version_id"]),
-                str(task["node_key"]),
-                completed_task_id=task_id,
-                decision=normalized_decision,
+                app["id"],
+                "LEVEL_COMPLETED",
+                actor_email,
+                {"level_id": levels[index]["id"], "attempt": app["attempt"]},
             )
-            if normalized_decision == REJECT and not next_task_ids:
-                self._mark_application_rejected(db, int(task["application_id"]))
-
-            updated = self._get_application(db, int(task["application_id"]))
             return TransitionResult(
                 success=True,
-                next_task_ids=next_task_ids,
-                application_status=updated["final_status"],
+                next_task_ids=ids,
+                application_status="IN_PROGRESS" if ids else "APPROVED",
             )
 
-    def resubmit_after_rework(self, db: sqlite3.Connection, application_id: int) -> int:
-        with db:
-            task = db.execute(
-                """
-                SELECT
-                  t.id AS task_id,
-                  COALESCE(n.display_name, t.node_key) AS display_name
-                FROM application_workflow_tasks t
-                JOIN graph_nodes n
-                  ON n.graph_version_id = t.graph_version_id
-                 AND n.node_key = t.node_key
-                WHERE t.application_id = ?
-                  AND t.status = 'returned'
-                ORDER BY t.acted_at DESC, t.id DESC
-                LIMIT 1
-                """,
-                (application_id,),
-            ).fetchone()
-            if not task:
-                raise ValueError("Application has no returned workflow task to resubmit")
-
-            ts = _now_iso()
-            db.execute(
-                """
-                UPDATE application_workflow_tasks
-                SET status = 'active',
-                    acted_at = NULL,
-                    decision = NULL,
-                    comment_summary = NULL
-                WHERE id = ?
-                """,
-                (int(task["task_id"]),),
+    def resubmit_after_rework(self, db, application_id):
+        with transaction(db):
+            app = self._application(db, application_id)
+            if app["current_step_order"] != 0 or app["final_status"]:
+                raise ValueError("Application is not waiting for student rework")
+            ids = self._open(
+                db,
+                app,
+                self._definition(db, app["graph_version_id"]),
+                app["return_level"],
             )
-            db.execute(
-                """
-                UPDATE applications
-                SET current_stage_label = ?,
-                    current_step_order = 1,
-                    return_to_step_order = NULL,
-                    return_to_stage_label = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (task["display_name"], ts, application_id),
+            self._event(
+                db,
+                application_id,
+                "STUDENT_RESUBMITTED",
+                None,
+                {"attempt": app["attempt"]},
             )
-            return int(task["task_id"])
+            return ids[0]
 
-    def get_inbox(self, db: sqlite3.Connection, reviewer_email: str) -> list[TaskRow]:
+    def get_inbox(self, db, reviewer_email):
         rows = db.execute(
-            """
-            SELECT
-              t.id AS task_id,
-              t.application_id,
-              o.title AS opportunity_title,
-              u.full_name AS student_name,
-              t.node_key,
-              COALESCE(n.display_name, t.node_key) AS display_name,
-              n.allowed_actions,
-              n.visible_sections,
-              t.assigned_at
-            FROM application_workflow_tasks t
-            JOIN applications a ON a.id = t.application_id
-            JOIN opportunities o ON o.id = a.opportunity_id
-            JOIN student_profiles sp ON sp.id = a.student_profile_id
-            JOIN users u ON u.id = sp.user_id
-            JOIN graph_nodes n
-              ON n.graph_version_id = t.graph_version_id
-             AND n.node_key = t.node_key
-            WHERE t.status IN ('active', 'flagged')
-              AND LOWER(t.assigned_reviewer_email) = LOWER(?)
-            ORDER BY t.assigned_at DESC, t.id DESC
-            """,
-            (reviewer_email.strip().lower(),),
+            """SELECT t.*,o.title AS opportunity_title,u.full_name AS student_name,n.display_name,n.visible_sections,n.allowed_actions
+            FROM application_workflow_tasks t JOIN applications a ON a.id=t.application_id JOIN opportunities o ON o.id=a.opportunity_id
+            JOIN student_profiles p ON p.id=a.student_profile_id JOIN users u ON u.id=p.user_id
+            JOIN graph_nodes n ON n.graph_version_id=t.graph_version_id AND n.node_key=t.node_key
+            WHERE t.status='active' AND a.final_status IS NULL AND LOWER(t.assigned_reviewer_email)=LOWER(?) ORDER BY t.assigned_at,t.id""",
+            (reviewer_email,),
         ).fetchall()
-
         return [
             TaskRow(
-                task_id=int(row["task_id"]),
-                application_id=int(row["application_id"]),
-                opportunity_title=str(row["opportunity_title"]),
-                student_name=str(row["student_name"]),
-                node_key=str(row["node_key"]),
-                display_name=str(row["display_name"]),
-                allowed_actions=_json_list(row["allowed_actions"], ["approve", "reject", "request_changes", "comment"]),
-                visible_sections=_json_list(row["visible_sections"], ["all"]),
-                assigned_at=str(row["assigned_at"]),
+                task_id=r["id"],
+                application_id=r["application_id"],
+                opportunity_title=r["opportunity_title"],
+                student_name=r["student_name"]
+                if "full_name" in json.loads(r["visible_sections"] or "[]")
+                else "Applicant",
+                node_key=r["node_key"],
+                display_name=r["display_name"] or "Review",
+                allowed_actions=json.loads(r["allowed_actions"] or "[]"),
+                visible_sections=json.loads(r["visible_sections"] or "[]"),
+                assigned_at=r["assigned_at"],
             )
-            for row in rows
+            for r in rows
         ]
-
-    def _advance_from_node(
-        self,
-        db: sqlite3.Connection,
-        application: sqlite3.Row,
-        graph_version_id: int,
-        from_node_key: str,
-        completed_task_id: int | None = None,
-        decision: str | None = None,
-    ) -> list[int]:
-        edges = db.execute(
-            """
-            SELECT *
-            FROM graph_edges
-            WHERE graph_version_id = ? AND from_node_key = ?
-            ORDER BY id ASC
-            """,
-            (graph_version_id, from_node_key),
-        ).fetchall()
-
-        next_task_ids: list[int] = []
-        data = _submitted_data(application)
-        for edge in edges:
-            if not self._edge_matches_context(edge, data, decision):
-                continue
-            next_task_ids.extend(
-                self._activate_node(
-                    db,
-                    application,
-                    graph_version_id,
-                    str(edge["to_node_key"]),
-                    completed_task_id=completed_task_id,
-                    decision=decision,
-                )
-            )
-        return next_task_ids
-
-    def _activate_node(
-        self,
-        db: sqlite3.Connection,
-        application: sqlite3.Row,
-        graph_version_id: int,
-        node_key: str,
-        completed_task_id: int | None = None,
-        decision: str | None = None,
-    ) -> list[int]:
-        node = self._get_node(db, graph_version_id, node_key)
-        node_type = str(node["node_type"])
-        if node_type == "reviewer":
-            return self._create_reviewer_task(db, application, graph_version_id, node)
-        if node_type == "end":
-            if decision == REJECT or self._end_node_final_status(node) == "REJECTED":
-                self._mark_application_rejected(db, int(application["id"]))
-            else:
-                self._mark_application_approved(db, int(application["id"]))
-            return []
-        if node_type == "conditional":
-            return self._advance_from_node(db, application, graph_version_id, node_key, completed_task_id)
-        if node_type == "join_all":
-            ready, any_rejected = self._join_all_ready(db, int(application["id"]), graph_version_id, node_key)
-            if not ready:
-                return []
-            if any_rejected:
-                self._mark_application_rejected(db, int(application["id"]))
-                return []
-            if self._node_already_advanced(db, int(application["id"]), graph_version_id, node_key):
-                return []
-            summary = self._join_all_outcome_summary(db, int(application["id"]), graph_version_id, node_key)
-            if summary and any(not item.endswith("=completed/approve") for item in summary):
-                self._append_workflow_note(
-                    db,
-                    int(application["id"]),
-                    f"join_all at {node_key} advanced with mixed branch outcomes: {', '.join(summary)}",
-                )
-            return self._advance_from_node(db, application, graph_version_id, node_key)
-        if node_type == "join_any":
-            self._skip_join_siblings(db, int(application["id"]), graph_version_id, node_key, completed_task_id)
-            return self._advance_once(db, application, graph_version_id, node_key)
-        if node_type == "start":
-            return self._advance_from_node(db, application, graph_version_id, node_key, completed_task_id)
-        raise ValueError(f"Unsupported graph node type: {node_type}")
-
-    def _advance_once(
-        self,
-        db: sqlite3.Connection,
-        application: sqlite3.Row,
-        graph_version_id: int,
-        node_key: str,
-    ) -> list[int]:
-        if self._node_already_advanced(db, int(application["id"]), graph_version_id, node_key):
-            return []
-        return self._advance_from_node(db, application, graph_version_id, node_key)
-
-    def _create_reviewer_task(
-        self,
-        db: sqlite3.Connection,
-        application: sqlite3.Row,
-        graph_version_id: int,
-        node: sqlite3.Row,
-    ) -> list[int]:
-        if self._task_exists(db, int(application["id"]), graph_version_id, str(node["node_key"])):
-            return []
-        reviewer_email = node["reviewer_email"]
-        if not reviewer_email:
-            raise ValueError(f"Reviewer node '{node['node_key']}' missing reviewer_email")
-
-        cursor = db.execute(
-            """
-            INSERT INTO application_workflow_tasks
-            (application_id, graph_version_id, node_key, assigned_reviewer_email, status)
-            VALUES (?, ?, ?, ?, 'active')
-            """,
-            (int(application["id"]), graph_version_id, node["node_key"], reviewer_email),
-        )
-        db.execute(
-            """
-            UPDATE applications
-            SET current_stage_label = ?,
-                current_step_order = 1,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (node["display_name"] or node["node_key"], _now_iso(), int(application["id"])),
-        )
-        return [int(cursor.lastrowid)]
-
-    def _mark_application_approved(self, db: sqlite3.Connection, application_id: int) -> None:
-        db.execute(
-            """
-            UPDATE applications
-            SET final_status = 'APPROVED',
-                current_stage_label = 'Closed',
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (_now_iso(), application_id),
-        )
-
-    def _mark_application_rejected(self, db: sqlite3.Connection, application_id: int) -> None:
-        db.execute(
-            """
-            UPDATE applications
-            SET final_status = 'REJECTED',
-                current_stage_label = 'Closed',
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (_now_iso(), application_id),
-        )
-
-    def _join_all_ready(
-        self,
-        db: sqlite3.Connection,
-        application_id: int,
-        graph_version_id: int,
-        join_node_key: str,
-    ) -> tuple[bool, bool]:
-        incoming = self._incoming_sources(db, graph_version_id, join_node_key)
-        if not incoming:
-            return False, False
-        placeholders = ",".join("?" for _ in incoming)
-        rows = db.execute(
-            f"""
-            SELECT node_key, status, decision
-            FROM application_workflow_tasks
-            WHERE application_id = ?
-              AND graph_version_id = ?
-              AND node_key IN ({placeholders})
-              AND status IN ('completed', 'returned', 'rejected', 'skipped')
-            ORDER BY id DESC
-            """,
-            (application_id, graph_version_id, *incoming),
-        ).fetchall()
-        terminal_by_node: dict[str, sqlite3.Row] = {}
-        for row in rows:
-            terminal_by_node.setdefault(str(row["node_key"]), row)
-        ready = all(node_key in terminal_by_node for node_key in incoming)
-        any_rejected = any(
-            row["status"] == "rejected" or row["decision"] == REJECT
-            for row in terminal_by_node.values()
-        )
-        return ready, any_rejected
-
-    def _join_all_outcome_summary(
-        self,
-        db: sqlite3.Connection,
-        application_id: int,
-        graph_version_id: int,
-        join_node_key: str,
-    ) -> list[str]:
-        incoming = self._incoming_sources(db, graph_version_id, join_node_key)
-        if not incoming:
-            return []
-        placeholders = ",".join("?" for _ in incoming)
-        rows = db.execute(
-            f"""
-            SELECT node_key, status, decision
-            FROM application_workflow_tasks
-            WHERE application_id = ?
-              AND graph_version_id = ?
-              AND node_key IN ({placeholders})
-              AND status IN ('completed', 'returned', 'rejected', 'skipped')
-            ORDER BY id DESC
-            """,
-            (application_id, graph_version_id, *incoming),
-        ).fetchall()
-        terminal_by_node: dict[str, sqlite3.Row] = {}
-        for row in rows:
-            terminal_by_node.setdefault(str(row["node_key"]), row)
-        return [
-            f"{node_key}={terminal_by_node[node_key]['status']}/{terminal_by_node[node_key]['decision'] or 'none'}"
-            for node_key in incoming
-            if node_key in terminal_by_node
-        ]
-
-    def _append_workflow_note(self, db: sqlite3.Connection, application_id: int, note: str) -> None:
-        row = self._get_application(db, application_id)
-        existing = row["workflow_notes"] or ""
-        next_notes = f"{existing}\n{note}" if existing else note
-        db.execute(
-            """
-            UPDATE applications
-            SET workflow_notes = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (next_notes, _now_iso(), application_id),
-        )
-
-    def _skip_join_siblings(
-        self,
-        db: sqlite3.Connection,
-        application_id: int,
-        graph_version_id: int,
-        join_node_key: str,
-        completed_task_id: int | None,
-    ) -> None:
-        incoming = self._incoming_sources(db, graph_version_id, join_node_key)
-        if not incoming:
-            return
-        placeholders = ",".join("?" for _ in incoming)
-        params: list[Any] = [application_id, graph_version_id, *incoming]
-        task_filter = ""
-        if completed_task_id is not None:
-            task_filter = "AND id <> ?"
-            params.append(completed_task_id)
-        db.execute(
-            f"""
-            UPDATE application_workflow_tasks
-            SET status = 'skipped',
-                acted_at = ?
-            WHERE application_id = ?
-              AND graph_version_id = ?
-              AND node_key IN ({placeholders})
-              AND status = 'active'
-              {task_filter}
-            """,
-            [_now_iso(), *params],
-        )
-
-    def _incoming_sources(self, db: sqlite3.Connection, graph_version_id: int, node_key: str) -> list[str]:
-        rows = db.execute(
-            """
-            SELECT from_node_key
-            FROM graph_edges
-            WHERE graph_version_id = ? AND to_node_key = ?
-            ORDER BY id ASC
-            """,
-            (graph_version_id, node_key),
-        ).fetchall()
-        return [str(row["from_node_key"]) for row in rows]
-
-    def _node_already_advanced(
-        self,
-        db: sqlite3.Connection,
-        application_id: int,
-        graph_version_id: int,
-        node_key: str,
-    ) -> bool:
-        downstream = db.execute(
-            """
-            SELECT to_node_key
-            FROM graph_edges
-            WHERE graph_version_id = ? AND from_node_key = ?
-            """,
-            (graph_version_id, node_key),
-        ).fetchall()
-        if not downstream:
-            return False
-        node_keys = [str(e["to_node_key"]) for e in downstream]
-        placeholders = ",".join("?" for _ in node_keys)
-        row = db.execute(
-            f"""
-            SELECT 1
-            FROM application_workflow_tasks
-            WHERE application_id = ?
-              AND graph_version_id = ?
-              AND node_key IN ({placeholders})
-              AND status IN ('active', 'completed', 'returned', 'rejected')
-            LIMIT 1
-            """,
-            (application_id, graph_version_id, *node_keys),
-        ).fetchone()
-        return bool(row)
-
-    def _task_exists(
-        self,
-        db: sqlite3.Connection,
-        application_id: int,
-        graph_version_id: int,
-        node_key: str,
-    ) -> bool:
-        row = db.execute(
-            """
-            SELECT 1
-            FROM application_workflow_tasks
-            WHERE application_id = ?
-              AND graph_version_id = ?
-              AND node_key = ?
-              AND status IN ('active', 'completed', 'flagged', 'returned', 'rejected')
-            LIMIT 1
-            """,
-            (application_id, graph_version_id, node_key),
-        ).fetchone()
-        return bool(row)
-
-    def _condition_matches(self, raw_condition: str, data: dict[str, Any]) -> bool:
-        try:
-            condition = json.loads(raw_condition)
-        except json.JSONDecodeError:
-            return False
-        return self._evaluate_condition(condition, data)
-
-    def _edge_matches_context(self, edge: sqlite3.Row, data: dict[str, Any], decision: str | None) -> bool:
-        action = str(edge["action"] or "always")
-        condition_raw = edge["condition_json"]
-        condition_matches = True
-        if condition_raw:
-            condition_matches = self._condition_matches(condition_raw, data)
-
-        if action == "condition_true":
-            if decision in {REJECT, REQUEST_CHANGES}:
-                return False
-            return condition_matches
-        if action == "condition_false":
-            if decision in {REJECT, REQUEST_CHANGES}:
-                return False
-            return not condition_matches
-        if action == "approve":
-            return decision == APPROVE and condition_matches
-        if action == "reject":
-            return decision == REJECT and condition_matches
-        if action == "request_changes":
-            return decision == REQUEST_CHANGES and condition_matches
-
-        # Legacy/null edges are unconditional during graph traversal and approve transitions.
-        # They must not fire for reject/request_changes unless explicitly configured above.
-        if decision in {REJECT, REQUEST_CHANGES}:
-            return False
-        return condition_matches
-
-    def _end_node_final_status(self, node: sqlite3.Row) -> str | None:
-        raw_meta = node["metadata"] or "{}"
-        try:
-            meta = json.loads(raw_meta)
-        except json.JSONDecodeError:
-            return None
-        value = meta.get("final_status") if isinstance(meta, dict) else None
-        return str(value).upper() if value else None
-
-    def _evaluate_condition(self, condition: dict[str, Any], data: dict[str, Any]) -> bool:
-        op = condition.get("op")
-        if op == "all_of":
-            children = condition.get("conditions")
-            return isinstance(children, list) and all(
-                isinstance(child, dict) and self._evaluate_condition(child, data) for child in children
-            )
-        if op == "any_of":
-            children = condition.get("conditions")
-            return isinstance(children, list) and any(
-                isinstance(child, dict) and self._evaluate_condition(child, data) for child in children
-            )
-
-        field = condition.get("field")
-        if not isinstance(field, str):
-            return False
-        actual = data.get(field)
-        expected = condition.get("value")
-
-        if op == "equals":
-            return actual == expected
-        if op == "not_equals":
-            return actual != expected
-        if op == "in":
-            return isinstance(expected, list) and actual in expected
-        if op == "not_in":
-            return isinstance(expected, list) and actual not in expected
-        if op == "contains":
-            if isinstance(actual, list):
-                return expected in actual
-            if isinstance(actual, str):
-                return str(expected) in actual
-            return False
-        if op == "exists":
-            return field in data and actual not in {None, ""}
-        if op == "empty":
-            return field not in data or actual in {None, "", []}
-        if op in {"gt", "lt", "gte", "lte"}:
-            return self._compare_numbers(actual, expected, op)
-        return False
-
-    def _compare_numbers(self, actual: Any, expected: Any, op: str) -> bool:
-        try:
-            actual_number = float(actual)
-            expected_number = float(expected)
-        except (TypeError, ValueError):
-            return False
-        if op == "gt":
-            return actual_number > expected_number
-        if op == "lt":
-            return actual_number < expected_number
-        if op == "gte":
-            return actual_number >= expected_number
-        if op == "lte":
-            return actual_number <= expected_number
-        return False
-
-    def _missing_required_inputs(self, node: sqlite3.Row, reviewer_data: dict[str, Any] | None) -> list[str]:
-        raw_meta = node["metadata"] or "{}"
-        try:
-            meta = json.loads(raw_meta)
-        except json.JSONDecodeError:
-            return []
-        required_inputs = meta.get("required_inputs", [])
-        if not required_inputs or not isinstance(required_inputs, list):
-            return []
-        data = reviewer_data or {}
-        return [
-            inp["input_key"]
-            for inp in required_inputs
-            if isinstance(inp, dict) and inp.get("required", True) and inp.get("input_key") not in data
-        ]
-
-    def _get_application(self, db: sqlite3.Connection, application_id: int) -> sqlite3.Row:
-        row = db.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
-        if not row:
-            raise ValueError("Application not found")
-        return row
-
-    def _get_task(self, db: sqlite3.Connection, task_id: int) -> sqlite3.Row:
-        row = db.execute("SELECT * FROM application_workflow_tasks WHERE id = ?", (task_id,)).fetchone()
-        if not row:
-            raise ValueError("Task not found")
-        return row
-
-    def _get_node(self, db: sqlite3.Connection, graph_version_id: int, node_key: str) -> sqlite3.Row:
-        row = db.execute(
-            """
-            SELECT *
-            FROM graph_nodes
-            WHERE graph_version_id = ? AND node_key = ?
-            LIMIT 1
-            """,
-            (graph_version_id, node_key),
-        ).fetchone()
-        if not row:
-            raise ValueError(f"Graph node not found: {node_key}")
-        return row
