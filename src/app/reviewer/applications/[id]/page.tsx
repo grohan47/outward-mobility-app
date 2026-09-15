@@ -204,7 +204,9 @@ export default function ReviewerApplicationDetail() {
                   <div className="absolute left-0 top-1.5 h-4 w-4 rounded-full border-2 border-primary bg-white" />
                   <p className="text-sm font-semibold text-slate-900">{event.event_type.replace(/_/g, " ")}</p>
                   <p className="text-xs text-slate-500">{new Date(event.created_at).toLocaleString()}</p>
-                  {event.event_payload?.to_stage && <Badge variant="neutral" className="mt-2 text-[10px]">{String(event.event_payload.to_stage)}</Badge>}
+                  {typeof event.event_payload?.to_stage === "string" && (
+                    <Badge variant="neutral" className="mt-2 text-[10px]">{event.event_payload.to_stage}</Badge>
+                  )}
                 </div>
               ))}
             </div>

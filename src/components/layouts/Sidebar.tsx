@@ -18,7 +18,7 @@ export function Sidebar({ items }: SidebarProps) {
   const pathname = usePathname();
 
   return (
-    <div className="fixed top-16 left-0 bottom-0 w-64 bg-slate-50 border-r border-slate-200 p-4 flex flex-col gap-1 overflow-y-auto">
+    <div className="fixed top-16 left-0 bottom-0 hidden w-64 flex-col gap-1 overflow-y-auto border-r border-slate-200 bg-slate-50 p-4 md:flex">
       {items.map((item) => {
         const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
         

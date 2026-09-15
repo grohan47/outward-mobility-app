@@ -126,7 +126,7 @@ def test_return_targets_must_point_to_student_or_an_earlier_level():
         ),
         ("later", "Later", [reviewer("later_review", "later@plaksha.edu.in")]),
     )
-    assert "First Review: return target must be the student or an earlier level." in GraphPolicyValidator().validate_graph(
+    assert "First_Review: return target must be the student or an earlier level." in GraphPolicyValidator().validate_graph(
         graph, ["full_name"]
     )
 

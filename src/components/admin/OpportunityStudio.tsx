@@ -90,10 +90,14 @@ export default function OpportunityStudio(props: Props) {
   }
 
   function setter<K extends keyof Draft>(key: K): React.Dispatch<React.SetStateAction<Draft[K]>> {
-    return (value) => change((current) => ({
-      ...current,
-      [key]: typeof value === "function" ? (value as (previous: Draft[K]) => Draft[K])(current[key]) : value,
-    }));
+    return (value) => {
+      editRevision.current += 1;
+      dispatch((current) => ({
+        ...current,
+        [key]: typeof value === "function" ? (value as (previous: Draft[K]) => Draft[K])(current[key]) : value,
+      }));
+      setNotice("");
+    };
   }
 
   const fields: CatalogField[] = [

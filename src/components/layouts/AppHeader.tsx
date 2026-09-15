@@ -8,9 +8,15 @@ interface AppHeaderProps {
   userName: string;
   roleDisplayName: string;
   canSwitchWorkspace?: boolean;
+  showSLANotifications?: boolean;
 }
 
-export function AppHeader({ userName, roleDisplayName, canSwitchWorkspace = false }: AppHeaderProps) {
+export function AppHeader({
+  userName,
+  roleDisplayName,
+  canSwitchWorkspace = false,
+  showSLANotifications = true,
+}: AppHeaderProps) {
   const router = useRouter();
 
   async function handleLogout() {
@@ -49,7 +55,7 @@ export function AppHeader({ userName, roleDisplayName, canSwitchWorkspace = fals
       </div>
 
       <div className="flex items-center gap-5">
-        <SLANotificationBanner />
+        {showSLANotifications && <SLANotificationBanner />}
         {canSwitchWorkspace && (
           <Link
             href="/select-workspace"

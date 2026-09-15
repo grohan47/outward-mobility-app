@@ -43,36 +43,28 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
     "visibility": "plaksha_only"
   },
   "graph": {
-    "nodes": [
+    "levels": [
       {
-        "node_key": "string",
-        "node_type": "start | reviewer | join_all | join_any | conditional | end",
-        "display_name": "string or null",
-        "reviewer_email": "string or null",
-        "visible_sections": ["all"],
-        "allowed_actions": ["approve", "request_changes", "comment"],
-        "metadata": {
-          "sla_hours": 72,
-          "required_inputs": [
-            {
-              "input_key": "string",
-              "label": "string",
-              "input_type": "text | number | select | checkbox",
-              "options": [],
-              "required": true
+        "id": "string",
+        "name": "string",
+        "reviewers": [
+          {
+            "node_key": "string",
+            "node_type": "reviewer",
+            "display_name": "string",
+            "reviewer_email": "reviewer@plaksha.edu.in",
+            "visible_sections": ["full_name"],
+            "allowed_actions": ["approve", "request_changes", "comment"],
+            "metadata": {
+              "sla_hours": 72,
+              "required_inputs": []
             }
-          ]
-        }
+          }
+        ]
       }
     ],
-    "edges": [
-      {
-        "from_node_key": "string",
-        "to_node_key": "string",
-        "condition_json": null,
-        "label": null
-      }
-    ]
+    "nodes": [],
+    "edges": []
   },
   "applicant_form_fields": ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
   "student_visibility_rules": ["ug.2024@plaksha.edu.in"],
@@ -83,12 +75,12 @@ Given a messy opportunity description, output ONLY valid JSON matching this exac
 }
 
 GRAPH RULES:
-- Every graph must have exactly one start node and at least one end node.
+- Use ordered levels only. Do not emit nodes, edges, join nodes, conditional routes, or join-any routes; the server derives those from levels.
+- Every level must have a stable id, name, and at least one reviewer. Reviewers within a level approve in parallel and all must approve before the next level opens.
 - reviewer nodes must have reviewer_email set. Use @plaksha.edu.in addresses.
 - allowed_actions must always include "comment" for every reviewer node.
 - Every reviewer node must set metadata.sla_hours. Default: 72. Use a lower value only if the email specifies a tighter timeline (minimum 24).
-- For parallel approvals, use start → [reviewerA, reviewerB] → join_all → next.
-- Do not include unrestricted code or arbitrary expressions in condition_json.
+- visible_sections must list only the explicit applicant fields a reviewer needs; never use "all". Reviewer outputs may be granted only to a later level.
 
 OPPORTUNITY RULES:
 - Only title, code, and description are fixed fields.

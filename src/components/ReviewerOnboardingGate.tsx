@@ -105,7 +105,7 @@ export function ReviewerOnboardingGate({
               <div className="mb-7 flex h-16 w-16 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10">
                 <span className="material-symbols-outlined text-4xl text-primary">waving_hand</span>
               </div>
-              <h1 className="text-3xl font-black tracking-tight text-slate-950">You've been added to a review chain</h1>
+              <h1 className="text-3xl font-black tracking-tight text-slate-950">You&apos;ve been added to a review chain</h1>
               <p className="mt-4 text-sm leading-6 text-slate-600">
                 PRISM is used by Plaksha to manage outward mobility approvals. Your email was added as a reviewer, so we created your reviewer workspace automatically.
               </p>

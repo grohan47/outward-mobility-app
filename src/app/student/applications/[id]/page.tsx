@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ApplicationChatWidget } from "@/components/application/ApplicationChatWidget";
 import { labelForVisibility } from "@/components/application/chatStakeholders";
@@ -40,24 +40,29 @@ export default function ApplicationDetailView() {
   const [reworkValues, setReworkValues] = useState<Record<string, FieldValue>>({});
   const [resubmitting, setResubmitting] = useState(false);
 
-  const reloadDetail = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/applications/${params.id}`);
-      const payload: ApplicationDetailPayload & { detail?: string } = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "Unable to load this application.");
-      setData(payload);
-      setReworkValues(parseSubmittedData(payload));
-      setLoadError(null);
-    } catch (reason) {
-      setLoadError(reason instanceof Error ? reason.message : "Unable to load this application.");
-    } finally {
-      setLoading(false);
-    }
-  }, [params.id]);
+  async function reloadDetail() {
+    const response = await fetch(`/api/applications/${params.id}`);
+    const payload: ApplicationDetailPayload & { detail?: string } = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "Unable to load this application.");
+    setData(payload);
+    setReworkValues(parseSubmittedData(payload));
+    setLoadError(null);
+  }
 
   useEffect(() => {
-    void reloadDetail();
-  }, [reloadDetail]);
+    void fetch(`/api/applications/${params.id}`)
+      .then(async (response) => {
+        const payload: ApplicationDetailPayload & { detail?: string } = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "Unable to load this application.");
+        setData(payload);
+        setReworkValues(parseSubmittedData(payload));
+        setLoadError(null);
+      })
+      .catch((reason: unknown) => {
+        setLoadError(reason instanceof Error ? reason.message : "Unable to load this application.");
+      })
+      .finally(() => setLoading(false));
+  }, [params.id]);
 
   const submittedData = useMemo(() => (data ? parseSubmittedData(data) : {}), [data]);
 

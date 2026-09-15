@@ -27,9 +27,10 @@ export default async function StudentLayout({
         userName={session.name}
         roleDisplayName={session.roleDisplayName}
         canSwitchWorkspace={(session.availableWorkspaces?.length || 0) > 1}
+        showSLANotifications={false}
       />
       <Sidebar items={navItems} />
-      <main className="pl-64 pt-16 min-h-screen">
+      <main className="min-h-screen pt-16 md:pl-64">
         <div className="p-8 max-w-7xl mx-auto">{children}</div>
       </main>
     </div>

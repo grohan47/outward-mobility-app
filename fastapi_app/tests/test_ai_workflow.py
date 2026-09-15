@@ -40,37 +40,17 @@ def _valid_json(
                 "funding_available": True,
                 "visibility": "plaksha_only",
             },
-            "graph": {
-                "nodes": [
-                    {
-                        "node_key": "start",
-                        "node_type": "start",
-                        "display_name": "Start",
-                        "reviewer_email": None,
-                        "visible_sections": ["all"],
-                        "allowed_actions": [],
-                    },
-                    {
-                        "node_key": "oge_review",
-                        "node_type": "reviewer",
-                        "display_name": "OGE Review",
-                        "reviewer_email": reviewer_email,
-                        "visible_sections": ["all"],
-                        "allowed_actions": ["approve", "request_changes", "comment"],
-                    },
-                    {
-                        "node_key": "end",
-                        "node_type": "end",
-                        "display_name": "End",
-                        "reviewer_email": None,
-                        "visible_sections": [],
-                        "allowed_actions": [],
-                    },
-                ],
-                "edges": [
-                    {"from_node_key": "start", "to_node_key": "oge_review", "condition_json": None, "label": None},
-                    {"from_node_key": "oge_review", "to_node_key": "end", "condition_json": None, "label": None},
-                ],
+        "graph": {
+            "levels": [{"id": "oge_review", "name": "OGE Review", "reviewers": [
+                {
+                    "node_key": "oge_review",
+                    "node_type": "reviewer",
+                    "display_name": "OGE Review",
+                    "reviewer_email": reviewer_email,
+                    "visible_sections": ["full_name"],
+                    "allowed_actions": ["approve", "request_changes", "comment"],
+                }
+            ]}],
             },
             "clarifying_questions": clarifying_questions or [],
             "confidence": confidence,
@@ -135,36 +115,16 @@ class AIWorkflowDraftServiceTests(unittest.TestCase):
                     "visibility": "plaksha_only",
                 },
                 "graph": {
-                    "nodes": [
-                        {
-                            "node_key": "start",
-                            "node_type": "start",
-                            "display_name": None,
-                            "reviewer_email": None,
-                            "visible_sections": ["all"],
-                            "allowed_actions": [],
-                        },
+                    "levels": [{"id": "review", "name": "Review", "reviewers": [
                         {
                             "node_key": "bad_reviewer",
                             "node_type": "reviewer",
                             "display_name": "Review",
                             "reviewer_email": None,  # missing — should fail validation
-                            "visible_sections": ["all"],
+                            "visible_sections": ["full_name"],
                             "allowed_actions": ["approve"],
-                        },
-                        {
-                            "node_key": "end",
-                            "node_type": "end",
-                            "display_name": None,
-                            "reviewer_email": None,
-                            "visible_sections": [],
-                            "allowed_actions": [],
-                        },
-                    ],
-                    "edges": [
-                        {"from_node_key": "start", "to_node_key": "bad_reviewer", "condition_json": None, "label": None},
-                        {"from_node_key": "bad_reviewer", "to_node_key": "end", "condition_json": None, "label": None},
-                    ],
+                        }
+                    ]}],
                 },
                 "clarifying_questions": [],
                 "confidence": 0.5,
@@ -176,7 +136,7 @@ class AIWorkflowDraftServiceTests(unittest.TestCase):
         result = service.generate_draft(self.conn, "admin@plaksha.edu.in", "some prompt")
 
         warnings = json.loads(result["warnings"])
-        self.assertTrue(any("bad_reviewer" in w or "reviewer_email" in w for w in warnings))
+        self.assertTrue(any("valid reviewer email" in w for w in warnings))
         self.assertEqual(result["publish_ready"], 0)
         self.assertEqual(result["status"], "pending")
 
@@ -327,14 +287,14 @@ class AIWorkflowDraftServiceTests(unittest.TestCase):
         self.assertEqual(fallback.confidence, 0.0)
         self.assertTrue(len(fallback.warnings) > 0)
 
-    def test_fallback_draft_graph_is_structurally_valid(self):
+    def test_fallback_draft_graph_requires_manual_reviewer_assignment(self):
         from fastapi_app.graph_validation import GraphPolicyValidator
 
         service = AIWorkflowDraftService()
         fallback = service._fallback_draft()
         errors = GraphPolicyValidator().validate_graph(fallback.graph)
 
-        self.assertEqual(errors, [], f"Fallback graph has validation errors: {errors}")
+        self.assertEqual(errors, ["Assign reviewer: enter a valid reviewer email."])
 
     def test_fallback_draft_not_marked_publish_ready(self):
         service = AIWorkflowDraftService(provider=_MockProvider(RuntimeError("down")))

@@ -48,7 +48,15 @@ export default function StudioGraph({ levels, selected, onSelect, onAddNode, onA
           to.forEach((p) => lines.push(`M ${p.x} ${middle} V ${p.y - 5}`));
         }
       }
-      setSize({ width: root.scrollWidth, height: root.scrollHeight }); setPaths(lines);
+      const nodeBounds = [...root.querySelectorAll<HTMLElement>("[data-node]")].map((el) => {
+        const rect = el.getBoundingClientRect();
+        return { right: rect.right - bounds.left, bottom: rect.bottom - bounds.top };
+      });
+      setSize({
+        width: orientation === "horizontal" ? Math.max(root.clientWidth, ...nodeBounds.map((node) => node.right)) : root.clientWidth,
+        height: Math.max(root.clientHeight, ...nodeBounds.map((node) => node.bottom)),
+      });
+      setPaths(lines);
     };
     const observer = new ResizeObserver(update);
     observer.observe(root); root.querySelectorAll("[data-node]").forEach((el) => observer.observe(el));

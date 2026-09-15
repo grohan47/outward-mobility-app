@@ -23,7 +23,6 @@ export function SetupScreen({
   onGenerateDraft,
   onAnswerChange,
   onSubmitAnswers,
-  onContinue,
 }: {
   opportunity: OpportunityData;
   setOpportunity: React.Dispatch<React.SetStateAction<OpportunityData>>;

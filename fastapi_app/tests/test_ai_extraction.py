@@ -98,22 +98,17 @@ def _valid_ai_output_json(student_visibility_rules=_VISIBILITY_OMITTED) -> str:
             "visibility": "plaksha_only",
         },
         "graph": {
-            "nodes": [
-                {"node_key": "start", "node_type": "start", "display_name": "Start"},
+            "levels": [{"id": "oge_review", "name": "OGE Review", "reviewers": [
                 {
                     "node_key": "oge_review",
                     "node_type": "reviewer",
                     "display_name": "OGE Review",
                     "reviewer_email": "oge@plaksha.edu.in",
+                    "visible_sections": ["full_name"],
                     "allowed_actions": ["approve", "request_changes", "comment"],
                     "metadata": {"sla_hours": 72},
-                },
-                {"node_key": "end", "node_type": "end", "display_name": "End"},
-            ],
-            "edges": [
-                {"from_node_key": "start", "to_node_key": "oge_review"},
-                {"from_node_key": "oge_review", "to_node_key": "end"},
-            ],
+                }
+            ]}],
         },
         "applicant_form_fields": ["full_name", "student_id", "email", "cgpa", "statement_of_purpose"],
         "clarifying_questions": [],
@@ -192,7 +187,7 @@ def test_parsed_ai_output_preserves_seeded_student_visibility_rules():
     assert parsed.student_visibility_rules == ["professors@plaksha.edu.in"]
 
 
-def test_parsed_ai_output_defaults_student_visibility_rules_to_ug_2024():
+def test_parsed_ai_output_keeps_visibility_rules_empty_when_not_supplied():
     from fastapi_app.ai_workflow import AIWorkflowDraftService
     from fastapi_app.graph_models import AIWorkflowDraftOutput
 
@@ -202,10 +197,10 @@ def test_parsed_ai_output_defaults_student_visibility_rules_to_ug_2024():
     row = service.generate_draft(db, "test@plaksha.edu.in", "General student opportunity")
     parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
 
-    assert parsed.student_visibility_rules == ["ug.2024@plaksha.edu.in"]
+    assert parsed.student_visibility_rules == []
 
 
-def test_fallback_draft_includes_default_student_visibility_rules():
+def test_fallback_draft_does_not_invent_student_visibility_rules():
     from fastapi_app.ai_workflow import AIWorkflowDraftService
     from fastapi_app.graph_models import AIWorkflowDraftOutput
 
@@ -216,7 +211,7 @@ def test_fallback_draft_includes_default_student_visibility_rules():
     parsed = AIWorkflowDraftOutput.model_validate_json(row["draft_output"])
 
     assert parsed.is_fallback is True
-    assert parsed.student_visibility_rules == ["ug.2024@plaksha.edu.in"]
+    assert parsed.student_visibility_rules == []
 
 
 @pytest.mark.integration

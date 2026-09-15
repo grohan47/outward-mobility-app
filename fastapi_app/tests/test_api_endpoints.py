@@ -260,6 +260,101 @@ def test_publish_freezes_level_and_form_definitions(client, database):
         assert [field["label"] for field in form_schema(conn, app_shape)] == ["Full name", "Statement"]
 
 
+def test_manual_draft_reloads_and_rejects_a_stale_update(client):
+    login(client, "oge@plaksha.edu.in", "ADMIN")
+    payload = {
+        "applicantFormFields": ["full_name"],
+        "opportunity": {
+            "title": "Draft conflict test",
+            "description": "Verify reload and optimistic concurrency behavior.",
+        },
+        "graph": {
+            "levels": [
+                {
+                    "id": "review",
+                    "name": "Review",
+                    "reviewers": [
+                        reviewer("review", "reviewer-a@plaksha.edu.in", visible=["full_name"])
+                    ],
+                }
+            ]
+        },
+        "studentVisibilityRules": ["alice@plaksha.edu.in"],
+        "clarifyingQuestions": [],
+        "warnings": [],
+        "confidence": 0.8,
+        "isFallback": False,
+    }
+    created = client.post("/api/admin/workflow-drafts/manual", json=payload)
+    assert created.status_code == 201, created.text
+    draft_id = created.json()["draft_id"]
+    original_stamp = created.json()["draft"]["updated_at"]
+
+    reloaded = client.get(f"/api/admin/workflow-drafts/{draft_id}")
+    assert reloaded.status_code == 200
+    assert reloaded.json()["draft"]["updated_at"] == original_stamp
+
+    updated_payload = {
+        **payload,
+        "draftId": draft_id,
+        "expectedUpdatedAt": original_stamp,
+        "confidence": 0.81,
+    }
+    updated = client.post("/api/admin/workflow-drafts/manual", json=updated_payload)
+    assert updated.status_code == 201, updated.text
+    assert updated.json()["draft"]["updated_at"] != original_stamp
+
+    stale = client.post("/api/admin/workflow-drafts/manual", json=updated_payload)
+    assert stale.status_code == 409
+    assert "Reload before saving" in stale.json()["detail"]
+
+
+def test_reviewer_output_grants_are_projected_to_next_reviewer_and_student(client, database):
+    graph = workflow(
+        (
+            "first",
+            "First",
+            [
+                reviewer(
+                    "first",
+                    "reviewer-a@plaksha.edu.in",
+                    metadata={
+                        "required_inputs": [
+                            {
+                                "input_key": "score",
+                                "label": "Score",
+                                "input_type": "number",
+                                "required": True,
+                            }
+                        ],
+                        "student_visible_fields": ["score"],
+                    },
+                )
+            ],
+        ),
+        ("second", "Second", [reviewer("second", "reviewer-b@plaksha.edu.in", visible=["score"])]),
+    )
+    _, _, application_id, task_ids, _, _ = seed_two_applications(database, graph, code="OUTPUT-GRANTS")
+    with database.connect() as conn:
+        GraphExecutionService().transition(
+            conn,
+            task_ids[0],
+            "approve",
+            "reviewer-a@plaksha.edu.in",
+            reviewer_data={"score": 8.5},
+        )
+
+    login(client, "reviewer-b@plaksha.edu.in", "REVIEWER")
+    reviewer_detail = client.get(f"/api/applications/{application_id}")
+    assert reviewer_detail.status_code == 200
+    assert reviewer_detail.json()["application_file"] == {"score": 8.5}
+
+    login(client, "alice@plaksha.edu.in", "STUDENT")
+    student_detail = client.get(f"/api/applications/{application_id}")
+    assert student_detail.status_code == 200
+    assert student_detail.json()["application_file"]["score"] == 8.5
+
+
 def test_incompatible_existing_database_is_not_reset_on_startup(database):
     with database.connect() as conn:
         conn.execute("PRAGMA user_version = 0")
